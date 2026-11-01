@@ -1,0 +1,50 @@
+# 构建产物
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.tlog
+*.log
+*.exe
+*.exp
+*.lib
+*.aps
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+
+# 运行时生成（不要把玩家数据提交上来）
+data/
+启动日志.txt
+config.ini
+
+# 角色包：立绘 / 背景 / BGM / 角色设定通常为第三方版权素材，
+# 不随本仓库分发。请用仓库内的 assets/char/_模板 自行制作，
+# 或把本地已有的角色包放到这里（不会误提交）。
+assets/char/宁宁/
+assets/char/梓/
+assets/char/茉子/
+
+# 素材二进制：仓库只留目录骨架和说明文件
+assets/**/bg/**
+!assets/**/bg/_放这里.txt
+assets/**/bgm/**
+!assets/**/bgm/_放这里.txt
+assets/**/sprite/**
+!assets/**/sprite/_放这里.txt
+assets/title/*.png
+assets/title/*.wav
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store
