@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 //  YourReality —— 跑在 Windows 桌面上的视觉小说 + AI 教学引擎
 //  Copyright (c) 2025 YourReality contributors
 //  Licensed under the MIT License.  See LICENSE in the repository root.
@@ -2425,7 +2425,6 @@ bool LlmChat(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, LlmResult& 
 struct LlmReply {
     std::wstring say;                       // 台词（解析失败时为原文）
     std::wstring emote;                     // 表情标签，映射到立绘差分
-    int          aff = 0;                   // 好感增减
     std::vector<std::wstring> mem;          // 本轮新记住的事实
     std::wstring hint;                      // 给玩家的提示（判题失败时用）
     bool         parsed = false;            // 是否成功解析成 JSON
@@ -2553,8 +2552,8 @@ struct MemoryFact {
 //   · 近期流水 recent_  —— 最近几轮他说了什么。不占容量，只留最近几条。
 //   · 关系状态 bond_    —— 章末让她自己写一句"现在我对他是……"。不占容量。
 //
-// 【bond 为什么让她自己写，而不是按好感分档】
-// 分档要硬编码"好感>60 = 恋人"——换角色包就得重配一套，而且"恋人"这个词
+// 【bond 为什么让她自己写，而不是由引擎定一个关系档位】
+// 档位要硬编码"数值>60 = 恋人"——换角色包就得重配一套，而且"恋人"这个词
 // 对别的包未必成立。她自己写，内容归包，代码不认识任何关系名。
 class Memory {
 public:
@@ -2632,7 +2631,6 @@ struct PersonaCfg {
     std::wstring playerName = L"你";
     std::wstring trait;             // 人设：傲娇 / 温柔 / 毒舌……
     std::wstring world;             // 世界观补充
-    int          affinity = 0;
 };
 
 // vis 是【扫出来的真实素材清单】。directorMode 下会把它原样交给模型，
@@ -3076,7 +3074,7 @@ struct RenderState {
     bool   showMemory = false;       // 记忆面板
     std::vector<std::wstring> memLines;
     int    memScroll = 0;            // 记忆面板滚动偏移（像素），0 = 最上面（印象最深）那条
-    std::wstring hud;                // 右上角 HUD（好感、章节）
+    std::wstring hud;                // 右上角 HUD（章节 / 幕）
     float  progress = -1.0f;         // 0~1 进度条，<0 不画
 
     // 当前说话人的角色定义。用来取主题色（对话框描边、名字牌、选项高亮）。
@@ -3664,7 +3662,6 @@ struct SaveSlotInfo {
     //  却被当成旧档拒掉：玩家存完就读不了，而且提示是句完全不相干的话
     //  （"这是旧版本存的"）。所以分开记：字段存不存在、值是什么。
     bool         hasSyllabusId = false;
-    int          affinity = 0;
     long long    ts = 0;             // 存档时间（FILETIME）
     std::wstring preview;            // 最后一句台词，读档前能回想"聊到哪了"
     //
@@ -4373,7 +4370,7 @@ double JValue::asNum(double def) const {
     if (type == TNum)  return num;
     if (type == TBool) return b ? 1.0 : 0.0;
     if (type == TStr) {
-        // 宽容：模型经常把数字写成字符串（"aff": "+2"），这里认下来
+        // 宽容：模型经常把数字写成字符串（"tries": "3"），这里认下来
         if (str.empty()) return def;
         char* end = nullptr;
         double v = std::strtod(str.c_str(), &end);
@@ -7286,10 +7283,9 @@ std::wstring BuildCharSystem(const CharDef& def, const std::wstring& playerName,
     // 输出格式要求放在最后：模型对靠近末尾的指令服从度更高。
     // 这段和 llm.cpp 的 ParseReply 是配套的，改这里必须同时改那里。
     s += L"\n\n【输出格式】只返回一个 JSON 对象，不要任何额外文字：\n"
-         L"{\"say\":\"你要说的话\",\"emote\":\"表情标签\",\"aff\":好感增减整数,"
+         L"{\"say\":\"你要说的话\",\"emote\":\"表情标签\","
          L"\"mem\":[\"本轮新记住的关于玩家的事实\"]}\n"
          L"emote 只能是这些之一：normal smile sad angry tsundere surprise\n"
-         L"aff 取值范围 -5 到 5，根据玩家这句话给你的感觉打分。\n"
          L"mem 里只放这一轮新了解到的、值得长期记住的事实，没有就给空数组。\n"
          L"名字、称呼、地名一律照抄玩家打出来的字，不要改写、不要换成别的名字。";
 
@@ -9406,7 +9402,7 @@ void Director::NoteChapter() {
 // 玩家会觉得是被瞬移进教室的——画面和叙事都没过渡。
 //
 // 【不推进 path_ 之外的任何状态】
-// 记忆、好感、bond 都保持读档后的原样。往回跳时它们是真实经历过的，
+        // 记忆、bond 都保持读档后的原样。往回跳时它们是真实经历过的，
 // 往前跳时它们是"没发生过"——这个差异由调用方补前情提要来兜，
 // 引擎不替玩家伪造进度。
 void Director::JumpToChapter(int n) {
@@ -12229,7 +12225,7 @@ bool ScriptCompile(const std::wstring& text, const std::wstring& assetDir, Progr
     }
 
     // 2) 变量引用检查：表达式里用到的变量，必须在某处被 @def 或赋值过。
-    //    只是警告不是错误——$好感 这种可能由引擎（大模型打分）在运行时写入，
+    //    只是警告不是错误——变量也可能由剧本在运行时赋值（$好感 += 5 这种），
     //    作者漏写 @def 不该让游戏打不开，但值得提醒。
     for (size_t i = 0; i < prog.scenes.size(); ++i) {
         for (size_t k = 0; k < prog.scenes[i].code.size(); ++k) {
@@ -12294,7 +12290,9 @@ void Vm::Load(const Program* p) {
     hasPending_ = false;
     bg_.clear(); bgm_.clear(); ch_.clear(); bgFit_.clear();
     outfit_.clear();
-    // 内置变量：引擎自己会写这些，作者可以直接在剧本里读
+    // 内置变量：引擎会自己写这几个，作者可以直接在剧本里读。
+    // ★ 好感只是个普通剧本变量，引擎不再自动加减它（见"没有好感度这一项"）。
+    //   作者想在剧本里做养成（$好感 += 5）是允许的，那是剧本自己的设计。
     vars_[L"好感"] = EValue(0LL);
     vars_[L"章节"] = EValue(std::wstring(L"序章"));
     vars_[L"任务通过"] = EValue(0LL);
@@ -13827,7 +13825,6 @@ LlmReply ParseReply(const std::wstring& raw) {
             if (!say.empty()) { r.say = say; got = true; }
             // JSON 本身是合法的，其它字段照常读
             r.emote = W(v.getStr("emote", "normal"));
-            r.aff   = (int)v.getNum("aff", 0);
             r.hint  = W(v.getStr("hint"));
             r.bg     = W(v.getStr("bg"));
             r.bgm    = W(v.getStr("bgm"));
@@ -14305,14 +14302,12 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
                             mem.ToPrompt(0),
                             prof.ToPrompt(), sceneHint,
                             mem.RecentPrompt(), mem.BondPrompt()));
-        s += L"\n\n【当前好感度】" + WFromInt(p.affinity) + L"/100";
     } else if (cd) {
         // 内置默认角色：用它的 systemTpl，但沿用下面那套更完整的格式说明
         s += L"你现在扮演「" + cd->DisplayName() + L"」，一个会陪玩家学编程的二次元角色。\n";
         s += L"\n【人设】\n" + cd->systemTpl + L"\n";
         if (!p.trait.empty()) s += L"【性格】\n" + p.trait + L"\n";
         if (!p.world.empty()) s += L"【世界观】\n" + p.world + L"\n";
-        s += L"\n【当前好感度】" + WFromInt(p.affinity) + L"/100\n";
         s += L"玩家叫「" + pName + L"」，直接用名字称呼他。\n";
         s += L"\n【你对他的了解】（这些是你真实记得的事，可以自然提起，不要逐条复述）\n";
         s += mem.ToPrompt(0);
@@ -14323,7 +14318,6 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"你现在扮演「" + p.charName + L"」，一个会陪玩家学编程的二次元角色。\n";
         s += L"\n【人设】\n" + (p.trait.empty() ? L"略带傲娇的学霸学姐，嘴上不饶人但很负责。" : p.trait) + L"\n";
         if (!p.world.empty()) s += L"【世界观】\n" + p.world + L"\n";
-        s += L"\n【当前好感度】" + WFromInt(p.affinity) + L"/100\n";
         s += L"玩家叫「" + pName + L"」，直接用名字称呼他。\n";
         s += L"\n【你对他的了解】\n" + mem.ToPrompt(0);
         s += L"\n【他的学习进度】\n" + prof.ToPrompt();
@@ -14348,7 +14342,7 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     //
     // 把画面字段提到 say 之前，它会先定好"这一拍在哪儿、什么情绪、哪张脸"，
     // 再据此写台词。输出顺序本身就是最强的引导，比任何措辞都管用。
-    s += L"{\"emote\":\"表情\",\"aff\":好感增减整数,\"mem\":[\"本轮值得记住的事实\"],\"hint\":\"给玩家的提示，没有就空字符串\"";
+    s += L"{\"emote\":\"表情\",\"mem\":[\"本轮值得记住的事实\"],\"hint\":\"给玩家的提示，没有就空字符串\"";
     if (directorMode && splitAsset) {
         //
         // ---- 【素材独立请求】这一轮只要台词，画面稍后单独问
@@ -14445,22 +14439,16 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     s += L"【名字、称呼、地名一律照抄他打出来的字】：他说「我是XX」，\n";
     s += L"就写「XX」——不要写成别的名字，也不要自己另起一个。\n";
     //
-    // ---- 【aff 一律填 0，好感度整局不动】
+    // ---- 【没有好感度这一项】
     //
-    // 【这一轮日志里的实况】
-    // 他开场就说「我就是因为喜欢角色A所以才来学c语言的」，
-    // 她脸红结巴说了好几句，后面又夸他「你确实比我想象中有本事」——
-    // 可存档里 "好感": 0 / "affinity": 0，整局一分没动。
-    // 她的回复明明有情绪，aff 却一直是 0，说明她把它当成了
-    // 一个可填可不填的"附加字段"，而不是"我对他感觉变了没有"。
+    // ★ 两个人的关系由角色包自己定：恋人、搭档、陌生人都有可能。
+    //   已经在一起的两个人之间再算"好感度"，既别扭，
+    //   又会让她把注意力放在打分上，而不是在演戏上。
     //
-    // 好感一直不动的代价很实在：玩家会觉得自己的话没有分量
-    // （说了喜欢，数值毫无反应），而且存档卡片、好感进度条全程是空的。
-    s += L"aff 是【这一轮你对他的感觉变化】，不是可填可不填的附加字段：\n";
-    s += L"  · 被他说中心事、脸红心跳、他答对了让你刮目相看 → 正数（1~3）\n";
-    s += L"  · 他故意贫嘴、答非所问、让你无奈 → 可以负数或 0\n";
-    s += L"  · 【不要一律填 0】——情绪明明有波动却给 0，好感就会整局不动。\n";
-
+    // 感情的推进交给大纲：课程的章、剧情的幕、章末她自己写的 bond。
+    // 想做数值养成的作者，在剧本里自己用 $好感 这类变量实现——
+    // 那是剧本的事，引擎不再内置。
+    //
     // ---- 讲透，而不是惜字如金
     //
     // 【之前写"say 控制在 1~3 句"，是内容空洞的直接原因】
@@ -19649,14 +19637,13 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         }
         Left(g, si.charName, fNm, r.X + 96, r.Y + 5, si.used ? kText : kTextDim);
 
-        // 第二行：章节 · 好感 · 最后一句
+        // 第二行：章节 · 最后一句
         //
         // 【读不了的档直接标出来，别让它混在能读的里面】
         // 它们卡片长得一样，玩家点一下才知道读不了——白骗一次点击。
         std::wstring l2;
         if (!si.reject.empty()) l2 = L"读不了（原因见右侧）";
         else if (!si.chapter.empty()) l2 = si.chapter;
-        l2 += L"　·　好感 " + WFromInt(si.affinity);
         Left(g, l2, fSm, r.X + 96, r.Y + 30,
              si.reject.empty() ? Color::MakeARGB(170, 186, 182, 202)
                                : Color::MakeARGB(230, 238, 176, 96));
@@ -19694,7 +19681,6 @@ static void DrawSaveLoad(Graphics& g, App& a) {
             y += 12;
         }
         if (!si.chapter.empty()) { Left(g, si.chapter, fSm, dr.X + 24, y, kTextDim); y += 26; }
-        Left(g, L"好感 " + WFromInt(si.affinity), fSm, dr.X + 24, y, kTextDim); y += 26;
         Left(g, FormatStamp(si.ts), fSm, dr.X + 24, y, kTextDim); y += 34;
 
         // 最后一句台词。读档前能回想"聊到哪了"，比只看章节数字有用得多。
@@ -23211,7 +23197,7 @@ static const BYTE kPitchDefault = 0;
 //  · 进度 / 记忆 / 画像  → 按【存档槽】分。它们是一个周目的状态，
 //    读哪个槽就该看到哪个槽里的她。否则读槽2却带着槽1的记忆，
 //    "她记得你讨厌递归"会凭空冒出来。
-//  · 每个角色自己的东西（记忆 / 好感）→ 按【角色】分，换槽不该串。
+    //  · 每个角色自己的东西（记忆）→ 按【角色】分，换槽不该串。
 //
 // 槽位编号直接进文件名（save_s3.json），所以不需要"角色 id 消毒"那一步——
 // 编号是 int，拼不出路径分隔符。
@@ -23482,7 +23468,7 @@ void ApplySlotPaths(int slot) {
 // 【不这么做会怎样】
 // 玩家在她思考（或判题中）时按 Esc 读档，旧线程晚几秒回来，
 // OnChatDone 照常执行 —— 于是新读出来的存档被上一局的回复覆盖，
-// 章节进度、好感、记忆全都串了味。
+        // 章节进度、记忆全都串了味。
 //
 // 开新一句台词：清空打字机 / 分页的全部状态。
 //
@@ -23776,7 +23762,6 @@ void ScanSlots() {
         si.used     = true;
         si.charId   = W(root.getStr("charId"));
         si.charName = W(root.getStr("charName"));
-        si.affinity = (int)root.getNum("affinity", 0);
         si.ts       = (long long)root.getNum("ts", 0);
         si.preview  = W(root.getStr("preview"));
         si.chapter  = SlotChapterText(a, root);
@@ -24539,7 +24524,7 @@ void ContinueGame() {
     //  存档页读取和流程图跳章都会先把剧本切回存档记的那一本，
     //  唯独"继续上次"直接用当前这本去读。于是：在剧本页选了角色B的剧情，
     //  点继续上次读一个课程档，就会用剧情大纲去解释课程进度——
-    //  她开口讲的是"第3幕 试探"，而进度、历史、好感全是 C 语言那局的。
+        //  她开口讲的是"第3幕 试探"，而进度、历史全是 C 语言那局的。
     //
     //  不报错，章号也合法，只是内容一路串味。
     //  现在补上这一步，跟另两条路一致。
@@ -25439,7 +25424,6 @@ static void WriteDataSnapshot(App& a, const ck::JValue& root) {
     txt += L"YourReality 对话记录　槽 " + WFromInt(a.curSlot) + L"\n";
     txt += L"角色：" + (a.Def() ? a.Def()->DisplayName() : a.persona.charName) + L"\n";
     txt += L"进度：" + ChapterLabel() + L"\n";
-    txt += L"好感：" + WFromInt(a.vm.GetInt(L"好感")) + L"\n";
     txt += L"共 " + WFromInt((long long)a.hist.size()) + L" 条\n";
     txt += L"----------------------------------------\n\n";
     //
@@ -25573,8 +25557,6 @@ void SaveGameNow() {
     vChap.str = U8(ChapterLabel());
     root.obj.push_back(std::make_pair("chapter", vChap));
 
-    ck::JValue vAff; vAff.type = ck::JValue::TNum; vAff.num = (double)a.vm.GetInt(L"好感");
-    root.obj.push_back(std::make_pair("affinity", vAff));
 
     //
     // ---- 素材笔记要存进存档
@@ -26064,7 +26046,7 @@ bool LoadGameNow() {
         // 玩家点什么都没反应，只能弃档。
         //
         // 选择题的题干和选项都在大纲里、随时能放出来，
-        // 所以直接转过去即可，进度一点不丢（章号、好感都在存档里）。
+        // 所以直接转过去即可，进度一点不丢（章号在存档里）。
         if (a.phase == Phase::CodeInput || a.rs.codeMode) {
             LeaveCodeMode();
             const SyllabusChapter* lc = a.dir.Cur();
@@ -27733,7 +27715,6 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     ctx->gen = a.chatGen;
 
     // 组装消息：system（人设 + 记忆 + 画像） + 最近几轮 + 本轮
-    a.persona.affinity = (int)a.vm.GetInt(L"好感");
     std::wstring sceneHint;
     if (a.dirMode) {
         // 导演模式：情境 = 大纲进度 + 当前阶段 + 教学目标
@@ -28073,8 +28054,7 @@ static void OnChatDone(HWND hwnd) {
     // 留给 DirAdvance()：判断她是不是已经开口讲起本章内容了。
     if (!rep.say.empty()) a.lastHerSay = rep.say;
 
-    // 应用好感与记忆
-    if (rep.aff != 0) a.vm.AddInt(L"好感", rep.aff);
+    // 应用记忆
     for (size_t i = 0; i < rep.mem.size(); ++i) a.mem.Add(rep.mem[i], 60);
     if (!rep.emote.empty()) a.chatEmote = rep.emote;
     if (!rep.hint.empty()) {
@@ -28606,7 +28586,7 @@ static void OnChatDone(HWND hwnd) {
             //
             // ---- 【这条路径原来只推进章节，不记账】
             //
-            // 【实测存档里的证据】vars 里 "首战告捷": 1，可 "任务通过": 0 ——
+            // 【实测存档里的证据】vars 里 "任务通过": 0 ——
             //   章明明过了，正规流程该记的一样都没记。
             // 原因：编辑器那条路径（Review）里写了 任务通过，
             // 而这里（他把代码贴对话框、她在聊天里判的）一行都没写。
@@ -28683,19 +28663,12 @@ static void OnChatDone(HWND hwnd) {
             }
         }
 
-        // ---- 好感 / 画像
+        // ---- 掌握度画像
         // 原来这些在 OnJudgeDone 里做（那时判题有独立的完成时机）。
         // 现在判题结果就在这次回复里，所以搬到这里。
         const ck::Instr* t2 = a.dirMode ? nullptr : a.vm.CurrentTask();
         std::wstring topic = a.dirMode ? a.pendingTask.title : (t2 ? t2->text : L"编程");
         a.prof.Bump(topic, a.taskPassed ? 18 : -6);
-        if (a.taskPassed) {
-            a.vm.AddInt(L"好感", 3);
-            int fullTries = a.dirMode ? (a.pendingTask.tries > 0 ? a.pendingTask.tries : 3)
-                                      : (t2 ? (t2->taskTries > 0 ? t2->taskTries : 3) : 3);
-            if (a.triesLeft == fullTries) a.vm.AddInt(L"首战告捷", 1);
-            //
-        }
 
         if (a.verdictMissing)
             SetStatus(L"她没给出明确结论，原样再交一次让她看看", 6);
@@ -30636,7 +30609,7 @@ static bool HasPendingTask() {
 //
 // 她出题给了代码框架 void swap2(...){ /* 在这里写你的代码 */ }，
 // 编辑器里预填的就是那个空框架，他一个字没写直接交，她就对着一个空函数判了满分。
-// 后果很严重：章过了、好感加了，可他其实什么都没做，
+        // 后果很严重：章过了，可他其实什么都没做，
 // 而且玩家会一脸茫然（"我还没写呢怎么就过了"）。
 //
 // 判据：把占位标记从两份代码里都抹掉之后，仍然跟模板一字不差。
@@ -31938,15 +31911,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     // 剧情：当前这一幕的名字就够了——剧情是连续的一条线，
                     //      写「第2幕 → 第3幕」会把还没演的事先说出去。
                     if (a.dirSyllabus.isStory && cc)
-                        a.rs.hud = L"好感 " + WFromInt(a.vm.GetInt(L"好感")) + L"　|　第"
+                        a.rs.hud = L"第"
                                  + WFromInt(a.dir.Chapter()) + un + L"「" + cc->name + L"」";
                     else
-                    a.rs.hud = L"好感 " + WFromInt(a.vm.GetInt(L"好感")) + L"　|　第"
+                    a.rs.hud = L"第"
                              + WFromInt(a.dir.Chapter()) + un + L" → 第"
                              + WFromInt(a.dir.Chapter() + 1) + un
                              + (nx ? (L"「" + nx->name + L"」") : L"");
                 } else {
-                    a.rs.hud = L"好感 " + WFromInt(a.vm.GetInt(L"好感")) + L"　|　第"
+                    a.rs.hud = L"第"
                              + WFromInt(a.dir.Chapter()) + L"/" + WFromInt(a.dir.ChapterCount())
                              + un + L" " + chName;
                 }
@@ -32014,7 +31987,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                                         a.rs.nextDayIsLast);
                 }
             } else {
-                a.rs.hud = L"好感 " + WFromInt(a.vm.GetInt(L"好感")) + L"　|　" + a.vm.GetVar(L"章节").toStr();
+                    a.rs.hud = a.vm.GetVar(L"章节").toStr();
                 a.rs.showNextDay = false;   // 剧本模式没有"章间日常"这一说
                 a.rs.nextDayReady = false;
                 a.rs.nextDayIsLast = false;
@@ -32275,7 +32248,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // ---- 累计时长。
         //   $陪伴分钟 剧本可读，所以按分钟往上加；
-        //   每满 20 分钟顺手给 1 点好感——跟桌宠同思路，量纲不同。
+        //   $陪伴分钟 只记时长，不再顺手加好感（见"没有好感度这一项"）。
         unsigned long long now = NowMs();
         if (a.lastTickMs == 0) a.lastTickMs = now;
         double dt = (double)(now - a.lastTickMs) / 1000.0;
@@ -32285,7 +32258,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             a.hourAcc -= 60.0;
             long long mins = a.vm.GetInt(L"陪伴分钟") + 1;
             a.vm.SetVar(L"陪伴分钟", ck::EValue(mins));
-            if (mins % 20 == 0) a.vm.AddInt(L"好感", 1);
         }
 
         // ---- 自动存档
