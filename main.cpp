@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 //  YourReality —— 跑在 Windows 桌面上的视觉小说 + AI 教学引擎
 //  Copyright (c) 2025 YourReality contributors
 //  Licensed under the MIT License.  See LICENSE in the repository root.
@@ -1649,6 +1649,15 @@ public:
     // 按钮整个消失的话，玩家只会以为程序没画出来。
     bool CanShowNextDay() const;
     //
+    // 教学段的手动出口：聊够几轮之后右上角也放一枚按钮，
+    // 点了就是"这节课上完了"——有题就考，没题就进章间日常。
+    //
+    // 【为什么必须有】教学段的出口原来全部依赖她主动填 advance 字段
+    // 或把题面完整说出来，她只顾说话时一条都不成立，
+    // 而 CanShowNextDay() 在教学段恒 false —— 玩家没有按钮可点，
+    // 只能一直听她讲下去。详见 CanGoNextDay()。
+    bool CanShowEndLesson() const;
+    //
     // ---- 她有没有说"可以走了"（供渲染层决定按钮是亮着还是灰着）
     bool DailyReady() const { return dailyReady_; }
     //
@@ -1665,20 +1674,30 @@ public:
     // 他没点按钮而是接着聊了，那"可以走了"就不算数了。
     void ClearDailyReady() { dailyReady_ = false; }
     //
-    // ---- 【每一轮重新表态，不是"给过就一直算"】
+    // ---- 【表态只记一次，不逐轮收回】
     //
-    // 用【赋值】而不是"给过就置位"：她这一轮没再说"可以走了"，
-    // 资格自动收回。见 ApplyAiStage 里那处。
-    void SetDailyReady(bool v) { dailyReady_ = v; }
+    // ★ 原来是【赋值】语义（SetDailyReady(readyNow)）：她这一轮没再说
+    //   "可以走了"，资格自动收回——按钮【亮一下立刻转灰】。
+    //   她并没有改主意，只是这一轮没重复表态，玩家却以为她反悔了。
+    //
+    // 现在只留"置位"（MarkDailyReady），由进下一段日常时 Clear。
+    // 它只决定右上角那句提示，不再拦着玩家点按钮——见 CanGoNextDay。
     //
     // ---- 右上角「明天见」按钮现在能不能点
     //
     // 玩家手里有推进剧情的入口，就不用靠"她主动问要不要继续"——
     // 那句话每次都把气氛打断。她不必问，玩家想走的时候自己点。
     //
-    // 【两把钥匙】她说了"可以走了"（dailyReady_）【且】轮数够，才能点。
-    // 她没准备好就点不动——推进权在两个人手上，不在任何一个人手上。
+    // 【不再要两把钥匙】她说了"可以走了"只影响提示，不当门槛。
+    // 走不走由玩家点按钮决定，点了之后还有【告别】那一幕，
+    // 她会把"明天见"说出口。见 CanGoNextDay。
     bool CanGoNextDay() const;
+    //
+    // ---- 按钮还要几轮才【能点】（-1=这段不该有按钮，0=已可点）
+    //
+    // 灰按钮只写"她还想再聊一会儿"，玩家不知道要等到什么时候，
+    // 也分不清是"程序没画出来"还是"还没到时候"。给个数字好等。
+    int  NextDayWaitTurns() const;
     //
     // ---- 点了右上角那个按钮，这门课是不是就上完了（没有下一章了）
     //
@@ -2372,6 +2391,26 @@ struct LlmResult {
     std::wstring full;          // 完整回复原文
     std::wstring err;           // 失败原因（人话）
     int         httpStatus = 0;
+
+    // ★ 结束原因（choices[0].finish_reason）："stop" 说完了 / "length" 被输出上限掐断 / 空 = 没给。
+    std::wstring finishReason;
+
+    // ★ 流式有没有收到 [DONE]。
+    //   没收到 = 流在中途断了（网络 / 网关掐的），这跟 length 截断【修法不同】：
+    //   中途断的重发一次大概率能拿到完整内容，length 截断重发还是会断。
+    //   非流式（整包返回）恒为 true——整包能解析出来就是拿全了。
+    bool        streamDone = false;
+
+    // ★ 拿到的内容是【半截】的。
+    //
+    // 流式中途断了（没收到 [DONE]）、换成整包重发一次也没救回来，
+    // 于是退回用那半截。此时 ok 仍是 true、full 也非空——
+    // 以前调用方只看 ok，把半句当完整台词用，
+    // 玩家看到的就是「所以，你觉得 scanf(」后面什么都没有。
+    //
+    // 跟 finishReason=="length" 是两回事：那是模型/服务端的输出上限，
+    // 这个是网络把流掐了。两者修法不同，必须分开标记。
+    bool        partial = false;
 };
 
 // 增量回调：流式模式下每收到一小段就调一次。在工作线程里被调用，
@@ -2832,6 +2871,52 @@ static std::wstring NextDayLabelOf(bool isStory, bool isLast) {
     return isStory ? L"下一幕" : L"明天见";
 }
 
+// 她这句话算不算"这一段演完了，可以收了"。
+//
+// 【收口成文件级函数，是因为它现在有两个调用点】
+//   章间日常：她说了 -> 按钮那句提示变成"她也该回去了"
+//   教学段  ：她说了 -> 这一章讲完了，该考了（见 sheWantsQuiz）
+// 两处各写一份词表迟早漏一处，而漏的那处就是"她明明说了却没人理"。
+static bool SaidFarewellIn(const std::wstring& say, bool isStory) {
+    if (say.empty()) return false;
+    //
+    // ---- 通用：明确表示"这一段到此为止"
+    //
+    // ★ 原表只有 5 个词，太窄：她更常说「时间不早了，回去吧」
+    //   「今天就这样吧」，一个都不匹配——她都散场了按钮却不亮。
+    //   「走吧」仍然不收（"走吧，去商店街"是换地方），
+    //   但「走吧，回」这种带回归方向的要收。
+    static const wchar_t* kF[] = {
+        L"今天就到这里", L"今天先到这里", L"今天就这样",
+        L"先这样吧", L"那就先这样", L"就到这里", L"就到这儿",
+        L"该回去了", L"该回家了", L"回去吧", L"回去了",
+        L"时间不早了", L"不早了", L"走吧，回", L"回去吧，"
+    };
+    for (int i = 0; i < (int)(sizeof(kF) / sizeof(kF[0])); ++i)
+        if (say.find(kF[i]) != std::wstring::npos) return true;
+    //
+    // ---- 【分模式】
+    //
+    // 课程：收"隔夜"的说法。两段日常之间真的过了一夜，
+    //       她说"明天见""晚安"就是散场。
+    // 剧情：幕与幕之间【不隔夜】，她不会说明天见。
+    if (isStory) {
+        static const wchar_t* kS[] = {
+            L"这一幕就到这里", L"这一幕就到这儿",
+            L"到这里吧", L"到这儿吧", L"先到这儿"
+        };
+        for (int i = 0; i < (int)(sizeof(kS) / sizeof(kS[0])); ++i)
+            if (say.find(kS[i]) != std::wstring::npos) return true;
+    } else {
+        static const wchar_t* kC[] = {
+            L"明天见", L"明天再见", L"晚安", L"今天也累了"
+        };
+        for (int i = 0; i < (int)(sizeof(kC) / sizeof(kC[0])); ++i)
+            if (say.find(kC[i]) != std::wstring::npos) return true;
+    }
+    return false;
+}
+
 // 渲染需要的"每帧状态"。渲染层不保存游戏逻辑状态，全部由调用方每帧填进来，
 // 这样渲染层可以随意重入、也方便做截图/回放。
 struct RenderState {
@@ -2873,22 +2958,11 @@ struct RenderState {
     //
     // ---- 那个按钮【亮着还是灰着】
     //
-    // 灰 = 她还没说"可以走了"。按钮照样画出来（点了会告诉他为什么），
-    // 不画的话他会以为程序没画出来，而不是"她还想再待一会儿"。
+    // 【画出来 = 能点】它跟 showNextDay 是同一个值（Director::CanGoNextDay）。
+    // 原来它是 DailyReady()（她有没有说"可以走了"），而点击走的是另一个函数，
+    // 于是"画成灰的、其实点得动"——玩家得不到任何"现在能走了"的信号。
+    // 现在合一：只有【不画】一种状态，画出来就一定按得下去。
     bool   nextDayReady = false;
-    //
-    // ---- 按钮【按不下去】：对话框还展开着（他正在打字）
-    //
-    // 【这是"编辑对话框时按明天见会卡死"的根因】
-    // 进章间日常后轮到他说话，输入框是展开的；这时点「明天见」，
-    // 程序发起了新的一轮对话，可 inputMode 仍是 true——
-    // 于是点击全部落到"点对话框=呼出输入框 / 点别处=收起"那条分支上，
-    // 剧情再也推不动，界面看着就是卡死了。
-    //
-    // 规则：只有【收起对话框】之后才按得下去。
-    // 展开着点它 = 替他把对话框收起来，并告诉他再点一次就能走，
-    // 不是点了没反应（那样他只会以为程序坏了）。
-    bool   nextDayBlocked = false;
     //
     // ---- 右上角那个按钮写什么：false=「明天见」，true=「今天就到这里」
     //
@@ -3823,6 +3897,13 @@ struct App {
     // 不如在这里直接留一份干净的文本。
     std::wstring lastHerSay;
     static const size_t kRecentKeep = 6;
+
+    // ★ 她上一句话有没有被掐断（说了一半）。
+    //
+    // 只影响【下一轮】的提示词：告诉她"你上一句没说完，接着把那半句说完"。
+    // 用完即清（提示词构建处读完就置回 false）——留着不清除的话，
+    // 之后每一轮都会背着一句"接着说完"，她会一直以为自己欠着话没说。
+    bool lastSayTruncated = false;
 
     // ---- 素材打回重填
     //
@@ -8837,7 +8918,15 @@ std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter) {
                  L"这时候把 advance 填 2（这只是让他能点「下一幕」，"
                  L"填了你们还在这里，他点了才真的走）。\n";
         } else {
-            o += L"觉得这一幕演到位了、可以往下走了，就把 advance 填 2"
+            //
+            // ---- 【这一幕没写 Must 时的兜底，也要避免纯感觉】
+            //
+            // 没有 Must 就没有可核对的终点，但仍要给她一个【能看的东西】：
+            // 退到 Goal（那一幕要到的位置）。它比"演到位了"具体，
+            // 至少她知道要拿什么去比。
+            // 写 story.ini 时【务必写 Must】，那才是可靠的判据。
+            o += L"【这一幕什么时候算演完】：上面那个 Goal 走到了、"
+                 L"情绪也到上面那个基调上了，就把 advance 填 2"
                  L"（这只是让他能点「下一幕」，填了你们还在这里）。\n";
         }
     } else {
@@ -9141,6 +9230,9 @@ void Director::EnterLesson() {
     }
     // 这段日常聊完了，清掉计数；下一次进 Daily 会重新数。
     dailyTurn_ = 0;
+    // 【"可以走了"也要一起清】它是【记一次不收回】的（见推进分支），
+    // 不清的话下一段日常一进来就带着上一段的表态，提示会说错。
+    dailyReady_ = false;
     MarkSwitchAll(stageChanged_, stageSwitches_, needBg_, needBgm_, needPose_);
 }
 
@@ -9324,6 +9416,7 @@ void Director::JumpToChapter(int n) {
     turn_      = 0;
     introTurn_ = 0;
     dailyTurn_ = 0;
+    dailyReady_ = false;   // 同上：跳章之后不能带着上一段的"可以走了"
     fails_     = 0;
     lastLessonTurns_ = 0;
     chapterBg_.clear();
@@ -9598,31 +9691,76 @@ bool Director::CanShowNextDay() const {
     return true;
 }
 
+bool Director::CanShowEndLesson() const {
+    if (stage_ != DirStage::Lesson) return false;
+    // 至少讲过 kMinLessonTurns 轮：她刚开口就摆个"上完了"的按钮太催。
+    if (turn_ < kMinLessonTurns) return false;
+    return true;
+}
+
 bool Director::CanGoNextDay() const {
-    if (!CanShowNextDay()) return false;
-    //
-    // ---- 【她还没说"可以走了"，按钮点了也不走】
-    //
-    // 这是"明明还在恋爱阶段，突然就到了下一章"的正解：
-    // 不是把推进权从她手里夺走（改成只有玩家说了算的话，
-    // 结果是她想走也走不了、玩家看不到任何"她想走"的信号），
-    // 而是【她给资格、玩家做决定】。
-    //
-    // 她填 advance=2 只点亮按钮，不切章——切章在 DirGoNextDay()。
-    // 她没填，玩家想走也走不掉，状态栏会告诉他"她还想再聊一会儿"。
-    if (!dailyReady_) return false;
     //
     // ---- 【最后一章也要有出口】
     //
-    // 原来这里写着 `chapter_ >= Count() 就返回 false`，
-    // 于是最后一章的日常是【一个没有出口的房间】：
+    // 这里【不能】加 `chapter_ >= Count() 就返回 false`：
+    // 加了的话最后一章的日常就是【一个没有出口的房间】——
     // 学完了、聊够了，玩家想走却没有任何按钮可点，
     // 只能一直聊下去或者强退。那不是"故事一直写下去"，
     // 那是"想走都走不了"——走得掉，选择权才是真的在玩家手里。
     //
     // 最后一章这个按钮的【语义变了】：不是「明天见」（没有明天了），
     // 而是「今天就到这里」。判据见 NextDayEndsCourse()。
-    return true;
+    //
+    // ---- 【画出来就能点：不再要求她额外表态】
+    //
+    // ★ 原来这里要过两道才走得掉：
+    //    ① 她填 advance=2 / 说出告别话（dailyReady_）
+    //    ② 熬到 DailyTarget()+kDailyGrace = 第 7 轮，引擎兜底
+    //   两道合起来 = 进了章间日常【最少还要再聊满 7 轮】。
+    //   模型并不稳定地产出 advance=2（它常常只顾说话忘了填字段），
+    //   于是实际总是走第 ② 条——这就是"迟迟进不了明天见"。
+    //
+    // ★ 更糟的是"能不能点"在两处各算了一遍，而且算法不同：
+    //     渲染：a.rs.nextDayReady = DailyReady()   —— 只认她的表态
+    //     点击：DirGoNextDay 里的 CanGoNextDay()   —— 含第 7 轮兜底
+    //   于是第 7 轮之后按钮【其实点得动】，可它【一直画成灰的】：
+    //   玩家得不到任何"现在能走了"的信号，只能一遍遍去试。
+    //   同一个判据写两遍必然对不上——本项目已经栽过好几次了。
+    //
+    // 现在合一：能画出来的时候就能点，判据只有这一处。
+    // 她想不想走不再当门槛，只决定右上角那句提示（"她也该回去了"）：
+    // 走不走始终由玩家点按钮决定，点了之后还有【告别】那一幕，
+    // 她会把"明天见"说出口，不会突兀。
+    //
+    // ---- 【教学段也要有出口】
+    //
+    // ★ 原来这里只问 CanShowNextDay()，而它要求 stage_ == Daily：
+    //   教学段【永远】不画按钮。可教学段唯一的自动出口是她填 advance=1
+    //   或把题面说出来（"聊太久替她开考"那条兜底已去掉），
+    //   她忘了填字段时，玩家就卡在上课段：聊十几轮、她都说了"明天见"，
+    //   右上角却没有按钮——看得见的原因是"点不动"，
+    //   真正的原因是【按钮压根不存在】。
+    //   现在教学段聊够 kMinLessonTurns 轮也画一枚，点了就开考或进日常。
+    return CanShowNextDay() || CanShowEndLesson();
+}
+
+// ---- 按钮还要几轮才【能点】（给状态栏，让玩家看得到进度）
+//
+// 灰按钮只说"她还想再聊一会儿"，玩家不知道要等到什么时候，
+// 也分不清是"程序没画出来"还是"还没到时候"——那种不确定最磨人。
+// 给一个具体数字，等待就变成了可预期的事。
+int Director::NextDayWaitTurns() const {
+    // 教学段：告诉玩家还要讲几轮才能手动收尾（按钮已在画，只是还没到）。
+    if (stage_ == DirStage::Lesson) {
+        const int l = kMinLessonTurns - turn_;
+        return l > 0 ? l : 0;
+    }
+    if (stage_ != DirStage::Daily) return -1;
+    if (CanGoNextDay()) return 0;
+    // 判据跟 CanShowNextDay 同一个数：能画出来就能点，
+    // 不再有"画出来了还要再等 kDailyGrace 轮"那一层。
+    const int left = kNextDayAfter - dailyTurn_;
+    return left > 0 ? left : 0;
 }
 
 bool Director::NextDayEndsCourse() const {
@@ -10113,7 +10251,31 @@ std::wstring Director::SceneHint() const {
             //   所以这段什么时候结束【由他决定】，她不用替他安排散场：
             //   上限不在程序里，也不在她嘴里，在玩家手上。
             o += L"这一段【没有轮次限制】，聊多久你们自己定。\n";
-            o += L"【什么时候算演到位，由你判断】觉得这一幕可以收了，\n";
+            //
+            // ---- 【"演到位"必须写成【可核对的事】，不能写成感觉】
+            //
+            // ★ 原来写"觉得这一幕可以收了 / 演到位了"——这是感觉，不是判据。
+            //   模型没有"够了"的内在标准，只会一直觉得还没到，
+            //   于是 advance 永远停在 0，按钮永远不亮。
+            //   这是"课程模式迟迟进不去明天见"的【表层】原因：
+            //   剧情模式早就把模糊终点换成了"Must 那几步做完了"，
+            //   课程日常段从来没做过这个改造。
+            //
+            // 【真正的根因在引擎，不在这句话】
+            //   就算她乖乖填了 2、判据也照着改成了可核对的事，
+            //   能不能走还要过 CanGoNextDay 那一道——那里原来要求
+            //   dailyReady_（她【这一轮】正好表态）或者熬到第 7 轮兜底；
+            //   而"画不画"和"点不点"用的还是两个不同的函数，
+            //   于是按钮永远是灰的，玩家得不到"现在能走了"的任何信号。
+            //   详见 CanGoNextDay / a.rs.nextDayReady 两处。
+            //
+            // 可核对的写法：这一轮里到底【发生过什么】。
+            // 她能一眼看到"这件事发生了没有"，不需要判断气氛。
+            o += L"【什么时候算可以收——看这件事发生了没有，不用猜气氛】\n";
+            o += L"  你主动问过他一件【关于他自己】的事，而他也答了\n";
+            o += L"  （答得含糊、岔开、嘴硬都算答了）。\n";
+            o += L"  做到这一件，就可以把 advance 填 2。\n";
+            o += L"  一件都没发生就继续聊——别为了收而收。\n";
             //
             // ---- 【按钮上写什么，提示词里就得写什么】
             //
@@ -10124,30 +10286,42 @@ std::wstring Director::SceneHint() const {
             // 一边让她点「下一幕」，一边让她说"明天见"。
             // 剧情幕之间并不隔夜，照着"明天见"演，等于凭空多出一夜。
             // 判据只有 NextDayLabelOf 一处（按钮、日志、状态栏都读它）。
-            o += L"  就把 advance 填 2——他那边「"
-               + NextDayLabelOf(syllabus_.isStory, false)
-               + L"」那个按钮就亮了。\n";
+            // 【不能再说"填了他那边按钮就亮"】
+            // 按钮是演够几轮自己出现的，跟她填不填无关（见 CanGoNextDay）。
+            // 说"填了才亮"等于骗她：她填了却看不到按钮亮，下一次就不填了。
+            // 她填的这一下只是【告诉他你也想走了】，走不走始终是他点按钮。
+            o += L"  就把 advance 填 2——他那边会看到【你也想走了】。\n";
             o += syllabus_.isStory
                  ? L"  他点了才会真的往下走（你会先收住这一段，然后才是下一幕）。\n"
                  : L"  他点了才会真的走（你会先说再见，然后才是第二天）。\n";
-            o += L"  你觉得还没到，就一直聊下去，没有人会赶你们。\n";
+            o += L"  那件事还没发生就填 0，继续聊，不用急着收。\n";
             //
-            // ---- 【唯一的例外：聊了很久她还没说过"可以走了"，提醒一次】
-            // 这不是上限 —— 明说"没到就继续"，只是免得这段永远收不了尾。
-            // 她已经说过就别再提醒（再说一遍等于催她走）。
+            // ---- 【聊过提醒线之后：把"可以收了"说成一件她能核对的事】
+            //
+            // ★ 原来的提醒是「【觉得还没到就继续，没人赶你】只是提醒一下」——
+            //   前半句直接把后半句抵消了：它读完"没人赶我"，
+            //   就永远不会主动填 2。提醒戴着一顶免责帽，等于没提醒。
+            //
+            // 现在不提"没人赶"，改成复述那条可核对的判据：
+            // 上面那件事发生过没有？发生了就填。它只需要核对，不需要判断气氛。
+            //
+            // 仍然不是上限——判据依旧是"那件事发生了没有"，
+            // 只是提醒她回头看一眼，而不是替她决定该走了。
             if (dailyTurn_ >= ActNudge() && !dailyReady_) {
                 //
                 // ---- 【分模式】课程那句"明天见/想收的时候"，剧情里不成立
                 //
                 // 剧情幕不隔夜，提醒她"该回家了"会让她凭空演出一夜。
-                // 这里照着各自的终点说：课程是散场，剧情是"那件事演到了"。
+                // 这里照着各自的终点说：课程是"问过他、他答了"，
+                // 剧情是"Must 那件事演到了"。
                 if (syllabus_.isStory)
-                    o += L"（这一幕你们已经演了一会儿了。【觉得还没到就继续，没人赶你】，\n"
-                         L"  只是提醒一下：上面那件「必须发生」的事演到了，\n"
-                         L"  就可以把 advance 填 2 收这一幕。）\n";
+                    o += L"（这一幕已经演了一会儿了。回头看一眼上面那条：\n"
+                         L"  那件「必须发生」的事演到了没有？演到了就把 advance 填 2。）\n";
                 else
-                    o += L"（你们已经聊了很久了。【觉得还没到就继续，没人赶你】，\n"
-                         L"  只是提醒一下：想收的时候把 advance 填 2 就行。）\n";
+                    o += L"（你们已经聊了一会儿了。回头看一眼上面那条：\n"
+                         L"  你问过他一件关于他自己的事、他也答了没有？\n"
+                         L"  答过了就把 advance 填 2——那是告诉他你也想走了，\n"
+                         L"  你们还在原地，他点了才会真的走。）\n";
             }
             //
             // ---- 【这段要"感情升温"，不是"随便闲聊"】
@@ -10218,11 +10392,18 @@ std::wstring Director::SceneHint() const {
             // 现在恢复她的判断权，但说清楚填了不等于立刻走：
             //   她填 2  -> 右上角那个按钮亮起来（他可以带她去明天了）
             //   他点   -> 才真的走（先说再见，再到第二天）
-            o += L"\n这一段用 advance 告诉我【这一幕演到位了没有】：\n"
-                 L"  0 = 还想再跟他待一会儿（默认）\n"
+            //
+            // ---- 【★这里原来写「演到位了没有」，跟上面那条可核对判据打架】
+            //
+            // 上面刚说完"看那件事发生了没有"，这里又说"演到位了没有"——
+            // 同一份提示词里两个终点，一个可核对、一个靠感觉，
+            // 模型会挑省事的那个（感觉），于是上面那条白写。
+            // 两边必须【复述同一个判据】。
+            o += L"\n这一段用 advance 告诉我【上面那件事发生了没有】：\n"
+                 L"  0 = 那件事还没发生，还想再跟他待一会儿（默认）\n"
                  //
                  // ---- 【同上：按钮文案只有 NextDayLabelOf 一个来源】
-                 L"  2 = 你觉得可以收了 —— 这只是让他能点「"
+                 L"  2 = 那件事已经发生了，可以收了 —— 这只是让他能点「"
                + NextDayLabelOf(syllabus_.isStory, false)
                + L"」，\n"
                  L"      【不是你替他走】：填了你们还在这里，他点了才会走。\n"
@@ -10246,7 +10427,12 @@ std::wstring Director::SceneHint() const {
                      : std::wstring(L"「明天见」「晚安」「该回去了」"))
                + L"这类收尾的话时，\n"
                  L"     同一轮就把 advance 填 2】——台词演到告别了，字段要跟上。\n"
-                 L"  没到就填 0，没有人会赶你们。\n"
+                 //
+                 // ---- 【同上：别给免责声明】
+                 //
+                 // 原来写"没到就填 0，没有人会赶你们"——"没人赶你"这四个字
+                 // 会让她把"不填"当成默认值。改成不带评价的中性说法。
+                 L"  没到就填 0，继续聊下去就好。\n"
                  //
                  // ---- 【她随时可以收回】
                  //
@@ -12627,6 +12813,14 @@ struct SseParser {
     std::string buf;
     bool done = false;
 
+    // ★ 结束原因（choices[0].finish_reason）："stop" 正常说完 / "length" 被输出上限掐断。
+    //
+    // 症状：她一句话说到一半就没了（比如停在 "所以，你觉得 scanf(" 上）。
+    // 没有这个字段时只能靠"JSON 有没有结尾 }"去猜是【长度上限】还是【中途断网】，
+    // 两者修法完全不同——前者要让她说短点，后者该自动重发一次。
+    // 猜错的代价是玩家按错误提示去翻设置页，翻遍也找不到能调的地方。
+    std::string finishReason;
+
     void Feed(const char* data, size_t n, DeltaCb& delta, std::wstring& full) {
         if (done) return;
         buf.append(data, n);
@@ -12653,8 +12847,16 @@ struct SseParser {
             }
             const ck::JValue* ch = v.find("choices");
             if (!ch || !ch->isArr() || ch->arr.empty()) continue;
-            const ck::JValue* d = ch->at(0)->find("delta");
-            if (!d) d = ch->at(0)->find("message");          // 有些实现用 message
+            const ck::JValue* c0 = ch->at(0);
+            if (!c0) continue;
+
+            // 结束原因只在【最后一片】出现，前面全是 null——所以是覆盖不是追加。
+            // 收到它就说明服务端认为这条回复已经结束（不管说没说完）。
+            const ck::JValue* fr = c0->find("finish_reason");
+            if (fr && fr->isStr() && !fr->str.empty()) finishReason = fr->str;
+
+            const ck::JValue* d = c0->find("delta");
+            if (!d) d = c0->find("message");          // 有些实现用 message
             if (!d) continue;
             std::wstring piece = W(d->getStr("content"));
             if (piece.empty()) continue;
@@ -12808,7 +13010,9 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
             LLTRACE((L"HTTP %d 完整响应: %s", status, W(raw).c_str()));
         } else {
             if (cfg.stream) {
-                out.full = streamFull;
+                out.full         = streamFull;
+                out.finishReason = W(sp.finishReason);
+                out.streamDone   = sp.done;
 
                 // ---- 流式解析不出内容时的两级兜底
                 //
@@ -12857,8 +13061,13 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
                 else {
                     const ck::JValue* ch = v.find("choices");
                     if (ch && ch->at(0)) {
-                        const ck::JValue* m = ch->at(0)->find("message");
-                        out.full = W(m ? m->getStr("content") : ch->at(0)->getStr("text"));
+                        const ck::JValue* c0 = ch->at(0);
+                        const ck::JValue* m = c0->find("message");
+                        out.full = W(m ? m->getStr("content") : c0->getStr("text"));
+                        // 整包返回：能解析出来就是拿全了，[DONE] 这套说法不适用
+                        out.streamDone = true;
+                        const ck::JValue* fr = c0->find("finish_reason");
+                        if (fr && fr->isStr() && !fr->str.empty()) out.finishReason = W(fr->str);
                         if (delta) delta(out.full);
                         ok = true;
                     } else {
@@ -12881,7 +13090,20 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
 }
 
 bool LlmChat(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, LlmResult& out, DeltaCb delta) {
-    if (ChatOnce(cfg, msgs, out, delta)) return true;
+    // ★ 拿到内容 ≠ 拿到【完整】内容。
+    //
+    // 流式中途被掐断时 out.full 非空，但话停在半句上——玩家看到的就是
+    // "所以，你觉得 scanf(" 后面什么都没有。以前这里直接 return true，
+    // 把半截当成完整回复用了，从来不会重试。
+    //
+    // 注意 finish_reason == "length" 不算这一类：那是服务端 / 模型自身的
+    // 输出上限，重发一次还是会断在同一个地方，白等一整轮。那种情况交给
+    // 调用方标记，并让下一轮说短一点（见 rep.truncated 的处理）。
+    bool cutByNet = false;
+    if (ChatOnce(cfg, msgs, out, delta)) {
+        cutByNet = !out.streamDone && out.finishReason != L"length";
+        if (!cutByNet) return true;
+    }
 
     // ---------------------------------------------------------------- 流式兜底
     //
@@ -12893,20 +13115,36 @@ bool LlmChat(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, LlmResult& 
     //
     // 与其让他对着错误发呆，不如自己换条路再试一次。非流式没有打字机
     // 效果（一次性收到），但至少能玩下去，比失败强。
-    if (cfg.stream && out.httpStatus == 200 && out.full.empty()) {
-        LLTRACE((L"流式没拿到内容，改用非流式重试一次"));
+    const bool empty = out.full.empty();
+    if (cfg.stream && out.httpStatus == 200 && (empty || cutByNet)) {
+        LLTRACE((L"流式%s，改用非流式重试一次", empty ? L"没拿到内容" : L"中途断了"));
         LlmConfig r = cfg;
         r.stream = false;
         LlmResult r2;
         if (ChatOnce(r, msgs, r2, nullptr)) {
             out = r2;
-            if (delta && !out.full.empty()) delta(out.full);
+            // ★ 只有"之前一个字都没显示过"才补发一次 delta。
+            //   中途断了的情况，流式已经把半截字追加进打字缓冲了，
+            //   再追加一遍整段会显示成"半截 + 整段"重复两遍。
+            if (empty && delta && !out.full.empty()) delta(out.full);
             return true;
         }
-        if (!r2.err.empty()) out.err = L"流式/非流式都失败：" + r2.err;
-        else if (out.err.empty()) out.err = L"服务端返回了空内容";
+        // 重试也失败：原来那半截（如果有）留着——有半句总比没有强，
+        // 所以只有彻底没内容时才把它说成"失败"。
+        if (empty) {
+            if (!r2.err.empty()) out.err = L"流式/非流式都失败：" + r2.err;
+            else if (out.err.empty()) out.err = L"服务端返回了空内容";
+        }
+        //
+        // ★ 整包重发也没救回来：手上只有半截，可 out.ok 还是 true。
+        //   以前不标记，调用方就把半句当完整台词用——
+        //   玩家看到「所以，你觉得 scanf(」，后面什么都没有，
+        //   而界面上不报错、不提示，只会以为她说话说一半。
+        else if (cutByNet && !out.full.empty()) {
+            out.partial = true;
+        }
     }
-    return false;
+    return out.ok;
 }
 
 // ============================================================================
@@ -14319,8 +14557,15 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"\n【这一局没有课要上】\n";
         s += L"  · 你们在过的是一段故事，主线是当前这一" + u + L"的感情走向。\n";
         s += L"  · 不要讲知识点、不要出题、不要考他——这里没有要教的东西。\n";
-        s += L"  · 这一" + u + L"演到位了、可以往下走了才推进（advance），\n";
-        s += L"    不要还没演到就急着往下走。\n";
+        //
+        // ---- 【"演到位"是感觉，不是判据】
+        //
+        // ★ 同一份提示词里若一边写可核对的"那件事发生了没有"、
+        //   一边写"演到位了"，模型会挑省事的那个（感觉），
+        //   于是可核对的那条白写，advance 永远停在 0。
+        //   这里是通用说明，必须跟上面那条判据同一个说法。
+        s += L"  · 这一" + u + L"该发生的事发生了才推进（advance），\n";
+        s += L"    不要还没发生就急着往下走。\n";
     } else {
     s += L"\n【你是在教他 " + subj + L"，不是陪他闲聊】\n";
     s += L"  · 主线永远是【当前这一章的知识点】，所有对话都该围着它转。\n";
@@ -17151,18 +17396,22 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
     if (st.showNextDay) {
         Rect b(kNextDayX, kNextDayY, kNextDayW, kNextDayH);
         //
-        // ---- 【灰着 = 她还没说"可以走了"】
+        // ---- 【画出来就是亮的：不再有"正在打字所以灰着"这一态】
         //
-        // 灰按钮 + 灰字，一看就知道"能走，但不是现在"。
-        // 悬停高亮也只在亮着的时候给——灰着还亮起来等于骗他能点。
+        // ★ 原来 canPress 里带 !nextDayBlocked（对话框展开着就画灰），
+        //   而"轮到你说话"时输入框是默认展开的（见 EnterInputMode）——
+        //   章间日常几乎每一刻都在等他打字，按钮于是【几乎永远是灰的】。
+        //   玩家看到的是"她都说明天见了、按钮迟迟不亮"，
+        //   还分不清那是"还没到时候"还是"程序没画出来"。
         //
-        // ---- 【灰着有两种原因，画法一样，但点了各有一句解释】
+        // 灰态的初衷是挡住"按明天见会卡死"，现在那个根因在推进入口
+        // 治掉了（DirGoNextDay 里 LeaveInputMode），灰态就没有存在理由了。
         //
-        //  ① 她还没说"可以走了"（nextDayReady = false）
-        //  ② 对话框还展开着，他正在打字（nextDayBlocked = true）
-        // 第 ② 种必须画成灰的：画成能点的样子、点了却被拦下，
-        // 玩家只会以为程序坏了——这正是"点了没反应"最难自查的一种。
-        const bool canPress = st.nextDayReady && !st.nextDayBlocked;
+        // 【为什么不再靠灰态表达"她还没说可以走了"】
+        // 她准没准备好已经不是门槛（见 Director::CanGoNextDay），
+        // 画成灰的却点得动，就是"画着能点的样子却说不能点"——
+        // 那正是玩家最难自查的一类失效。现在画出来 = 能点。
+        const bool canPress = st.nextDayReady;
         ARGB fill = !canPress ? Color::MakeARGB(140, 46, 42, 62)
                   : (st.hoverNextDay ? kBtnHot : kBtnFill);
         ARGB edge = canPress ? accent : Color::MakeARGB(160, 90, 90, 110);
@@ -21386,7 +21635,9 @@ NewPackResult CreateNewCharPack(const std::wstring& rootDir, const std::wstring&
         L";  每一幕只规定：这一幕结束时，你们之间「该到什么位置」。\n"
         L";  她怎么走到那里、说了什么，是她当场想出来的。\n"
         L";\n"
-        L";  推进：她觉得这一幕演到位了会给信号，你点「下一幕」才走。\n"
+        L";  推进：你写的 Must（那件必须发生的事）做到了，她会给信号，\n"
+        L";        你点「下一幕」才走。Must 是她判断「演完没有」的依据——\n"
+        L";        不写的话她只能凭感觉，那一幕就很难收。\n"
         L";        她没给，就走不了——这一幕还没完。\n"
         L"; ============================================================\n"
         L"\n"
@@ -22643,6 +22894,15 @@ static bool      g_trayAdded = false;
 static std::wstring g_chatFull;
 static bool         g_chatOk = false;
 static std::wstring g_chatErr;
+
+// ★ 本次回复的结束原因（"stop" 说完了 / "length" 被输出上限掐断 / 空 = 没给）。
+//
+// 它唯一的作用是把"她的话太长被掐断"和"流式中途断网"分开——
+// 这两种都会让台词停在半句上，但修法完全不同：
+//   length   → 让她下一轮说短一点（重发还是会断在同一个地方）
+//   中途断网 → 自动重发一次（大概率能拿到完整的）
+// 混在一起就只能给用户一句笼统的提示，他照着做却解决不了问题。
+static std::wstring g_chatFinishReason;
 // 素材打回的结果（工作线程 -> 主线程的搬运槽）
 static std::wstring g_stageFixPose, g_stageFixBg, g_stageFixBgm, g_stageFixPose2;
 //
@@ -22687,6 +22947,30 @@ static bool g_stageFixNetFail = false;
 // 打回才是异常。两者混在一起，日志上看不出问题有多严重。
 // 所以要单独记一个：isPick 管行为（不许兜底），isRetry 管标签（记成打回）。
 static bool g_stageFixIsRetry = false;
+//
+// ---- 【挑素材自己的"本轮第 2 次"】
+//
+// 跟 g_stageFixIsRetry 两码事：那个是"挑素材没接住之后发起的打回"，
+// 管的是【打回记录】里的标签；这个是【挑素材请求失败后原样再发一次】。
+// 混用会出事：重试那一笔会被当成一次全新的挑素材失败，
+// 素材调用日志里就出现两行一模一样的"第N轮 请求失败"，
+// 看着像失败了两轮，其实是同一轮发了两次。
+static bool g_stageFixIsPickRetry = false;
+//
+// ---- 【请求失败的原始原因】
+//
+// r.err 以前只进 AppLog（状态栏 / 调试输出），不落盘。
+// 于是日志里只剩一句"请求失败"，至于是超时、限流还是连不上，
+// 事后无从判断——只能靠猜，猜错就把人往 prompt 上引。
+static std::wstring g_stageFixErr;
+// HTTP 状态码。429（限流）跟 500（服务端炸）的修法完全不同：
+// 429 要【等一会儿再发】，立刻重发必然还是 429。
+static int          g_stageFixHttpStatus = 0;
+// 主对话那条流的回复是不是半截的（见 LlmResult::partial）。
+static bool         g_chatPartial = false;
+// 上一次 API 请求【结束】的时刻（GetTickCount64）。
+// 用来在两条请求之间垫一点间隔——见 ApiThrottle。
+static volatile long long g_lastApiEndMs = 0;
 static std::wstring g_statusText;
 static int          g_statusTimer = 0;      // 帧数，到 0 自动清空
 
@@ -22774,6 +23058,7 @@ static void DirEnterNextDay();
 static void SetStatus(const std::wstring& msg, int sec);
 static bool PlayBgm(const std::wstring& pathNoExt);
 static void EnterInputMode(const std::wstring& guide = L"");
+static bool LeaveInputMode();   // 退出输入模式；返回"编辑框里还有没发出去的话"
 static void DirAdvance();
 static void ApplyChapterStage();   // 新章节：应用大纲写的初始场景
 static void DirEnterTask();
@@ -23254,6 +23539,7 @@ static void AbortAsync() {
     g_chatFull.clear();
     g_chatOk  = false;
     g_chatErr.clear();
+    g_chatFinishReason.clear();
     LeaveCriticalSection(&a.cs);
 
     // 【半成品正文不能留】
@@ -23869,7 +24155,6 @@ static void ResetRuntimeUi() {
     a.rs.progress       = -1.0f;
     a.rs.hoverBtn       = -1;
     a.rs.hoverNextDay   = false;
-    a.rs.nextDayBlocked = false;
     ResetTextState(a);
     a.view.showChoices  = false;
     a.view.choiceTexts.clear();
@@ -26814,7 +27099,50 @@ struct StageFixCtx {
     int            gen = 0;
     std::vector<ChatMsg> msgs;
     std::wstring   say;          // 她刚说的台词（重选的依据）
+    // 发出前先睡这么久（毫秒）。限流重试时用——立刻重发还是会被拒。
+    unsigned       delayMs = 0;
 };
+
+// ---------------------------------------------------------------- 请求节流
+//
+// 【实测日志里最扎眼的两行】
+//   15:57:14 ×挑素材请求失败   HTTP 429 限流
+//   15:57:15 ×挑素材【重试】也失败  HTTP 429 限流
+// 两次只隔 1 秒。限流的正确修法是【等】，而原来失败后是立刻原样重发——
+// 等于在同一秒内又撞了一次墙，必然还是 429。重试次数再多也没用。
+//
+// 这里做两件事：
+//   1. ApiThrottle：任意两条请求之间垫一个最小间隔。
+//      主对话刚回来就紧接着发挑素材（日志里 15:36:43 发请求、
+//      15:36:44 就发挑素材），这种连发最容易触发按分钟计的免费额度。
+//   2. 429 时按退避时长重发（见 WM_APP_STAGE_FIX 里的重试）。
+//
+//  sleeps 都发生在【工作线程】上，主线程照常刷新，界面不会卡。
+//
+// 间隔取 1200ms：正常一轮对话要几秒到十几秒，间隔早就满足了，
+// 只有"上一条刚结束就发下一条"这种情况才会真的等一下。
+static void ApiThrottle(unsigned minGapMs)
+{
+    const long long last = g_lastApiEndMs;
+    if (last <= 0) return;
+    const long long now  = (long long)GetTickCount64();
+    const long long passed = now - last;
+    if (passed >= 0 && passed < (long long)minGapMs)
+        Sleep((DWORD)((long long)minGapMs - passed));
+}
+static void ApiMarkEnd() { g_lastApiEndMs = (long long)GetTickCount64(); }
+
+// 429 = 限流（免费额度用完 / 每分钟请求数超了）。
+// 这种失败【等一会儿就好】，重试有意义；别的失败（连不上、服务端 500）
+// 立刻重发多半也没用，但试一次成本低，仍然按退避走。
+static bool IsRateLimited(int httpStatus, const std::wstring& err)
+{
+    if (httpStatus == 429) return true;
+    if (err.find(L"429") != std::wstring::npos) return true;
+    if (err.find(L"rate limit") != std::wstring::npos) return true;
+    if (err.find(L"限流") != std::wstring::npos) return true;
+    return false;
+}
 
 static unsigned __stdcall StageFixThread(void* p) {
     StageFixCtx* ctx = (StageFixCtx*)p;
@@ -26842,13 +27170,22 @@ static unsigned __stdcall StageFixThread(void* p) {
     // 15 秒换同步，值得。
     cfg.timeoutSec = 15;
 
+    // 限流重试：先等够再发。主线程发起时把要等的时长塞进 ctx，
+    // 睡眠发生在【工作线程】上，界面不会卡住。
+    if (ctx->delayMs) Sleep(ctx->delayMs);
+    // 跟上一条请求之间垫一点间隔（主对话刚结束就连发挑素材，最容易撞限流）。
+    ApiThrottle(1200);
+
     bool ok = LlmChat(cfg, ctx->msgs, r, nullptr);
+    ApiMarkEnd();
     if (!ok) {
         //
         // ---- 【把"网络失败"跟"她没给值"分开告诉主线程】
         // 两者投回来的都是三个空串，主线程分不出来——
         // 不分的话素材日志里这一轮连一行都不会有。
         g_stageFixNetFail = true;
+        g_stageFixErr     = r.err;
+        g_stageFixHttpStatus = r.httpStatus;
         const bool tagPick = (g_stageFixIsPick && !g_stageFixIsRetry);
         AppendFixLog(L"(请求失败) " + r.err, L"",
                      tagPick ? L"【挑素材】" : L"【打回重填】");
@@ -27158,6 +27495,11 @@ static bool StartDailyRewrite(const std::wstring& say) {
     StageFixCtx* ctx = new StageFixCtx();
     ctx->gen = a.chatGen;
     ctx->say = say;
+    //
+    // 【这里原来有一行 ctx->delayMs = delayMs;，而本函数没有这个参数】
+    // 编译直接报 C2065。重写不需要延迟（延迟是挑素材那条路用的，
+    // 见 StartAssetPick 的 delayMs 参数），删掉即可——
+    // ctx->delayMs 保持结构体默认的 0，Sleep 那段本来就不执行。
     ctx->msgs.push_back(BuildSystemMsg(a.persona, a.Def(), a.mem, a.prof,
                                        a.dir.SceneHint(), a.dirMode,
                                        &a.dir.Visible(), nullptr,
@@ -27202,7 +27544,8 @@ static bool StartDailyRewrite(const std::wstring& say) {
 //     玩家体感是"对话变慢了"。画面保持上一轮，没有"错误的脸"这个中间态。
 static bool StartAssetPick(const std::wstring& say,
                            const std::wstring& scene,
-                           const std::wstring& beat) {
+                           const std::wstring& beat,
+                           unsigned delayMs = 0) {
     App& a = g_app;
     if (say.empty())    return false;      // 没台词就没法判断情绪
     if (!a.dirMode)     return false;
@@ -27276,7 +27619,10 @@ static unsigned __stdcall ChatThread(void* p) {
         if (g_app.chatGen == myGen) g_chatFull += piece;
         LeaveCriticalSection(&g_app.cs);
     };
+    // 跟上一条请求之间垫一点间隔（见 ApiThrottle 的说明）。
+    ApiThrottle(1200);
     bool ok = LlmChat(ctx->cfg, ctx->msgs, r, cb);
+    ApiMarkEnd();
 
     EnterCriticalSection(&g_app.cs);
     // 同上：收尾写回也要校验。旧线程跑完后会把完整原文写进缓冲，
@@ -27285,6 +27631,8 @@ static unsigned __stdcall ChatThread(void* p) {
         if (ok) g_chatFull = r.full;             // 以完整回复为准（增量可能有丢字的边角情况）
         g_chatOk = ok;
         g_chatErr = r.err;
+        g_chatFinishReason = r.finishReason;
+        g_chatPartial = r.partial;
     }
     LeaveCriticalSection(&g_app.cs);
 
@@ -27358,6 +27706,7 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     a.chatEmote = L"normal";
     EnterCriticalSection(&a.cs);
     g_chatFull.clear();
+    g_chatFinishReason.clear();
     LeaveCriticalSection(&a.cs);
     SetStatus(L"她在想…", 60);
 
@@ -27625,6 +27974,22 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     AppendHistoryMsgs(ctx->msgs, a.hist, userText);
     ctx->msgs.push_back(ChatMsg{ L"user", userText });
 
+    // ★ 她上一句话被掐断了：明确告诉她，让她接着把那半句说完。
+    //
+    // 不提醒的话她不知道自己上一句停在半路——玩家看到的会是
+    // 「所以，你觉得 scanf(」这种断句，而且【后半句永远等不到】：
+    // 下一轮她以为自己讲完了，自顾自往下讲新的内容。
+    //
+    // 用完即清（a.lastSayTruncated 置回 false）：只影响这一轮。
+    // 留着不清的话，之后每一轮都背着"你欠着话没说"，她会一直重复道歉。
+    if (a.lastSayTruncated) {
+        a.lastSayTruncated = false;
+        ctx->msgs.push_back(ChatMsg{ L"user",
+            L"（你上一句话说到一半就断了，他只看到半句。"
+            L"这一次【先把那半句接着说完】，而且【说短一点】"
+            L"——控制在 3~8 句以内，别再断在半路。）" });
+    }
+
     //
     // ---- 【发请求前把"她看到了什么"记下来】
     // 素材日志记的是回来之后的事，这份记的是发出去之前的。
@@ -27685,6 +28050,26 @@ static void OnChatDone(HWND hwnd) {
     }
 
     LlmReply rep = ParseReply(full);
+
+    // ★ 服务端说 finish_reason=length，就一定是被输出上限掐断的。
+    //   反过来：JSON 没结尾但服务端说 stop，那是模型自己把格式写坏了，
+    //   不该按"输出上限"处理——照那个提示去翻设置，翻遍也找不到能调的项。
+    if (g_chatFinishReason == L"length") rep.truncated = true;
+
+    // ★ 半截台词必须让人一眼看出是半截。
+    //
+    // 不加标记，回想面板和存档里躺着的就是一句断在半路的"正常台词"：
+    //   「所以，你觉得 scanf(」
+    // 下一轮她也不知道自己上一句没说完——那后半句就永远等不到。
+    if (rep.truncated && !rep.say.empty()) {
+        if (rep.say[rep.say.size() - 1] != L'…') rep.say += L"……";
+        AppLog(L"[截断] 结束原因=%s，台词尾已标未完：%s",
+               g_chatFinishReason.empty() ? L"(服务端没给)" : g_chatFinishReason.c_str(),
+               rep.say.c_str());
+    }
+    // 留给下一轮：让她把没说完的那半句补上（用完即清，见提示词构建处）。
+    a.lastSayTruncated = rep.truncated;
+
     // 留给 DirAdvance()：判断她是不是已经开口讲起本章内容了。
     if (!rep.say.empty()) a.lastHerSay = rep.say;
 
@@ -28396,7 +28781,14 @@ static void OnChatDone(HWND hwnd) {
     // 提示必须说准：让玩家去设置页找"回复长度"是找不到的（那一行已移除），
     // 他会翻遍设置页然后以为程序坏了。
     if (rep.truncated) {
-        SetStatus(L"她的话被模型/服务端的输出上限截断了（本程序已不限制，管不了这一层）", 8);
+        // ★ 两种截断的提示必须分开，否则玩家按错的提示去查找，什么也找不到：
+        //   length    —— 服务端 / 模型的输出上限。下一轮她会接着把话说完。
+        //   其余 / 空 —— 流式中途断了（网络 / 网关）。已经自动重发过一次。
+        if (g_chatFinishReason == L"length") {
+            SetStatus(L"她的话太长被输出上限掐断了——下一句她会接着说完", 8);
+        } else {
+            SetStatus(L"回复中途断了（网络问题），她这句可能没说完", 8);
+        }
     }
 
     a.view.showChoices = false;
@@ -28561,7 +28953,6 @@ static bool TryGraduate() {
     a.quizRetryPending   = false;
     a.rs.showNextDay     = false;
     a.rs.nextDayReady    = false;
-    a.rs.nextDayBlocked  = false;
     a.rs.nextDayIsLast   = false;
     a.rs.quizMode        = false;
 
@@ -28993,8 +29384,26 @@ static void DirAdvance() {
     //   做法：只有【自我介绍 / 章间日常】这两段（本来就没题可考）认 2；
     //   上课阶段的 2 一律降级成 1 —— 变成"出题考他"。她真想免考，得先考过。
     const bool inLessonNow = (a.dir.Stage() == DirStage::Lesson);
+    //
+    // ---- 【教学段：她说"今天就到这里 / 明天见"也要认】
+    //
+    // ★ 这是"她说了明天见，可按钮迟迟不出现"的根因。
+    //   散场话原来只在【章间日常】里算（byLine = inDaily && SaidFarewell()），
+    //   教学段那句"今天就讲到这里吧，明天见"【完全没人理】——
+    //   引擎继续停在 Lesson，而 Lesson 段 CanShowNextDay() 恒 false，
+    //   右上角根本没有按钮。玩家聊了十几轮、她都说了明天见，
+    //   却既走不掉也点不动，只能一直听她讲下去。
+    //
+    //   教学段的出口原来只有三条，且【全部依赖模型主动配合】：
+    //     ① 她填 advance=1 / ready=true
+    //     ② 她把题面完整说出来
+    //     ③ 她直接讲起下一章
+    //   她只顾说话、忘了填字段时，三条一条都不成立（"聊太久就替她开考"
+    //   那条兜底已经去掉了，见下）。现在把她说出口的话也算数。
     const bool sheWantsQuiz = (a.dirAdvance == 1) || (a.dirReady && a.dirAdvance == 0)
-                           || (inLessonNow && a.dirAdvance == 2);
+                           || (inLessonNow && a.dirAdvance == 2)
+                           || (inLessonNow
+                               && SaidFarewellIn(a.lastHerSay, a.dirSyllabus.isStory));
     const bool sheWantsNext = (a.dirAdvance == 2) && !inLessonNow;
 
     //
@@ -29128,54 +29537,46 @@ static void DirAdvance() {
             //
             // 只认最明确的那几个说法——「走吧」这种不收，
             // 日常里"走吧，去商店街"是换地方，不是散场，收了会误判。
+            // 判据收口到 SaidFarewellIn：教学段也用同一份词表，
+            // 不然"她说了同样一句话，在日常算数、在教学不算数"。
             auto SaidFarewell = [&]() -> bool {
-                if (a.lastHerSay.empty()) return false;
-                // ---- 两边通用：明确表示"这一段到此为止"
-                static const wchar_t* kF[] = {
-                    L"今天就到这里", L"今天先到这里",
-                    L"先这样吧", L"那就先这样",
-                    L"该回去了"
-                };
-                for (int i = 0; i < (int)(sizeof(kF) / sizeof(kF[0])); ++i)
-                    if (a.lastHerSay.find(kF[i]) != std::wstring::npos) return true;
-                //
-                // ---- 【分模式】
-                //
-                // 课程：收"隔夜"的说法。两段日常之间真的过了一夜，
-                //       她说"明天见""晚安"就是散场。
-                // 剧情：幕与幕之间【不隔夜】，她不会说明天见。
-                //       原来共用课程那张表，于是她说"这一幕就到这里吧"
-                //       引擎也听不懂——这正是剧情模式下按钮迟迟不亮的原因之一。
-                if (a.dirSyllabus.isStory) {
-                    static const wchar_t* kS[] = {
-                        L"这一幕就到这里", L"这一幕就到这儿",
-                        L"到这里吧", L"到这儿吧", L"先到这儿"
-                    };
-                    for (int i = 0; i < (int)(sizeof(kS) / sizeof(kS[0])); ++i)
-                        if (a.lastHerSay.find(kS[i]) != std::wstring::npos) return true;
-                } else {
-                    static const wchar_t* kC[] = {
-                        L"明天见", L"明天再见", L"晚安", L"该回家了"
-                    };
-                    for (int i = 0; i < (int)(sizeof(kC) / sizeof(kC[0])); ++i)
-                        if (a.lastHerSay.find(kC[i]) != std::wstring::npos) return true;
-                }
-                return false;
+                return SaidFarewellIn(a.lastHerSay, a.dirSyllabus.isStory);
             };
             const bool byLine = inDaily && SaidFarewell();
             const bool readyNow = (inDaily && enough && (sheWantsNext || byLine));
             if (inDaily && byLine && !sheWantsNext) {
                 AppLog(L"[推进] 她台词里说了告别话（advance 没跟上）——按台词为准，算她同意了");
             }
-            if (inDaily) a.dir.SetDailyReady(readyNow);
+            //
+            // ---- 【表态只记一次，不逐轮收回】
+            //
+            // ★ 原来每轮用 SetDailyReady(readyNow) 覆盖一遍：
+            //   她这一轮说了"可以走了"，他没点而是接着聊，
+            //   下一轮她没重复表态，标记就被清掉了——按钮【亮一下立刻转灰】。
+            //   玩家刚看到希望就没了，而她并没有改主意，只是这一轮没再说。
+            //
+            // 说过一次就算数，一直留到这段日常结束（进下一段日常时清）。
+            // 它现在只决定右上角那句提示，不再拦着玩家点按钮——见 CanGoNextDay。
             if (inDaily && readyNow && !wasReady) {
-                AppLog(L"[推进] 她在章间日常里说「可以走了」——"
-                       L"「明天见」已可点（只在【这一轮】有效，他接着聊就作废）");
+                a.dir.MarkDailyReady();
+                AppLog(L"[推进] 她在章间日常里表示「可以走了」（记一次，不收回）");
                 AppendTurnTrace(L"→她说可以走了", nullptr, nullptr, L"");
-            } else if (inDaily && wasReady && !readyNow) {
-                AppLog(L"[推进] 她这一轮【收回】了「可以走了」——"
-                       L"按钮转灰（他刚才没点，而是接着聊了）");
-                AppendTurnTrace(L"→她收回了「可以走了」", nullptr, nullptr, L"");
+                //
+                // ---- 【她说了告别话，就要告诉他出口在哪】
+                //
+                // ★ 玩家视角里"她都说明天见了"和"我该怎么走"是两件事：
+                //   右上角那枚按钮一直在那儿（演够几轮就画出来），
+                //   可他未必知道那就是出口，也没人告诉他"现在能走了"。
+                //   于是两个人一遍遍互道晚安，谁也走不掉——
+                //   这正是"反复说明天见、按钮迟迟不亮"给人的感觉：
+                //   按钮其实在，只是没人把它和她的告别话对上。
+                //
+                // 只在【第一次】说：之后每轮都弹就成了噪音，
+                // 而他已经知道出口在哪了。
+                UiTip(a, L"她说了告别的话 —— 想走就点右上角「"
+                         + NextDayLabelOf(a.dirSyllabus.isStory,
+                                          a.dir.NextDayEndsCourse())
+                         + L"」", 6);
             }
             if (enough && ((herAdvanceCounts && (sheWantsNext || sheWantsQuiz))
                            || overdue || sheStarted)) {
@@ -29415,20 +29816,73 @@ static void DirAdvance() {
 static void DirGoNextDay() {
     App& a = g_app;
     if (!a.dirMode) return;
+    //
+    // ---- 【推进入口：先把输入模式退干净】
+    //
+    // 详细成因见 LeaveInputMode 的注释：inputMode 不退的话，
+    // 之后每一次点击都会落进"点对话框=呼出输入框 / 点别处=收起"那条分支，
+    // 整局再也推不动——那就是"编辑对话框时按明天见会卡死"。
+    //
+    // 放在这里而不是调用方，是因为【推进只有这一个入口】：
+    // 无论从哪条路径进来都退得干净，不会漏。
+    // 也正因为现在退得干净，按钮才不需要再画成灰的（见渲染层 canPress）。
+    if (LeaveInputMode()) UiTip(a, L"你打了一半的那句话没有发出去", 4);
     if (!a.dir.CanGoNextDay()) {
         //
-        // ---- 【她还没说"可以走了"，他点了也不走】
+        // ---- 【防守：正常情况下走不到这里】
         //
-        // 按钮一直画着（CanShowNextDay），所以点得到、得给个说法。
-        // 按钮整个不画的话，他会以为程序没画出来，而不是"她还想聊"。
-        if (a.dir.CanShowNextDay())
-            //
-            // ---- 【分模式】"还想聊"是课程的说法
-            //
-            // 剧情里玩家等的是这一幕演完，不是她聊够了。
-            // 共用一句"她还想再聊一会儿"，玩家只会以为程序卡了——
-            // 而实际是她觉得 Must 那件事还没做到。
-            SetStatus(a.dirSyllabus.isStory ? L"这一幕她还没演完" : L"她还想再聊一会儿", 5);
+        // CanGoNextDay 现在等于 CanShowNextDay，而按钮不画就点不到，
+        // 所以"画着却点不动"这条路径已经不存在了。
+        // 留着是为了判据将来再分开时不会退化成"点了没反应、也没解释"。
+        //
+        // 【必须带上"还要几轮"】
+        //
+        // ★ 只说"她还想再聊"，玩家不知道要等到什么时候，
+        //   也分不清"还没到时候"和"程序没画出来"——
+        //   那种不确定最磨人，看着就像卡住了。给个数字等待就可预期。
+        const int w = a.dir.NextDayWaitTurns();
+        std::wstring tail = (w > 0)
+            ? (L"（再聊 " + WFromInt(w) + L" 轮就能走了）")
+            : std::wstring(L"");
+        SetStatus(a.dirSyllabus.isStory
+                      ? (L"这一幕她还没演完" + tail)
+                      : (L"她还想再聊一会儿" + tail), 5);
+        return;
+    }
+
+    //
+    // ---- 【教学段：这枚按钮是"这节课上完了"】
+    //
+    // 有题 -> 开考；没题 -> 进章间日常。
+    // ★ 不能走下面"告别 -> 第二天"那套：课还没上完就演告别，
+    //   章号没推进却被宣布"今天结束了"，
+    //   玩家会看到"说了明天见、右上角还停在原来那一章"。
+    if (a.dir.Stage() == DirStage::Lesson) {
+        a.quizAnswers     = 0;
+        a.dirAdvance      = 0;
+        a.dirReady        = false;
+        a.dirVerdict.clear();
+        a.askedDuringTask = false;
+        a.pendingInput    = false;
+        a.pendingSay.clear();
+        a.pendingEmote.clear();
+        a.stageFixPending = false;
+        if (a.dir.EnterQuiz()) {
+            AppLog(L"[推进] 点「考考我吧」：这一章讲完了，进考场（第%d章）",
+                   a.dir.Chapter());
+            AppendTurnTrace(L"→考考我吧(手动开考)", nullptr, nullptr, L"");
+            DirEnterTask();
+        } else {
+            a.dir.AfterJudge(true);
+            if (TryGraduate()) return;
+            ApplyChapterStage();
+            AppLog(L"[推进] 点「今天就到这里」：本章无题，进章间日常（第%d章）",
+                   a.dir.Chapter());
+            AppendTurnTrace(L"→今天就到这里(无题,进日常)", nullptr, nullptr, L"");
+            StartChapterAssetReview(a.dir.Chapter());
+            EnterPendingInput();
+        }
+        InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
 
@@ -30527,6 +30981,51 @@ static void EnterInputMode(const std::wstring& guide) {
                             : L"想说点什么？", 8);
 }
 
+//
+// 彻底退出输入模式。返回 true = 编辑框里还有他打了一半、没发出去的话。
+//
+// 【这是"明天见按钮迟迟不亮"的根因，也是"编辑对话框时按明天见会卡死"的根因】
+//
+// ★ 卡死那一版的处理是【拦下来】：轮到他打字时点按钮，先把对话框收起，
+//   提示"再点一次就能走"。根因其实一直没动——真正致命的是
+//   【发起了新对话，inputMode 却还是 true】：
+//   此后每一次点击都落进"点对话框=呼出输入框 / 点别处=收起"那条分支，
+//   剧情再也推不动。拦下来只是绕开了它。
+//
+// ★ 绕开的代价落在按钮颜色上：为了避免玩家撞进那条卡死分支，
+//   按钮被画成灰的（canPress 里带 !nextDayBlocked，该字段现已删除）。
+//   而"轮到你说话"时输入框是默认展开的（见 EnterInputMode），
+//   章间日常里几乎每一刻都在等他打字——于是按钮【几乎永远是灰的】。
+//   玩家看到的正是"她都说明天见了、按钮迟迟不亮"，
+//   而且他分不清那是"还没到时候"还是"程序没画出来"。
+//
+// 现在治根因：推进入口一律先走这里把输入模式退干净，
+// 按钮也就不需要灰态了——画出来就能点。
+//
+// 【为什么连 phase 一起退】
+// phase 停在 InputFree 的话，回车那条路还开着，
+// 他随手按一下回车就会往已经翻篇的那一轮里塞一句话。
+static bool LeaveInputMode() {
+    App& a = g_app;
+    bool draft = false;
+    if (a.hEdit) {
+        wchar_t buf[512];
+        buf[0] = 0;
+        if (GetWindowTextW(a.hEdit, buf, 512) > 0 && buf[0]) draft = true;
+    }
+    a.rs.inputMode      = false;
+    a.rs.inputCollapsed = false;
+    a.rs.inputGuide.clear();
+    a.rs.playerEcho     = false;
+    a.rs.candoOpts.clear();
+    a.rs.hoverCanDo     = -1;
+    a.pendingInput      = false;
+    a.pendingGuide.clear();
+    if (a.phase == Phase::InputFree) a.phase = Phase::Play;
+    SyncInputEdit();
+    return draft;
+}
+
 // 给编辑框换字体。
 //
 // 【为什么不能只在 WM_CREATE 里设一次】
@@ -31476,30 +31975,48 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 // 真正要挡的只有"这一句还没说完她就要跳章"的情况——
                 // 那种由 DirGoNextDay 里的状态判断处理，不是靠隐藏按钮。
                 //
-                // ---- 【按钮画出来 ≠ 按钮能点】
+                // ---- 【画和点必须是同一个判据】
                 //
-                // 画：这段相处演够几轮了（CanShowNextDay）
-                // 点：她还说了"可以走了"（DailyReady）
-                // 两件事分开，所以灰按钮也是画出来的——点得到、有反馈，
-                // 不像"按钮没画出来"那样让人以为程序坏了。
-                a.rs.showNextDay   = a.dir.CanShowNextDay();
-                a.rs.nextDayReady  = a.dir.DailyReady();
+                // ★ 原来这两个用的是不同函数：
+                //     showNextDay  = CanShowNextDay()   （演够 3 轮）
+                //     nextDayReady = DailyReady()       （她还说了"可以走了"）
+                //   而点击走的是 DirGoNextDay -> CanGoNextDay()（含第 7 轮兜底）。
+                //   结果：按钮画成灰的，可第 7 轮之后【其实点得动】——
+                //   玩家看到的永远是灰的，得不到"现在能走了"的任何信号。
+                //   同一个"能不能点"在两处各算一遍，必然对不上。
                 //
-                // ---- 【对话框展开着（他正在打字）-> 这枚按钮按不下去】
+                // 现在都问 CanGoNextDay()：画出来 = 能点。
+                // 画和点问同一个函数：能画出来就能点。
+                // 教学段那枚（CanShowEndLesson）也走这里，
+                // 不再出现"教学段不画按钮、玩家没有出口"的情况。
                 //
-                // 判据只有这一处：渲染（画成灰的）和点击（拦下来）都读它，
-                // 不会出现"画着能点的样子、点了却没反应"。
-                a.rs.nextDayBlocked = a.rs.inputMode && !a.rs.inputCollapsed;
+                // 【不再有 nextDayBlocked 这一态】
+                // 它原来是"他正在打字 -> 按钮按不下去"，而"轮到你说话"时
+                // 输入框默认展开，于是章间日常里按钮几乎永远是灰的——
+                // 那就是"她都说明天见了、按钮迟迟不亮"。
+                // 根因（inputMode 没退出）已在 DirGoNextDay 里治掉，
+                // 这一态连同字段一起删：留着只会让"能不能点"又变成两处描述。
+                a.rs.showNextDay   = a.dir.CanGoNextDay();
+                a.rs.nextDayReady  = a.dir.CanGoNextDay();
                 // 按钮写「明天见」还是「今天就到这里」，同一个判据决定。
                 // 分开算迟早出现"写着明天见、点了却回主页"这种对不上。
-                a.rs.nextDayIsLast = a.dir.NextDayEndsCourse();
-                a.rs.nextDayLabel  = NextDayLabelOf(a.dirSyllabus.isStory,
-                                                    a.rs.nextDayIsLast);
+                if (a.dir.Stage() == DirStage::Lesson) {
+                    // 教学段这枚按钮是"这节课上完了"：有题就考，没题就进日常。
+                    // ★ 文案必须点之前就看出会发生什么——
+                    //   点下去进考场却写着「明天见」，玩家只会以为自己点错了。
+                    a.rs.nextDayIsLast = false;
+                    a.rs.nextDayLabel  = (a.dir.Cur() && a.dir.Cur()->task.HasQuiz())
+                                       ? std::wstring(L"考考我吧")
+                                       : std::wstring(L"今天就到这里");
+                } else {
+                    a.rs.nextDayIsLast = a.dir.NextDayEndsCourse();
+                    a.rs.nextDayLabel  = NextDayLabelOf(a.dirSyllabus.isStory,
+                                                        a.rs.nextDayIsLast);
+                }
             } else {
                 a.rs.hud = L"好感 " + WFromInt(a.vm.GetInt(L"好感")) + L"　|　" + a.vm.GetVar(L"章节").toStr();
                 a.rs.showNextDay = false;   // 剧本模式没有"章间日常"这一说
                 a.rs.nextDayReady = false;
-                a.rs.nextDayBlocked = false;
                 a.rs.nextDayIsLast = false;
                 a.rs.nextDayLabel.clear();
             }
@@ -31820,26 +32337,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (a.ui.screen == Screen::Play && a.rs.showNextDay
             && a.rend.HitNextDay(a.rs, lx, ly)) {
             //
-            // ---- 【对话框还展开着：先收起，不让他这一下点空】
+            // ---- 【正在打字也能直接走】
             //
-            // 【这是"编辑对话框时按明天见会卡死"的根因】
-            // 轮到他打字时 inputMode 是 true；这时候发起新对话，
-            // 标记却没退出——此后每一次点击都落进"点对话框=呼出输入框"那条
-            // 分支，剧情再也推不动，界面看着就是卡死。
-            // 挡在前面最省事也最安全：他不收起就走不了。
+            // ★ 原来这里拦一道：inputMode 还开着就只收起对话框、
+            //   提示"再点一次"。那是为了挡住"按明天见会卡死"
+            //   （发起了新对话而 inputMode 没退，之后每次点击都变成
+            //   呼出/收起输入框，整局推不动）。
             //
-            // 光 return 不行，那等于点了没反应。替他收起对话框，
-            // 并明说"再点一次就能走"——这一步跟"点画面别处收起"是同一个动作。
-            if (a.rs.nextDayBlocked) {
-                CollapseInput();
-                PlayClickSe();
-                SetStatus(L"对话框收起来了 —— 再点一次「"
-                          + (a.rs.nextDayLabel.empty() ? std::wstring(L"明天见")
-                                                       : a.rs.nextDayLabel)
-                          + L"」就能走", 6);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
+            //   可拦下来的代价是按钮被画成灰的，而"轮到你说话"时
+            //   输入框默认展开——章间日常里几乎每一刻都在等他打字，
+            //   于是按钮【几乎永远是灰的】。玩家看到的就是
+            //   "她都说明天见了、按钮迟迟不亮"，还分不清是没到时候
+            //   还是程序没画出来。
+            //
+            // 现在根因在 DirGoNextDay 里治掉了（推进入口一律 LeaveInputMode），
+            // 这里不再需要拦：点一下就走，正在打的字由那边提示没发出去。
             PlayClickSe();
             DirGoNextDay();
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -33789,8 +34301,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 日志上永远看不出哪次是异常。所以标签另看 isRetry。
         const bool isPick  = g_stageFixIsPick;
         const bool isRetry = g_stageFixIsRetry;
+        const bool pickRetry = g_stageFixIsPickRetry;
+        const std::wstring pickErr = g_stageFixErr;
         g_stageFixIsPick  = false;
         g_stageFixIsRetry = false;
+        g_stageFixIsPickRetry = false;
+        g_stageFixErr.clear();
         //
         // ---- 【日常段重写台词的这条路】
         //
@@ -33875,7 +34391,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 直接 return，审计一条都没记。
             // 日志跳轮会让人误读成"她这轮没选"或"程序把她拒了"，
             // 而真相是请求压根没发出去。缺哪一轮、为什么缺，都得写出来。
-            if (tagPick && !a.dataDir.empty()) {
+            if (isPick && !a.dataDir.empty()) {
                 std::wstring t;
                 t += L"[" + NowStampSec() + L"]";
                 t += L" 第" + WFromInt((long long)a.dir.StageTurn()) + L"轮";
@@ -33885,8 +34401,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 t += L"\n";
                 t += L"    她返回    （这一轮一项都没拿到）\n";
                 t += netFail
-                   ? L"    ×挑素材请求失败，这一句没配画面（画面沿用上一轮）\n"
+                   ? (pickRetry
+                      ? L"    ×挑素材【重试】也失败，这一句没配画面（画面沿用上一轮）\n"
+                      : L"    ×挑素材请求失败，这一句没配画面（画面沿用上一轮）\n")
                    : L"    ×她没给有效素材名，这一句没配画面（画面沿用上一轮）\n";
+                if (!pickErr.empty())
+                    t += L"    原因：" + pickErr + L"\n";
                 AppendTextFile(PathJoin(a.dataDir, L"素材调用日志.txt"), t);
             }
             //
@@ -33905,6 +34425,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 网络真的断了时不会变成每句都重试、把对话拖成两倍慢。
             if (isPick && a.assetPickRetry < 1 && !a.lastPickSay.empty()) {
                 ++a.assetPickRetry;
+                g_stageFixIsPickRetry = true;
                 AppLog(netFail
                        ? L"[挑素材] 请求失败，再要一次画面（本轮第 2 次）"
                        : L"[挑素材] 没拿到素材名，再问一次（本轮第 2 次）");
