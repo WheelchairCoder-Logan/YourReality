@@ -1,40 +1,41 @@
-﻿// ============================================================================
-//  YourReality —— 跑在 Windows 桌面上的视觉小说 + AI 教学引擎
-//  Copyright (c) 2025 YourReality contributors
-//  Licensed under the MIT License.  See LICENSE in the repository root.
+// YourReality —— 跑在 Windows 桌面上的视觉小说 + AI 教学引擎
+// Copyright (c) 2025 YourReality contributors
+// Licensed under the MIT License. See LICENSE in the repository root.
 //
-//  这是一个个人练手项目，开源的目的是记录"这个东西是怎么做出来的"。
-//  整个客户端只有这一个 .cpp，只用 Windows 系统组件，不依赖第三方库：
+// 源码以单个翻译单元组织，便于直接阅读与修改：整个工程只有一个 .cpp，
+// 推进契约（advance 命名空间，紧接在 include 区之后）也内联在这里，
+// 不再另放头文件
+// 整个工程只用 Windows 系统组件：
 //
-//    · 界面   GDI+ 全自绘：背景 / 立绘 / 对话框 / 打字机 / 选项 / 各类子界面
-//    · 对话   接 OpenAI 兼容接口（WinHTTP），由大模型产出台词与演出指令
-//    · 演出   导演状态机：由大模型决定场景、立绘、BGM，以及这一轮推不推进
-//    · 内容   课程大纲（章 + 验收题）与剧情大纲（幕）两种模式
-//    · 存档   本地 JSON，按角色分目录，同时写一份人能直接读的副本
-//    · 素材   角色包放在 assets\char\<名字>，素材与注解都扫目录得到
-//    · 音频   XAudio2 播放 WAV，BGM / 音效按场景与情绪切换
+// · 界面 GDI+ 全自绘：背景 / 立绘 / 对话框 / 打字机 / 选项 / 各类子界面
+// · 对话 接 OpenAI 兼容接口（WinHTTP），由大模型产出台词与演出指令
+// · 演出 导演状态机：由大模型决定场景、立绘、BGM，以及这一轮推不推进
+// · 内容 课程大纲（章 + 验收题）与剧情大纲（幕）两种模式
+// · 存档 本地 JSON，按角色分目录，同时写一份人能直接读的副本
+// · 素材 角色包放在 assets\char\<名字>，素材与注解都扫目录得到
+// · 音频 XAudio2 播放 WAV，BGM / 音效按场景与情绪切换
 //
-//  【改代码前先看这两条约定】
-//  1. 本文件是唯一源码。以前同时维护过 src/ 分模块版本，靠脚本单向同步，
-//     两边时间戳一前一后就分叉：改在这边、跑一次同步就被那边的旧内容盖回去。
-//     所以正文里那些"模块：xxx"只是分区标记，不是文件名。
-//  2. 注释里的 ★ 表示【这里踩过坑】，写的是"为什么不能那样做"。
-//     动这些地方之前请先读完——改错的症状通常不是报错，而是"看起来正常、
-//     实际不生效"，查起来极费时间。
+// 改代码前先看这两条约定
+// 1. 只有一个 .cpp。早期版本同时维护过 src/ 分模块版本，靠脚本单向同步，
+// 两边时间戳一前一后就分叉：改在这边、跑一次同步就被那边的旧内容盖回去。
+// 所以正文里"模块：xxx"只是分区标记，不是文件名。
+// 2. 注释里的 ★ 表示这里踩过坑，写的是"为什么不能那样做"。
+// 动这些地方之前请先读完——改错的症状通常不是报错，而是"看起来正常、
+// 实际不生效"，查起来极费时间。
+// 3. 右上角推进按钮的全部规则在 advance 命名空间（本文件上方）。
+// 渲染、命中、点击、状态栏说明都读同一个 advance::Evaluate；
+// 改门槛只改那一处 constexpr。tests/ 里是可直接编译运行的回归测试。
 //
-//  源码以 UTF-8 **带 BOM** 保存（MSVC 靠 BOM 识别编码，否则中文注释变乱码）。
-//  文件开头有 static_assert 自检，编码错了会在编译期给出提示。
-//  如果你的编辑器去掉了 BOM，请给 MSVC 加上 /utf-8 编译选项。
-// ============================================================================
-
+// 源码以 UTF-8 **带 BOM** 保存（MSVC 靠 BOM 识别编码，否则中文注释变乱码）。
+// 文件开头有 static_assert 自检，编码错了会在编译期给出提示。
+// 如果
 #undef  NOMINMAX
 #define NOMINMAX          // 必须在 windows.h 之前
-
 // 编码自检。
 // 文件必须是 UTF-8。如果被存成了别的编码（或 BOM 在传输中丢失），
 // MSVC 会报 C4819，而且中文注释里的某些字节会被当成行尾反斜杠、
 // 吞掉下一行 —— 表现为"意外的 #else / #endif"，极难排查。
-// 有这条 static_assert，编码错时你只会看到下面这句中文提示。
+// 有这条 static_assert，编码错时
 static_assert(L"中"[0] == 0x4E2D,
     "SOURCE ENCODING ERROR: save this file as UTF-8, and add /utf-8 to MSVC.");
 
@@ -49,7 +50,7 @@ static_assert(L"中"[0] == 0x4E2D,
 #include <set>
 #include <winhttp.h>
 #include <xaudio2.h>
-#include <gdiplus.h>     // 界面全靠 GDI+ 画。现在也能通过 app.h→render.h 间接拿到，但显式引更稳
+#include <gdiplus.h>     // 界面全靠 GDI+ 画，显式引更稳
 #include <utility>      // std::pair —— JMembers 需要它
 #include <algorithm>
 #include <iterator>
@@ -72,22 +73,276 @@ static_assert(L"中"[0] == 0x4E2D,
 #include <windowsx.h>
 #include <utility>
 #include <process.h>      // _beginthreadex：素材笔记 / 打回重填 / 判卷都在工作线程里跑
+// 推进契约（纯逻辑，无平台依赖；单文件工程里直接内联，不再另放头文件）
+// Copyright (c) 2025 YourReality contributors
+// Licensed under the MIT License. See LICENSE in the repository root.
+//
+// 右上角那枚推进按钮（课程里是「明天见」，剧情里是「下一幕」）的全部规则
+// 都收在这里。渲染、命中测试、点击处理、状态栏说明、存档回放全都读
+// advance::Evaluate 的返回值——别处再写一份"能不能点"，必然出现
+// 「画出来了却点不动」或「点着灰的其实能用」，而且不报错，最难自查。
+//
+// ┌──────────┬──────┬────────────────────────────────────────────┐
+// │ 阶段 │ 出口 │ 就绪条件 │
+// ├──────────┼──────┼────────────────────────────────────────────┤
+// │ Intro │ 无 │ 开场先聊几句，转段交给 ShouldStartLesson │
+// │ Daily │ 有 │ done || turns >= kMinTurnsBeforeExit │
+// │ Lesson │ 有 │ turns >= kMinTurnsBeforeExit（不读 done） │
+// │ Other │ 无 │ 答题 / 判题 / 告别，由引擎自动推进 │
+// └──────────┴──────┴────────────────────────────────────────────┘
+//
+// ★ Daily 的「done」= 这一段该发生的事已经发生了，两个来源 OR：
+// ① 模型在回复里填了 advance=2；② 她的台词说了告别（SaidFarewellIn）。
+// Lesson 故意不读 done：否则一句「晚安」就能跳过考试。
+// 这是契约边界，不是实现细节——改它之前先跑 `g++ -DADVANCE_SELF_TEST=1 main.cpp`。
+//
+// ★ 台词点亮：模型常常演到告别却忘了填 advance=2，于是她说着「晚安，明天见」
+// 按钮纹丝不动。SaidFarewellIn 命中即置位，把她的话也当成推进信号；
+// 只负责点亮，不切章、不绕过告别那一幕，仍由玩家点一下才走。
+//
+// ★ 两个口吻别混：Result.reason 是对玩家的说明（还差什么 / 点哪里结束），
+// Result.confirm 是点下去那一刻的本地确认（不等网络回包）。
+// 文案只在这里生成一次，渲染层和点击层都不要再拼。
+namespace advance {
 
-//  Windows 头文件（rpcndr.h，被 windows.h 层层包含）里有这么一句：#define small char。
-//  于是任何叫 small 的变量都会被展开成 char，报出来的错是
-//  "Gdiplus::Bitmap 后面接 char 非法"（C2628 + C2062）——跟真实原因完全对不上，
-//  排查时极易被引到"是不是少写了分号"上去。这里一律撤销，以后谁再写
-//  Bitmap small(...) 也不会炸。（Linux 下的垫片没有这些宏，所以本地编译干净、MSVC 才报错。）
+// 节奏常量只在这里定义一次。改门槛只改这里。
+constexpr int kMinTurnsBeforeExit = 3;   // Daily / Lesson 出口最早出现的轮数
+constexpr int kIntroMinTurns      = 3;   // 开场转教学的下限
+constexpr int kIntroGrace         = 4;   // 开场超过下限多少轮后引擎接管
+constexpr int kStoryActTurns      = 4;   // 剧情幕默认提醒轮数（story.ini 的 Turns 可覆盖）
+constexpr int kDailyNudge         = 6;   // 课程章间日常的提醒轮数
+
+enum class Stage {
+Intro,    // 开场
+Lesson,   // 授课
+Daily,    // 章间相处 / 剧情幕
+Other,    // 答题、判题、告别等由引擎自动推进的阶段
+};
+
+struct Input {
+Stage  stage   = Stage::Other;
+int    turns   = 0;       // 当前阶段内已对话的轮数
+bool   done    = false;   // 该发生的事发生了（advance=2 或台词告别）
+bool   isStory = false;   // 剧情大纲（按幕）还是课程大纲（按章）
+bool   isLast  = false;   // 已是最后一章 / 最后一幕
+bool   hasQuiz = false;   // 本章配了验收题
+};
+
+struct Result {
+bool         ready   = false;   // 出口能不能画出来、能不能点
+int          wait    = -1;      // 不 ready 时还要几轮；-1 表示这个阶段没有出口
+std::wstring label;             // 按钮文案
+std::wstring reason;            // 状态栏常驻说明（就绪 / 未就绪都给）
+std::wstring confirm;           // 点下后立刻显示的本地确认，不等网络回包
+};
+// 一句话算不算「这一段到此为止」。
+// ★ 调用方必须先判阶段，本函数不管归属：Daily 命中才 MarkActDone，
+// Lesson / 开场 / 告别 / 答题的结果一律忽略——否则会把授课收尾误认成散场。
+// 课程里两段日常隔了一夜，剧情幕之间不隔夜，所以词表分开。
+// ★ 公共词表用子串匹配，短词不放进来：「就到这里」太短，会把剧情收尾也收掉。
+inline bool SaidFarewellIn(const std::wstring& say, bool isStory) {
+if (say.empty()) return false;
+static const wchar_t* kCommon[] = {
+    L"今天就到这里", L"今天先到这里", L"今天就这样",
+    L"先这样吧", L"那就先这样",
+    L"该回去了", L"该回家了", L"回去吧", L"回去了",
+    L"时间不早了", L"不早了", L"走吧，回", L"回去吧，"
+};
+for (const wchar_t* w : kCommon)
+    if (say.find(w) != std::wstring::npos) return true;
+if (isStory) {
+    static const wchar_t* kStory[] = {
+        L"就到这里", L"就到这儿", L"到这里吧", L"到这儿吧", L"先到这儿"
+    };
+    for (const wchar_t* w : kStory)
+        if (say.find(w) != std::wstring::npos) return true;
+} else {
+    static const wchar_t* kCourse[] = {
+        L"明天见", L"明天再见", L"晚安", L"今天也累了"
+    };
+    for (const wchar_t* w : kCourse)
+        if (say.find(w) != std::wstring::npos) return true;
+}
+return false;
+}
+
+// 按钮文案只由这里决定。按钮、状态栏、日志读同一个答案。
+inline std::wstring LabelOf(bool isStory, bool isLast, Stage stage, bool hasQuiz) {
+if (stage == Stage::Lesson) return hasQuiz ? L"考考我吧" : L"今天就到这里";
+if (stage != Stage::Daily)  return L"";
+if (isLast) return L"今天就到这里";
+return isStory ? L"下一幕" : L"明天见";
+}
+
+inline std::wstring TurnTail(int wait) {
+if (wait <= 0) return L"";
+return L"（再聊 " + std::to_wstring(wait) + L" 轮就到点了）";
+}
+
+// 唯一的推进判据。渲染 / 命中 / 点击 / 状态栏 / 回放都读它。
+inline Result Evaluate(const Input& in) {
+Result r;
+r.label = LabelOf(in.isStory, in.isLast, in.stage, in.hasQuiz);
+
+if (in.stage == Stage::Other) {
+    r.reason = L"这一段由剧情自己推进";
+    return r;
+}
+if (in.stage == Stage::Intro) {
+    r.wait = kIntroMinTurns - in.turns;
+    if (r.wait < 0) r.wait = 0;
+    r.reason = L"开场：先聊几句，之后才能往下走";
+    return r;                       // 开场不设玩家出口
+}
+// ★ 终点是「该做的事做完了」，轮数只是「别一进来就催人走」的下限，两者 OR。
+//   Daily：她说完告别（done）立刻亮；没说就等轮数到点。
+//   Lesson：不读 done——一句「晚安」不能跳过考试，出口永远是开考/收课。
+const bool doneCounts = (in.stage == Stage::Daily);
+r.ready = (doneCounts && in.done) || in.turns >= kMinTurnsBeforeExit;
+r.wait  = r.ready ? 0 : (kMinTurnsBeforeExit - in.turns);
+
+const std::wstring readyWhy = L"点右上角「" + r.label + L"」把这一段收掉";
+if (in.stage == Stage::Lesson) {
+    r.confirm = in.hasQuiz ? L"这一章讲完了，准备出题" : L"这一章收了";
+    if (r.ready)
+        r.reason = readyWhy;
+    else
+        r.reason = in.hasQuiz
+            ? (L"还在上课，先把这一章讲完" + TurnTail(r.wait))
+            : (L"这一章还没收尾" + TurnTail(r.wait));
+} else {
+    r.confirm = in.isStory ? L"这一幕先到这里" : L"今天先到这里";
+    if (r.ready)
+        r.reason = in.done
+            ? (L"她已经说过了告别的话——" + readyWhy)   // 台词点亮的路径
+            : (L"这一段的戏已经够了，" + readyWhy);
+    else {
+        const std::wstring head = in.isStory ? L"这一幕还没演完" : L"还想再聊一会儿";
+        r.reason = head + TurnTail(r.wait);
+    }
+}
+return r;
+}
+
+} // namespace advance
+// 自测驱动，默认关闭
+// 编译时定义 ADVANCE_SELF_TEST=1（g++/clang++/cl 都行），本文件就变成一个
+// 只跑推进契约的命令行程序，输出用例数并把结果打到 stdout；不定义时这段
+// 完全不存在，不影响正常 Windows 构建，也不会跟底部的 WinMain 冲突。
+//
+// 为什么要放在这个文件里而不是 tests/ 另起一份：
+// 单文件工程里，契约和实现只活一份。tests/ 那个 .cpp 如果自己再定义一遍
+// Evaluate，改了这里、那边不跟着变，就会悄悄退化成"两份真理"
+// 这正是「明天见」那类 bug 的温床。跑法：
+// g++ -std=c++17 -DADVANCE_SELF_TEST=1 main.cpp -o advtest && ./advtest
+#if ADVANCE_SELF_TEST
+
+#include <cstdio>
+#include <cwchar>
+
+static int g_pass = 0, g_fail = 0;
+#define T(expr, msg) do { \
+if (expr) { ++g_pass; std::printf("[ OK ] %s\n", msg); } \
+else { ++g_fail; std::printf("[FAIL] %s\n", msg); } \
+} while (0)
+#define TS(hay, needle, msg) T((hay).find(needle) != std::wstring::npos, msg)
+int main() {
+using advance::Stage;
+using advance::Input;
+using advance::Evaluate;
+using advance::SaidFarewellIn;
+using advance::LabelOf;
+
+auto M = [](Stage s, int t, bool d=false, bool st=false, bool last=false, bool qz=false) {
+    Input in; in.stage=s; in.turns=t; in.done=d; in.isStory=st; in.isLast=last; in.hasQuiz=qz; return in;
+};
+
+// ---- 1. 阶段矩阵
+T(!Evaluate(M(Stage::Intro,  0)).ready,  "Intro 0 无出口");
+T(!Evaluate(M(Stage::Intro, 99)).ready,  "Intro 99 轮仍无出口");
+T(!Evaluate(M(Stage::Other, 99, true)).ready, "Other 即使 done 也无出口");
+T( Evaluate(M(Stage::Intro, 0)).wait >= 0,   "Intro 给出还要几轮");
+T(!Evaluate(M(Stage::Daily,  2)).ready, "Daily 第2轮未到下限");
+T( Evaluate(M(Stage::Daily,  3)).ready, "Daily 第3轮到下限");
+T(!Evaluate(M(Stage::Lesson, 2)).ready, "Lesson 第2轮未到下限");
+T( Evaluate(M(Stage::Lesson, 3)).ready, "Lesson 第3轮到下限");
+T( Evaluate(M(Stage::Daily,  0, true)).ready, "Daily：done 第0轮开出口");
+T(!Evaluate(M(Stage::Lesson, 0, true)).ready, "Lesson：done 不跳过考试");
+T( Evaluate(M(Stage::Daily, 50, true)).ready, "done 后继续聊仍可走");
+{
+    auto r = Evaluate(M(Stage::Daily, 1));
+    T(r.wait == 2, "wait = 下限 - 当前轮数");
+    T(!r.reason.empty(), "未就绪有原因说明");
+}
+TS(Evaluate(M(Stage::Daily, 3)).reason, L"明天见", "就绪说明含按钮文案（课程）");
+TS(Evaluate(M(Stage::Daily, 3, false, true)).reason, L"下一幕", "就绪说明含按钮文案（剧情）");
+TS(Evaluate(M(Stage::Lesson, 3, false, false, false, true)).reason, L"考考我吧", "就绪说明含按钮文案（授课）");
+
+// ---- 2. 散场词表
+T( SaidFarewellIn(L"那，明天见", false),       "课程认「明天见」");
+T( SaidFarewellIn(L"晚安，早点休息", false),   "课程认「晚安」");
+T( SaidFarewellIn(L"时间不早了", false),       "课程认公共词");
+T(!SaidFarewellIn(L"这一幕就到这里吧", false), "课程不认剧情收尾词");
+T( SaidFarewellIn(L"这一幕就到这里", true),    "剧情认收尾");
+T( SaidFarewellIn(L"先到这儿吧", true),        "剧情认短收尾");
+T(!SaidFarewellIn(L"明天见", true),            "剧情不认「明天见」");
+T(!SaidFarewellIn(L"走吧，去商店街", false),   "「走吧，去…」不是散场");
+T( SaidFarewellIn(L"走吧，回去吧", false),     "「走吧，回」才是散场");
+T(!SaidFarewellIn(L"", false),                 "空台词不算散场");
+
+// ---- 3. 文案
+T(LabelOf(false, false, Stage::Lesson, true)  == L"考考我吧",     "授课有题");
+T(LabelOf(false, false, Stage::Lesson, false) == L"今天就到这里", "授课无题");
+T(LabelOf(false, false, Stage::Daily,  false) == L"明天见",       "课程下一章");
+T(LabelOf(true,  false, Stage::Daily,  false) == L"下一幕",       "剧情下一幕");
+T(LabelOf(false, true,  Stage::Daily,  false) == L"今天就到这里", "课程最后一章");
+T(LabelOf(true,  true,  Stage::Daily,  false) == L"今天就到这里", "剧情最后一幕");
+T(LabelOf(false, false, Stage::Intro,  false).empty(),            "开场无按钮");
+
+// ---- 4. 存档回放（对应 save_s1.json 的 dirStage/dirTurn 语义）
+auto fromSave = [](int ds, int dt) {
+    Input in;
+    in.stage  = (ds==1) ? Stage::Intro : (ds==2) ? Stage::Daily : Stage::Lesson;
+    in.turns  = dt < 0 ? 0 : dt;
+    in.done   = false;
+    return in;
+};
+T(!Evaluate(fromSave(2, 2)).ready,        "回退档读档后出口不亮");
+T( Evaluate(fromSave(2, 2)).wait == 1,    "回退档还差 1 轮");
+T( Evaluate(fromSave(2, 11)).ready,       "保留日常档读档可走");
+T( Evaluate(fromSave(2, 13)).ready,       "原始档读档可走");
+T(!Evaluate(fromSave(1, 20)).ready,       "开场档没有出口");
+
+// ---- 5. 点击链路：画出来 = 能点（打字中不再拦、不画灰）
+auto click = [](const advance::Result& p, bool) -> bool {
+    if (!p.ready) return false;      // 没画出来，进不到点击分支
+    return true;                     // 推进入口只问同一份 p.ready
+};
+auto blocked = Evaluate(M(Stage::Daily, 2)),
+     ready   = Evaluate(M(Stage::Daily, 3)),
+     byDone  = Evaluate(M(Stage::Daily, 0, true));
+T(!click(blocked, false), "未就绪：点不动");
+T( click(ready,  false),  "就绪：点得动");
+T( click(ready,  true),   "打字中也点得动");
+T( click(byDone, true),   "done 开出口后立刻点得动");
+
+std::printf("\nadvance self-test: %d passed, %d failed\n", g_pass, g_fail);
+return g_fail ? 1 : 0;
+}
+
+#endif // ADVANCE_SELF_TEST
+// Windows 头文件（rpcndr.h，被 windows.h 层层包含）里有这么一句：#define small char。
+// 于是任何叫 small 的变量都会被展开成 char，报出来的错是
+// "Gdiplus::Bitmap 后面接 char 非法"（C2628 + C2062）——跟真实原因完全对不上，
+// 排查时极易被引到"是不是少写了分号"上去。这里一律撤销，以后谁再写
+// Bitmap small(...) 也不会炸。（Linux 下的垫片没有这些宏，所以本地编译干净、MSVC 才报错。）
 #undef small
 #undef hyper
 #undef boolean
-
-//==============================================================================================
-//  模块：JSON —— 极简 JSON：解析 / 取值 / 序列化
+// 模块：JSON —— 极简 JSON：解析 / 取值 / 序列化
 //
-//  自己写是为了"零第三方依赖"。接大模型只需要 JSON 的一个子集：
-//  对象、数组、字符串、数字、布尔、null。
-//==============================================================================================
+// 自己写是为了"零第三方依赖"。接大模型只需要 JSON 的一个子集：
+// 对象、数组、字符串、数字、布尔、null。
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -147,13 +402,10 @@ std::string JsonDump(const JValue& v, int indent = -1);
 std::string JsonEscape(const std::string& u8);
 
 } // namespace ck
-
-//==============================================================================================
-//  模块：表达式（声明）—— 编译成 RPN + 求值
+// 模块：表达式（声明）—— 编译成 RPN + 求值
 //
-//  剧本里写 $好感 += 5、@if $好感 >= 10。编译成 RPN 后求值，
-//  比每次重新解析字符串快，也能在编译期报出语法错误。
-//==============================================================================================
+// 剧本里写 $好感 += 5、@if $好感 >= 10。编译成 RPN 后求值，
+// 比每次重新解析字符串快，也能在编译期报出语法错误。
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -209,14 +461,11 @@ void ExprRefVars(const std::vector<ETok>& rpn, std::vector<std::wstring>& out);
 // 调试用：把 RPN 还原成可读形式
 
 } // namespace ck
-
-//==============================================================================================
-//  模块：通用工具（声明）—— 编码转换、字符串、路径、文件、ini
+// 模块：通用工具（声明）—— 编码转换、字符串、路径、文件、ini
 //
-//  贯穿全项目的约定（先说清，否则每个模块都会踩）：
-//     窄字符串 std::string 一律 UTF-8；宽字符串 std::wstring 是 UTF-16。
-//  ini 不用 GetPrivateProfileStringW：它对 UTF-8 支持不可靠，自己解析 + 编码探测。
-//==============================================================================================
+// 贯穿全项目的约定（先说清，否则每个模块都会踩）：
+// 窄字符串 std::string 一律 UTF-8；宽字符串 std::wstring 是 UTF-16。
+// ini 不用 GetPrivateProfileStringW：它对 UTF-8 支持不可靠，自己解析 + 编码探测。
 #undef  NOMINMAX
 #define NOMINMAX
                          // 这些不在 windows.h 里。shlwapi.h 有时会间接带进来，
@@ -243,12 +492,11 @@ void   Split(const std::wstring& s, wchar_t sep, std::vector<std::wstring>& out)
 
 // 按行切分，兼容 \n / \r\n / \r
 void   SplitLines(const std::wstring& text, std::vector<std::wstring>& out);
-
 // 把显式换行（\r\n / \n / \r）抹成一个空格，并去掉首尾空白。
 //
-// 【为什么需要它】GDI+ 的 DrawString 会把 \n 当成真换行。
+// 为什么需要它GDI+ 的 DrawString 会把 \n 当成真换行。
 // 于是"先按宽度折行、再交给 DrawString"这套流程里，
-// 只要原始文本还留着 \n，DrawString 就会在折好的行里再换一次行——
+// 只要原始文本还留着 \n，DrawString 就会在折好的行里再换一次行
 // 而外层循环只按固定行高往下挪，后一段就整片压在前一段上。
 // 读档界面的"字符重叠"就是这个。
 //
@@ -281,14 +529,12 @@ bool ReadTextFile(const std::wstring& path, std::wstring& out);
 
 // 写文本：写 UTF-8 带 BOM。带 BOM 是为了让记事本和 VS 打开时不猜错编码。
 bool WriteTextFile(const std::wstring& path, const std::wstring& text);
-
 // 不写 BOM 的版本。
 //
 // cmd.exe 不认 UTF-8 BOM：BOM 的三个字节会被当成命令的一部分，
 // 于是批处理第一行变成 "ï»¿@echo off"，cmd 报"不是内部或外部命令"，
 // @echo off 也就没生效——后续每条命令都被回显进日志，跟编译器输出混在一起。
 // 生成的 .bat 必须用这个版本写。
-
 // 读成 UTF-8 窄串（喂给 JSON 解析器用）
 bool ReadFileU8(const std::wstring& path, std::string& out);
 // 按二进制读整个文件。图片要从字节流解码，不能走文本那条路
@@ -324,7 +570,6 @@ int    RandInt(int lo, int hi);
 
 // 毫秒计时，用于打字机速度和动画节拍
 unsigned long long NowMs();
-
 // 存档时间戳。
 //
 // 为什么不能用 GetTickCount64：它从开机算起，重启就归零。
@@ -332,8 +577,7 @@ unsigned long long NowMs();
 // 重启后反而变旧。FILETIME 是绝对时间，跨重启稳定。
 long long NowStamp();                    // FILETIME 转成的 100ns 计数
 std::wstring FormatStamp(long long ft);  // "2026-10-23 14:37"，空/0 返回空串
-std::wstring NowStampSec();              // 当前时间 "2026-10-25 14:32:10"（本地时区，精确到秒）
-// 只要 "14:32:10"。给对话记录用——那边每行都有日期太占地方，
+std::wstring NowStampSec();              // 当前时间 "YYYY-MM-DD HH:MM:SS"（本地时区，精确到秒）
 // 而核对素材调用日志时秒级精度就够对上了。
 std::wstring NowClockSec();
 bool AppendTextFile(const std::wstring& path, const std::wstring& text);
@@ -356,100 +600,78 @@ std::wstring ToLower(const std::wstring& s);
 // 按单个字符切分。空段会被跳过（"a__b" -> [a, b]）。
 // 自动扫描服装/表情时靠它把文件名拆成段。
 std::vector<std::wstring> SplitBy(const std::wstring& s, wchar_t ch);
-
-// 递归删除整个目录。失败返回 false。用于删【剧本包】/ 覆盖安装时清旧目录。
+// 递归删除整个目录。失败返回 false。用于删剧本包/ 覆盖安装时清旧目录。
 //
-// 【不用于角色包】
-// 角色包只能【解绑】（CharBank::Hide，一个文件都不动），不能在这里删——
+// 不用于角色包
+// 角色包只能解绑（CharBank::Hide，一个文件都不动），不能在这里删
 // 包是玩家一张张攒起来的，误删无法撤销。真要彻底删除，去 assets\char 下手动删。
 // 注：早期版本曾注释说它「用于卸载角色包」，那是没接线的旧设计，别照做。
 // 会先删文件再删子目录，顺序反了删不掉。
 bool RemoveDirRecursive(const std::wstring& dir);
-
 // 移动（重命名）目录。同盘符下是原子操作，所以安装用它做"解到临时目录再落位"。
 // 跨盘符时 MoveFile 会失败，这时候退回"复制+删除"。
-
 // 调试输出：Release 下整段被优化掉
 void Dbg(const wchar_t* fmt, ...);
-
-//==============================================================================================
-//  模块：角色库（声明）—— 包结构、加载、语气变换、人设 prompt
+// 模块：角色库（声明）—— 包结构、加载、语气变换、人设 prompt
 //
-//  一个角色 = 一个包（身份设定只有一份，全在 char.ini 里）：
-//     assets/char/<id>/char.ini     元信息 / [Prompt] 人设全文 / [Memory] 前世记忆
-//                                   / 素材注解 / 素材语义角色
-//     assets/char/<id>/sprite/      立绘
+// 一个角色 = 一个包（身份设定只有一份，全在 char.ini 里）：
+// assets/char/<id>/char.ini 元信息 / [Prompt] 人设全文 / [Memory] 前世记忆
+// / 素材注解 / 素材语义角色
+// assets/char/<id>/sprite/ 立绘
 //
-//  【为什么不再有 prompt.txt】以前人设单独成文件（ini 不支持多行），
-//  结果"她怎么说话"和"她是谁"分成两份、功能高度雷同，还互相打架。
-//  现在 ini 支持续行了（行首一个空格），人设统一写进 [Prompt] 段：
-//  角色卡能直接编辑，换包只搬一个文件。老包里的 txt 仍兼容读取。
+// 为什么不再有 prompt.txt：早期版本人设单独成文件（ini 不支持多行），
+// 结果"她怎么说话"和"她是谁"分成两份、功能高度雷同，还互相打架。
+// 现在 ini 支持续行了（行首一个空格），人设统一写进 [Prompt] 段：
+// 角色卡能直接编辑，换包只搬一个文件。老包里的 txt 仍兼容读取。
 //
-//  角色包只有一个存放处：<exe>\assets\char\，一个角色一个子目录。
-//  它在程序目录里——所有运行文件都不离开 Debug，整个目录拷走就能跑。
+// 角色包只有一个存放处：<exe>\assets\char\，一个角色一个子目录。
+// 它在程序目录里——所有运行文件都不离开 Debug，整个目录拷走就能跑。
 //
-//  语气三层：语气包（自称/对称/句尾替换）→ 台词重写表 → [Prompt]（联网主力）。
-//  剧本里写的「她」是【角色 id】（= 包目录名）；立绘前缀默认等于 id，
-//  可用 [Char] Ch= / [Sprite] Key= 覆盖；显示名是 [Char] Name=。
-//==============================================================================================
+// 语气三层：语气包（自称/对称/句尾替换）→ 台词重写表 → [Prompt]（联网主力）。
+// 剧本里写的「她」是角色 id（= 包目录名）；立绘前缀默认等于 id，
+// 可用 [Char] Ch= / [Sprite] Key= 覆盖；显示名是 [Char] Name=。
 #undef  NOMINMAX
 #define NOMINMAX
-
 // ---------------------------------------------------------------- 角色定义
 // ============================================================================
 //  前世记忆（char.ini 的 [Memory] 段）
 // ============================================================================
 //
-// 定位是"她【经历过什么】"，不是"她【要做什么】"。
-// 写的是履历和素材，让她在这一世临场自己决定怎么用。
+// 定位：写「她经历过什么」，不写「她这一世要做什么」。只提供履历与素材，
+// 这一世怎么用，交给模型临场决定。
 //
-// 【为什么需要这一段】
-// 之前她手里只有抽象标签（小恶魔、爱开玩笑、恋爱知识来自漫画）。
-// 抽象标签只能生成【类型化反应】——被撩就脸红、嘴硬、否认，
-// 于是日常段六轮全是同一个四拍结构：接球、反射、把球踢回去。
-// 有了具体的过去，她才可能【主动】说点什么：
-// 聊到吃的能接一句"我从小吃到大"，被问起童年能讲一段自己的事。
+// ★ 只给抽象标签（小恶魔、爱开玩笑、恋爱知识来自漫画）会掉进类型化反应：
+//   被撩→脸红→嘴硬→否认，日常几轮都是同一个四拍。补上具体的过去，她才可能
+//   主动开口：聊到吃的接一句「我从小吃到大」，被问起童年能讲一段自己的事。
 //
-// 【三条边界，写 ini 时必须守住】
-// [Memory] 段里"在意.N / 记得.N / 雷区.N"每组最多读多少条。
-// 定义在 CharMemory 之前：ParseCharMemory 和前世记忆页都要用它。
+// 写 ini 的三条边界：
+//   1. 梗写成「她知道这个说法」，不是「她每句都要说」——口头禅句句挂会很吵。
+//   2. 共同记忆只写已经发生的事，不写这一世要演什么；写成剧本，模型就从
+//      「主动推进」退化成「照本宣科」。
+//   3. 共同记忆只对「确实是那个人」的玩家成立，身份由 [Player].Name 决定；
+//      换角色包整段跟着走，引擎不认识任何名字，也不预设两人关系。
+//
+// 这一段属于角色包内容：不进素材清单、不计素材指纹，改动不该触发笔记重生成。
+//
+// [Memory] 段里「在意.N / 记得.N / 雷区.N」每组最多读 kMemMax 条。
+// 上限必须在 CharMemory 之前定义：ParseCharMemory 与前世记忆页都要用它。
 const int kMemMax = 32;
 
-// ★ 边界：这一段不预设两人是什么关系。最早写的是"只写这一世之前的事、
-//   绝不写她和你相恋"（为了配合"玩家身份自由、初次见面"的设定）。
-//   现在的设定是【关系由角色包决定】：包里写「已经相恋」，她就照相恋演；
-//   包里写「初次见面」，她就照陌生人演。引擎不认识任何名字，也不预设关系。
-//   那条旧边界因此反过来成了缺陷：它把两人独有的记忆全部挡在外面，
-//   于是她只能靠抽象标签演"类型化反应"（被撩→脸红→嘴硬），
-//   而"我记得我们一起经历过什么"恰恰是感情线上最有分量的素材。
-//
-// 现在只守这三条：
-// 1. 梗写成"她知道这个说法"，不写成"她每句都要说"——
-//    每句都挂口头禅会很吵，正是要避免的。
-// 2. 共同记忆写【已经发生过的事】，不写【这一世要演什么】——
-//    那是剧本，写了就把"模型主动推进"退回成"照本宣科"。
-// 3. 共同记忆只在他【确实是那个人】时才成立。玩家身份由 [Player].Name 决定；
-//    换角色包时整段跟着包走，代码不认识任何名字。
-//
-// 【这一段属于角色包内容】不进素材清单、不参与素材指纹——改它不该触发笔记重生成。
 struct CharMemory {
     std::wstring              origin;   // 出身与日常
     std::vector<std::wstring> people;   // 在意的人
     std::vector<std::wstring> recall;   // 记得的小事（核心：具体、能被自然提起）
     std::wstring              habit;    // 说话的习惯 / 反应方式
     std::vector<std::wstring> taboo;    // 在意的事 / 雷区
-    std::vector<std::wstring> together; // 【你们之间】共同经历过的事
+    std::vector<std::wstring> together; // 你们之间共同经历过的事
 
     bool empty() const {
         return origin.empty() && people.empty() && recall.empty()
             && habit.empty() && taboo.empty() && together.empty();
     }
-
-    // 拼进 system prompt。
-    //
-    // 【"不要逐条复述"这句必须写】
-    // 不写的话她会把这份履历当成自我介绍背一遍——开场连着报出身、讲设定、
-    // 说蕨饼，像在念档案。写了之后她只会【在相关话题被提起时】才拿出来。
+    // 拼进 system prompt。「不要逐条复述」这句必须保留：
+    // 缺了它，她会把履历当自我介绍背一遍——提到蕨饼也像在念档案；
+    // 有这句，她只会在话题相关、或自己想说点什么时才提起。
     std::wstring ToPrompt() const {
         if (empty()) return L"";
         std::wstring t;
@@ -471,15 +693,13 @@ struct CharMemory {
             for (size_t i = 0; i < taboo.size(); ++i) t += L"- " + taboo[i] + L"\n";
         }
         //
-        // ---- 【你们之间发生过的事】
-        //
         // 这一块是"增进彼此了解"最直接的燃料。
-        // 只有抽象标签时，她能做的只有【反射】：接球、脸红、把球踢回去。
-        // 有了共同经历，她才可能【主动】提起——
-        // "说到烤香鱼……那次也是你带我去的吧"，这类话是从这里长出来的，
+        // 只有抽象标签时，她能做的只有反射：接球、脸红、把球踢回去。
+        // 有了共同经历，她才可能主动提起
+        // "说到烤鱼……那次也是
         // 不是靠"每轮必须主动"这种禁令逼出来的。
         //
-        // 【同样不要逐条复述】：不写的话她会把两个人谈过的恋爱
+        // 同样不要逐条复述：不写的话她会把两个人谈过的恋爱
         // 当着他的面从头讲一遍，像在念回忆录。
         if (!together.empty()) {
             t += L"\n【你们之间发生过的事】（这些是你和他一起经历的，你都记得）\n";
@@ -500,13 +720,12 @@ struct CharDef {
     std::wstring chKey;         // 立绘文件名前缀，默认 = id
     std::wstring desc;          // 选角界面的一句话简介
     std::wstring tag;           // 风格标签：傲娇 / 温柔 / 毒舌……（选角界面显示）
-
     // ---- 玩家的固定身份（续集设定）
     //
     // 玩家不再自己起名——进剧情就是这个人。名字写在角色包里，
     // 换包时"她陪的是谁"跟着包一起换，代码不认识任何具体名字。
     //
-    // playerRelation 写的是"你们现在是什么关系"，决定开场怎么演：
+    // playerRelation 写的是"
     // 是刚认识，还是已经相恋。
     std::wstring playerName;      // 玩家是谁，由角色包 [Player].Name 决定
     std::wstring playerRelation;  // 你们现在是什么关系（原作续集设定）
@@ -530,22 +749,20 @@ struct CharDef {
 
     // ---- 台词重写表：原文 → 该角色版本
     std::map<std::wstring, std::wstring> rewrite;
-
     // ---- 表情差分映射：剧本里的 emote 标签 → 立绘后缀
     // 没配就直接用 emote 标签本身当后缀（hime_smile.png）
     // 表情标签 -> 文件后缀。剧本里写 [emote:joy]，这里决定实际找 joy / 开心 / smile。
     //
-    // 【为什么还要额外扫一份 faceOrder】
-    // emoteMap 是"标签→后缀"的【映射表】，作者得先在 ini 里写才知道有哪些。
+    // 为什么还要额外扫一份 faceOrder
+    // emoteMap 是"标签→后缀"的映射表，作者得先在 ini 里写才知道有哪些。
     // 但立绘文件名本身已经带表情（角色名_平静.png），
     // 扫目录就能知道"这个角色到底画了哪些表情"——不需要作者再抄一遍。
     // 扫出来的这份直接交给模型，作者加一张新表情图就立刻可用。
     std::map<std::wstring, std::wstring> emoteMap;
-
     // ---- 立绘配置
     //
-    //  不同角色的立绘由不同画师画、尺寸构图都不一样，所以除了"用哪张图"，
-    //  还得能调"画多大、放哪"。这几个字段就是干这个的，全部可选。
+    // 不同角色的立绘由不同画师画、尺寸构图都不一样，所以除了"用哪张图"，
+    // 还得能调"画多大、放哪"。这几个字段就是干这个的，全部可选。
     std::wstring spriteDir = L"ch";   // 立绘所在子目录（相对 assets/）
     double spriteScale = 1.0;         // 显示缩放，统一不同来源立绘的视觉大小
     int    offsetX = 0;               // 水平偏移（逻辑坐标，负=往左）
@@ -554,34 +771,30 @@ struct CharDef {
     // > 包内自动发现的 卡面.png / card.png / 头像.png > 默认造型。
     // 留空不会显示不出人——会退回该角色扫出来的默认造型。
     std::wstring portrait;
-
     // ---- 标题插画（主页右侧那张大图）
     //
-    //  真正的视觉小说，标题画面右侧都有一张角色全身插画——
-    //  它不是立绘，是要单独画的一张构图（更大、有场景感、往往带特效）。
-    //  商业视觉小说基本都是这个布局：左边竖排菜单，右边角色插画。
+    // 真正的视觉小说，标题画面右侧都有一张角色全身插画
+    // 它不是立绘，是要单独画的一张构图（更大、有场景感、往往带特效）。
+    // 商业视觉小说基本都是这个布局：左边竖排菜单，右边角色插画。
     //
-    //  留空时退回该角色的立绘（默认服装 + 平静表情），
-    //  这样没专门画插画的角色也不会空着一块。
+    // 留空时退回该角色的立绘（默认服装 + 平静表情），
+    // 这样没专门画插画的角色也不会空着一块。
     std::wstring titleArt;            // 相对角色包目录；留空 = 用立绘
-
     // ---- 背景：这个角色"自己的一套"
     // 不同角色的世界观往往完全不同——有的是校园，有的是小镇，有的是都市。
     // 共用一套通用背景等于把几个不相干的世界混在一起，出戏感非常强。
-    // 所以每个角色包可以自带 bg/，并在这里把【剧本里的槽位名】
-    // 映射成【自己那套图的文件名】。
+    // 所以每个角色包可以自带 bg/，并在这里把剧本里的槽位名
+    // 映射成自己那套图的文件名。
     std::wstring bgDir;                                 // 背景目录（角色包里是绝对路径）
     std::map<std::wstring, std::wstring> bgMap;         // 槽位名 -> 文件名，如 课 -> 和室
     std::wstring bgFit;                                 // 这个角色那套图的默认构图模式
-
     // ---- BGM：每个角色自带一首（或一套）
     // 跟背景同一个思路：剧本里 @bgm 后面写槽位名（平静 / 紧张 / 结局……），
     // 由角色包映射成自己的音频文件。三个角色的 BGM 情绪调性完全不同，
     // 共用一首等于把她们的"听觉性格"抹平。
     std::wstring bgmDir;                                // BGM 目录（角色包里是绝对路径）
     std::map<std::wstring, std::wstring> bgmMap;        // 槽位名 -> 文件名
-
-    // 【素材情绪标注：作者告诉模型"这首曲子/这张图是什么感觉"】
+    // 素材情绪标注：作者告诉模型"这首曲子/这张图是什么感觉"
     //
     // 日文曲名（和気藹々、花鳥風月）或抽象图名，模型看不出该在什么场合用，
     // 于是它只能一直挑同一个最眼熟的——玩家就觉得"她根本不会选"。
@@ -589,51 +802,47 @@ struct CharDef {
     // char.ini 的 [AssetMood] 段，键=素材名，值=一句话氛围说明。
     std::map<std::wstring, std::wstring> assetMood;
     std::wstring bgmDefault;                            // 主题曲：只配一首时所有槽位用它
-
     // ---- 主页 BGM（跟游戏内的 BGM 分开）
     //
-    //  主页是"还没进入故事"的状态，情绪跟任何一章都不一样——
-    //  游戏里的 BGM 都是"某个场景的音乐"（上课、紧张、结局），
-    //  用在标题页会显得莫名其妙。真正 VN 的标题曲都是单独一首。
+    // 主页是"还没进入故事"的状态，情绪跟任何一章都不一样
+    // 游戏里的 BGM 都是"某个场景的音乐"（上课、紧张、结局），
+    // 用在标题页会显得莫名其妙。真正 VN 的标题曲都是单独一首。
     //
-    //  没配时退回 bgmDefault（那个角色总得有首曲子），再没有就退回通用。
+    // 没配时退回 bgmDefault（那个角色总得有首曲子），再没有就退回通用。
     std::wstring bgmTitle;
-
     // ---- 服装（已移除：字段保留只为兼容老存档）
     //
-    //  早期版本支持【服装 × 表情】的二维组合（校服_笑.png / 私服_笑.png）。
-    //  实际用下来问题比价值大：同一场景、同一章里角色往往穿过好几套衣服，
-    //  模型很难判断该切哪一套，切错了比不切更出戏；不换装画面也已经完整。
-    //  所以这一维整体拿掉了——立绘文件名【整段就是表情名】，不再切分。
+    // 早期版本支持服装 × 表情的二维组合（校服_笑.png / 私服_笑.png）。
+    // 实际用下来问题比价值大：同一场景、同一章里角色往往穿过好几套衣服，
+    // 模型很难判断该切哪一套，切错了比不切更出戏；不换装画面也已经完整。
+    // 所以这一维整体拿掉了——立绘文件名整段就是表情名，不再切分。
     std::map<std::wstring, std::wstring> outfits;       // 已废弃：不再参与立绘选择
     std::vector<std::wstring> outfitOrder;              // 已废弃：恒为空
 
     // 从立绘文件名里扫出来的【真实表情名】（平静 / 害羞 / 得意 …）。
     // 不是 ini 配的，是看目录里实际画了哪些。空 = 没分表情，退回四档。
     std::vector<std::wstring> faceOrder;
-
     // ---- 造型（服装 + 表情捆绑）
     //
-    // 【这是给模型用的主字段】
+    // 这是给模型用的主字段
     // 立绘是服装 × 表情一张一张画的：4 套衣服 × 4 组表情 = 16 张图。
     // 拆成"服装"和"表情"两个独立维度去组合，会组合出根本不存在的那张
-    // （校服 + 害羞 可能压根没画），然后靠降级链悄悄退回平静脸——
-    // 模型以为自己选对了，玩家看到的是错的。
+    // （校服 + 害羞 可能压根没画），然后靠降级链悄悄退回平静脸
+    // 模型以为自己选对了，
     //
-    // 所以直接把文件名里的中缀整个作为【造型名】交给模型：
+    // 所以直接把文件名里的中缀整个作为造型名交给模型：
     // 校服_平静 / 校服_开心 / 私服_害羞 … 它选哪个就用哪个，
     // 选到的必然是真实存在的那一张图。
     std::vector<std::wstring> poseOrder;
-
     // ---- 服装 × 表情 的二维真值表
     //
-    // 【为什么多套服装之后必须要有它】
+    // 为什么多套服装之后必须要有它
     // 一套衣服不一定画全了所有表情：忍者服可能只有 平静/认真/生气，
     // 而校服有全套。没有这张表，模型挑了「忍者服 + 板书」时程序只能
-    // 悄悄降级——它以为自己选对了，玩家看到的是另一张脸。
+    // 悄悄降级——它以为自己选对了，
     // 有了它就能提前知道"这一套没有这个表情"，从而：
-    //   ① prompt 里只列这一套真正有的表情（她根本选不到没有的）
-    //   ② 真填了没有的组合时，按【保衣服还是保表情】明确降级并记录
+    // ① prompt 里只列这一套真正有的表情（她根本选不到没有的）
+    // ② 真填了没有的组合时，按保衣服还是保表情明确降级并记录
     std::map<std::wstring, std::set<std::wstring> > outfitExpr;   // 服装 -> 这套画了哪些表情
     std::map<std::wstring, std::set<std::wstring> > outfitDirs;   // 服装 -> 用子目录存放时的目录名
     bool HasFace(const std::wstring& n) const;
@@ -645,17 +854,16 @@ struct CharDef {
     // 默认造型：poseOrder 里第一个带"微笑"的，没有就用第一个
     std::wstring DefaultPose() const;
     std::wstring outfitDefault;                         // 默认服装 id
-
-    // ---- 【背景定死服装】
+    // ---- 背景定死服装
     //
     // 一个地方一套衣服。背景一换，穿什么由这张表说了算，
     // 模型填的 outfit 不再生效——"她在教室里穿着睡衣"这种穿帮
     // 靠事后校验是拦不住的（她总能挑到一个清单里存在的名字），
     // 只能从源头把它定死。
     //
-    // 键是【背景名片段】（咖啡馆 / 卧室 …），值是服装 id。
-    // 用片段而不是全名，是因为 黑猫咖啡馆_白天 和 _夜晚 该穿同一套。
-    // 匹配时【最长片段优先】：配了"咖啡馆"和"咖啡馆_夜晚"两条时，
+    // 键是背景名片段（咖啡馆 / 卧室 …），值是服装 id。
+    // 用片段而不是全名，是因为 咖啡馆_白天 和 _夜晚 该穿同一套。
+    // 匹配时最长片段优先：配了"咖啡馆"和"咖啡馆_夜晚"两条时，
     // 后者更具体，赢。
     std::map<std::wstring, std::wstring> bgOutfit;      // 背景片段 -> 服装 id
     std::wstring OutfitForBg(const std::wstring& bg) const;
@@ -700,15 +908,14 @@ struct CharDef {
     // 服装 id -> 文件名中缀。没配过这个 id 就返回空（表示"无中缀"，即本体图）。
     std::wstring OutfitToken(const std::wstring& id) const;
 };
-
 // 通用剧本里代表"当前女主"的占位 id。
 //
-//  剧本是多人共用的，而玩家选谁是不确定的。如果剧本写死 hime:，
-//  那选了别的角色就没法用了。所以通用剧本统一写「她」，
-//  引擎在运行时把它指向玩家选中的那个人——
-//  显示名、立绘、语气、配色全套跟着换，剧本一行都不用改。
+// 剧本是多人共用的，而玩家选谁是不确定的。如果剧本写死 hime:，
+// 那选了别的角色就没法用了。所以通用剧本统一写「她」，
+// 引擎在运行时把它指向玩家选中的那个人
+// 显示名、立绘、语气、配色全套跟着换，剧本一行都不用改。
 //
-//  角色专属剧本里可以直接写真名（比如多人同场对话），两种写法可以混用。
+// 角色专属剧本里可以直接写真名（比如多人同场对话），两种写法可以混用。
 extern const wchar_t* const kLeadKey;      // L"她"
 
 // ---------------------------------------------------------------- 角色库
@@ -730,35 +937,32 @@ public:
     // 扫描 dir 下的角色包（子目录形式）和 *.ini（老的单文件形式）。
     // 一个都没扫到时塞一个内置默认角色，保证没有素材也能开。
     void Load(const std::wstring& dir);
-
     // 再扫一个目录（后装的包）。内置角色和后装的包用同一套解析，
-    // 后装的会覆盖同名 id——这样"改官方角色"也走得通。
-
+    // 后装的会覆盖同名 id
     //
     // ---- 热更新：整个库重扫一遍（手动往 assets\char 放包之后用）
     //
-    // 【为什么必须显式提供一个按钮】
-    //  扫描只在【启动时】做一次。作者按提示去资源管理器里放进一个目录，
-    //  回来怎么点都不会出现——不是没扫，是压根没再扫过。只能重启程序。
-    //  这种"加了却永远不出现、且不报错"最难查，所以给一个明确的入口。
+    // 为什么必须显式提供一个按钮
+    // 扫描只在启动时做一次。作者按提示去资源管理器里放进一个目录，
+    // 回来怎么点都不会出现——不是没扫，是压根没再扫过。只能重启程序。
+    // 这种"加了却永远不出现、且不报错"最难查，所以给一个明确的入口。
     //
-    // 【新出现的包为什么要自动解除解绑】
-    //  解绑名单是按 id 记的，跟着 config 持久化。作者解绑了某个角色、
-    //  后来又把同名目录放回来（或换了个包用同一个 id），
-    //  重扫后它仍被那条旧名单挡着——"加入不了"。
-    //  所以凡是这次新出现的 id，一律先 Unhide，再由玩家决定要不要解绑。
-    //  已经存在的角色不动：那才真是玩家自己解绑的，不能自作主张绑回去。
+    // 新出现的包为什么要自动解除解绑
+    // 解绑名单是按 id 记的，跟着 config 持久化。作者解绑了某个角色、
+    // 后来又把同名目录放回来（或换了个包用同一个 id），
+    // 重扫后它仍被那条旧名单挡着——"加入不了"。
+    // 所以凡是这次新出现的 id，一律先 Unhide，再由玩家决定要不要解绑。
+    // 已经存在的角色不动：那才真是玩家自己解绑的，不能自作主张绑回去。
     CharRescan Rescan(const std::wstring& dir);
 
     const CharDef* Find(const std::wstring& id) const;   // 找不到返回 nullptr；传"她"会解析成当前女主
-
     //
-    // ---- 热更新：重新扫一遍某个角色的【立绘目录】
+    // ---- 热更新：重新扫一遍某个角色的立绘目录
     //
-    // 【为什么背景/音乐不用管，唯独立绘要单独补这一下】
-    // 背景和音乐是 ScanVisibleAssets 每次【现扫目录】拿到的，
-    // 加图删曲会自动跟上。但立绘走的是 def->poseOrder / faceOrder——
-    // 那是【加载角色时】算好存下来的。
+    // 为什么背景/音乐不用管，唯独立绘要单独补这一下
+    // 背景和音乐是 ScanVisibleAssets 每次现扫目录拿到的，
+    // 加图删曲会自动跟上。但立绘走的是 def->poseOrder / faceOrder
+    // 那是加载角色时算好存下来的。
     //
     // 于是：作者玩到一半往 sprite/ 里丢一张新表情，
     // 白名单确实重扫了，可它读的是那份旧数据，新表情永远进不了清单。
@@ -771,26 +975,24 @@ public:
 
     size_t Size() const { return list_.size(); }
     size_t SelectableCount() const;
-
     // 剧本里出现的角色 id 列表，给编译期校验用（校验在 script.cpp 里做）
-
     //
     // ---- 解绑（隐藏）：把角色包从游戏里摘掉，但一个文件都不删
     //
-    // 【为什么解绑不是删除】
-    //  角色包是玩家自己攒的：立绘一张张找、注解一条条写，删掉就没了。
-    //  而"我想先只留一个角色"这种需求常有——它需要的是【暂时不出现】，
-    //  不是【销毁】。物理删除只在 assets 里手动做，游戏内不提供。
+    // 为什么解绑不是删除
+    // 角色包是玩家自己攒的：立绘一张张找、注解一条条写，删掉就没了。
+    // 而"
+    // 不是销毁。物理删除只在 assets 里手动做，游戏内不提供。
     //
-    // 【为什么必须持久化】
-    //  扫描是扫目录的。只从内存列表里摘掉，下次启动一扫又回来了，
-    //  表现就是"解绑了没用"。所以名单要写进 config.ini，扫描后过滤。
+    // 为什么必须持久化
+    // 扫描是扫目录的。只从内存列表里摘掉，下次启动一扫又回来了，
+    // 表现就是"解绑了没用"。所以名单要写进 config.ini，扫描后过滤。
     //
-    // 【过滤点为什么放在 Selectable()】
-    //  选角界面、角色卡列表、翻页、命中测试全都走这一个函数，
-    //  在这里过滤一次，各处自动一致——不会出现"列表里没了但还能点"。
-    //  代价是 Find(id) 仍找得到它：这是故意的，读档时按 charId 切角色，
-    //  那条路不该因为"作者把它解绑了"就崩掉。
+    // 过滤点为什么放在 Selectable
+    // 选角界面、角色卡列表、翻页、命中测试全都走这一个函数，
+    // 在这里过滤一次，各处自动一致——不会出现"列表里没了但还能点"。
+    // 代价是 Find(id) 仍找得到它：这是故意的，读档时按 charId 切角色，
+    // 那条路不该因为"作者把它解绑了"就崩掉。
     void SetHidden(const std::vector<std::wstring>& ids) { hidden_ = ids; }
     const std::vector<std::wstring>& Hidden() const { return hidden_; }
     bool IsHidden(const std::wstring& id) const;
@@ -810,53 +1012,46 @@ private:
     std::vector<std::wstring> hidden_;   // 已解绑的角色 id
     std::wstring leadId_;        // "她" 指向谁
 };
-
 // ---------------------------------------------------------------- 角色包
 //
-//  一个角色包 = assets\char\<名字> 下一个普通文件夹，彼此同级。
-//  没有 .ckchar、没有 zip、也没有"安装"这一步：
+// 一个角色包 = assets\char\<名字> 下一个普通文件夹，彼此同级。
+// 没有 .ckchar、没有 zip、也没有"安装"这一步：
 //
-//    · 新建：角色卡页「＋ 新建角色」直接建出同名文件夹和 char.ini 模板
-//    · 加素材：往 sprite / bg / bgm 里丢，或把图片 / .wav 拖进窗口
-//    · 生效：「打开包目录」放好之后回来点「重新扫描」，不用重启
+// · 新建：角色卡页「＋ 新建角色」直接建出同名文件夹和 char.ini 模板
+// · 加素材：往 sprite / bg / bgm 里丢，或把图片 / .wav 拖进窗口
+// · 生效：「打开包目录」放好之后回来点「重新扫描」，不用重启
 //
-//  分享和备份就是把整个目录拷给别人，对方放进 assets\char 再点重新扫描。
+// 分享和备份就是把整个目录拷给别人，对方放进 assets\char 再点重新扫描。
 //
-//  【原来那条"打成 .ckchar 再拖进来装"的路已经删掉了】
-//  它一直没人能用上：装包得先有 .ckchar，而做出 .ckchar 的唯一办法是
-//  手动用压缩软件打包一个目录——玩家既不知道目录里该有什么，也没有
-//  现成的包可以照着做。现在「新建角色」直接给出同结构的模板，
-//  那条路就多余了。
-
+// 角色包没有打包格式，也没有"安装"这一步。
 // ---------------------------------------------------------------- 语气变换
 // 把一句"中性台词"改写成某个角色会说的话。
 // text 是剧本原文，emote 用来选句尾语气（可选）。
 //
-// 【只作用于剧本模式】——调用点只有剧本 VM 一处（外加选角界面的一次示例渲染）。
+// 只作用于剧本模式——调用点只有剧本 VM 一处（外加选角界面的一次示例渲染）。
 // 导演模式的台词由大模型直出，不经过这里：她自己决定怎么说话，
 // 引擎不再替她改句尾。所以 [Tone] 里的 End_ / Exclaim / Rewrite
-// 在导演模式下【不会生效】，只有 Self / You 例外——那两项写进系统提示词，
-// 两种模式都生效。改这里之前先确认你要改的是哪一种模式。
+// 在导演模式下不会生效，只有 Self / You 例外——那两项写进系统提示词，
+// 两种模式都生效。改这里之前先确认
 std::wstring ApplyTone(const std::wstring& text, const CharDef& def, const std::wstring& emote);
-
 // ---------------------------------------------------------------- 背景解析
 //
-// 剧本里写的 @bg 后面是【槽位名】（开场 / 课 / 题 / 通过 / 卡住 / 终章 / 结局_真……），
+// 剧本里写的 @bg 后面是槽位名（开场 / 课 / 题 / 通过 / 卡住 / 终章 / 结局_真……），
 // 不是具体文件名。由这个函数按当前角色翻译成真正要加载的路径：
-//   1. 角色有 [Bg] 映射 且 那个文件存在  → 用角色自己的
-//   2. 否则                              → 退回通用 assets/bg/<槽位名>
+// 1. 角色有 [Bg] 映射 且 那个文件存在 → 用角色自己的
+// 2. 否则 → 退回通用 assets/bg/<槽位名>
 // ★ 第 1 步要真的检查文件存在：ini 里写了映射但图还没画/没导入，
-//   就该老实退回通用图，而不是画出一片空白。
+// 就该老实退回通用图，而不是画出一片空白。
 //
 // 返回不含扩展名的路径前缀（可能是角色包里的绝对路径）。
 // fitOut 输出构图模式，可能为空（表示用剧本里写的或默认 cover）。
 // ---------------------------------------------------------------- 可见资源
 //
 // ★ 扫目录而不是写死白名单。原来代码里写死 kBgSlots[] / kBgmSlots[] 两份名单：
-//   作者往 assets/bg/ 丢一张新图，代码里没有 -> 模型永远切不过去；
-//   改一次名单要重新编译，而改素材是不该碰代码的；
-//   名单和实际文件对不上（写了某个名字其实没有那张图），模型照着切，画面就白了。
-//   现在【启动时扫目录】，把真实存在的文件名交给模型，单帧扫一次之后缓存住。
+// 作者往 assets/bg/ 丢一张新图，代码里没有 -> 模型永远切不过去；
+// 改一次名单要重新编译，而改素材是不该碰代码的；
+// 名单和实际文件对不上（写了某个名字其实没有那张图），模型照着切，画面就白了。
+// 现在启动时扫目录，把真实存在的文件名交给模型，单帧扫一次之后缓存住。
 struct VisibleAssets {
     std::vector<std::wstring> bg;        // 背景图文件名（不含扩展名/目录）
     std::vector<std::wstring> bgm;       // BGM 文件名
@@ -894,15 +1089,14 @@ struct VisibleAssets {
     std::wstring OutfitList() const;
     std::wstring EmoteList() const;
     std::wstring PoseList() const;
-
     //
-    // ---- 给模型看的清单，但【剔除最近用过的】
+    // ---- 给模型看的清单，但剔除最近用过的
     //
-    // 【这是"表情锁死"的硬约束，光靠措辞压不住】
-    // 运行日志：教学阶段连续 6 轮「叹气」，换行后又连续 6 轮「无语」。
-    // 期间 prompt 里一直写着"两轮必须换脸""不会有人替你换"，她照样填同一个。
+    // 这是"表情锁死"的硬约束，光靠措辞压不住
+    // ★ 症状：教学阶段连续 6 轮「叹气」，换行后又连续 6 轮「无语」。
+    // 期间 prompt 里一直写着"两轮必须换脸""不会有人替
     //
-    // 不是她偷懒（当前值已经不给抄了），是她【真的认为这整段都是同一个情绪】
+    // 不是她偷懒（当前值已经不给抄了），是她真的认为这整段都是同一个情绪
     // ——在她眼里"无可奈何地教"就是「叹气」，讲一章都是这个情绪。
     //
     // 措辞是软约束，清单是硬约束：从菜单里拿掉，她就填不出来。
@@ -918,25 +1112,23 @@ struct VisibleAssets {
 // 扫 assetDir + 角色包自己的目录，填出真实存在的资源清单。
 // def 可以为 nullptr（没建角色包时只扫通用目录）。
 VisibleAssets ScanVisibleAssets(const CharDef* def, const std::wstring& assetDir);
-
-// 把模型给的资源名【归一化】成"扫描清单里的写法"。
+// 把模型给的资源名归一化成"扫描清单里的写法"。
 //
 // 模型经常不照抄清单：它会写成 和気藹々.wav（带扩展名）、
 // bgm\\和気藹々（带目录）、" 神社 "（带空格），甚至 神社.png。
-// 直接拿去 HasBg() 比对全部落空 —— 她明明选了，画面却毫无反应，
-// 而日志里看不出任何异常，只表现为"她好像不会换场景"。
+// 直接拿去 HasBg 比对全部落空 —— 她明明选了，画面却毫无反应，
+// 而运行时看不出任何异常，只表现为"她好像不会换场景"。
 // 三种写法都要接住，接不住等于这个功能没做。
 std::wstring NormalizeAssetName(const std::wstring& n);
-
 // ---- 白名单：给大模型的"能选什么"清单
 //
-// 【为什么要单独做一层，而不是直接把 ScanVisibleAssets 的结果扔给模型】
+// 为什么要单独做一层，而不是直接把 ScanVisibleAssets 的结果扔给模型
 // 清单是"扫目录看到的"，但"扫得到"不等于"解析得到"。
 // 比如 bg 在角色包里、而 ResolveBgFor 走的是另一套路径拼接，
 // 模型选中了它，渲染层却找不到文件 —— 画面纹丝不动，且没有任何报错。
 // 这正是"清单里明明有，她选了却不生效"的根源。
 //
-// 所以白名单 = 扫描 + 【逐个预校验】：每一项都先过一遍真正的解析函数，
+// 所以白名单 = 扫描 + 逐个预校验：每一项都先过一遍真正的解析函数，
 // 解析不到的直接剔除。模型拿到的每一项都保证能用。
 //
 // 生成时机：开局 / 读档时一次，之后复用缓存（不必每轮扫盘）。
@@ -973,56 +1165,53 @@ std::wstring PickBgForMood(const CharDef* def, const std::wstring& assetDir,
 // 游戏内 BGM：固定一首主题曲（[Bgm] Default）。
 // 音乐不交给大模型挑——见 character.cpp 里的说明。
 std::wstring ResolveGameBgmFor(const CharDef* def, const std::wstring& assetDir);
-
-// 从 pool 里挑一个【跟 avoid 不同】的。
+// 从 pool 里挑一个跟 avoid 不同的。
 //
-// 【为什么需要 seed】
+// 为什么需要 seed
 // 阶段切换时要"换一个不同的"，如果用"第一个不同的"，
 // 每次都会挑到同一个（池子顺序固定），第二次转场就等于没换。
 // seed 传阶段切换次数，让每次转场落在不同位置。
 //
-// pool 里没有别的可选（空或只有一项、且那一项就是要避开的）时返回空——
+// pool 里没有别的可选（空或只有一项、且那一项就是要避开的）时返回空
 // 换不了就不换，别拿一个不存在的名字去糊模型。
 std::wstring PickPoseForLine(const std::vector<std::wstring>& pool,
                            const std::vector<std::wstring>& banned,
                            const std::wstring& say, int seed);
 std::wstring PickDifferentFrom(const std::vector<std::wstring>& pool,
                                const std::wstring& avoid, int seed);
-
 // 在清单里找跟 want 对应的真名。
 //
-// 【这是"bg 输出是上课的教室、画面却是乡间小道"的直接对策】
+// 这是"bg 输出是上课的教室、画面却是乡间小道"的直接对策
 // 清单里是「上课期间的课室」，模型自己造了个近义名「上课的教室」。
 // 精确匹配不上 → 当成瞎编静默拒绝 → dv.bg 保持原样 → 画面纹丝不动。
 // 玩家（和开发者）看到的是"她明明说了要换教室，画面却没动"，
 // 而且没有任何报错，极难排查。
 //
-// 匹配顺序：精确 → 包含 → 字符重合度。命中返回【清单里的真名】，
+// 匹配顺序：精确 → 包含 → 字符重合度。命中返回清单里的真名，
 // 这样后续 ResolveBgFor 一定能找到文件（清单就是扫文件扫出来的）。
 // 找不到返回空——宁可不换，也不要拿一个不存在的名字去糊渲染层。
 std::wstring MatchAssetName(const std::vector<std::wstring>& pool,
                             const std::wstring& want);
-
 //
 // ---- 英文 / 罗马字情绪名 -> 清单里真实存在的素材名
 //
-// 【这是"模型返回奇怪立绘名"的兜底】
+// 这是"模型返回奇怪立绘名"的兜底
 // 模型很爱输出英文情绪词：tsundere / smile / happy / angry / surprised…
-// （实际运行日志里就出现了 pose=tsundere、pose=smile）
+// （典型输入如 pose=tsundere、pose=smile）
 // 而清单里是中文名（害羞 / 平静 / 生气 / 惊讶），
-// MatchAssetName 的字符重合度算法对中英混排完全无效——
+// MatchAssetName 的字符重合度算法对中英混排完全无效
 // 「tsundere」跟「害羞」一个共享字符都没有，必然落空，
 // 于是被当成瞎编拒绝，画面保持上一张脸，日志标 ★。
 //
 // 光靠 prompt 禁止是不够的：模型偶尔就会漏，而漏一次就是一整轮穿帮。
-// 所以这里做一张【情绪词 -> 中文候选名】的对照表：
+// 所以这里做一张情绪词 -> 中文候选名的对照表：
 // 先把英文翻成中文情绪词，再用 MatchAssetName 去清单里找。
 //
-// 【为什么要给多个候选、按顺序试】
+// 为什么要给多个候选、按顺序试
 // 一个英文词常常对应好几张脸（tsundere 既可能是害羞也可能是生气/不满）。
 // 只给一个候选的话，对不上就又落空了。按最可能的顺序排，取第一个命中的。
 //
-// 【只在清单里找，不臆造】
+// 只在清单里找，不臆造
 // 候选词去清单匹配，清单里没有就不命中——绝不会凭空造出一个名字。
 std::wstring MatchEmotionAlias(const std::vector<std::wstring>& pool,
                                const std::wstring& want);
@@ -1030,7 +1219,6 @@ std::wstring MatchEmotionAlias(const std::vector<std::wstring>& pool,
 // 这个字符串是不是【纯 ASCII】（英文/罗马字）。
 // 用来判断要不要走上面那张对照表——中文名不需要翻译。
 bool IsAsciiName(const std::wstring& s);
-
 // 这个路径（不含扩展名）是不是一首真实存在的曲子。
 //
 // 判断"解析结果能不能播"必须用同一个扩展名表，
@@ -1054,7 +1242,6 @@ std::wstring GenericTitleBgm(const std::wstring& assetDir);
 // 切掉 system prompt 末尾那段【输出格式】契约。
 // 定义在"素材笔记"那一段，但主对话请求更早就要用它——见那里的完整说明。
 static std::wstring StripOutputFormat(const std::wstring& sys);
-
 // ---------------------------------------------------------------- 表情
 //
 // 角色的立绘表情固定四种，剧本里用这四个标签，角色 ini 负责映射成自己的文件名。
@@ -1066,17 +1253,15 @@ const wchar_t* const kFaceJoy   = L"joy";       // 开心
 const wchar_t* const kFaceDoubt = L"doubt";     // 疑惑
 const wchar_t* const kFaceFear  = L"fear";      // 惊吓
 extern const wchar_t* const kFaceTags[4];       // 上面四个，顺序即 enum 顺序
-
 // ---- 独立于角色包的标题页素材（assets\title\）
 //
-// 【主页要有"门面"】
-// 一个角色包都没有、或者刚启动还没进入任何故事时，画面和音乐不能是空的——
-// 原来这两样只挂在角色包下（[Bgm] Title / [Sprite] Card），
+// 主页要有"门面"
+// 一个角色包都没有、或者刚启动还没进入任何故事时，画面和音乐不能是空的
 // 于是"清除数据 / 没装包"时主页是一块空白 + 一片安静，
 // 看着像程序坏了，其实只是没素材可用。
 //
-// 【为什么必须单开一个 title 目录，而不是塞进 assets\bg 或 assets\bgm】
-// 那两个目录会被 ScanVisibleAssets 扫进"可选素材"清单——
+// 为什么必须单开一个 title 目录，而不是塞进 assets\bg 或 assets\bgm
+// 那两个目录会被 ScanVisibleAssets 扫进"可选素材"清单
 // 一张标题用的全身构图混进背景清单，她某天就会"带他去"这张图，
 // 画面瞬间变成标题画面；曲子同理，会被当成可选 BGM 在游戏里播出来。
 // 这类错误不报错，只会让人觉得"她怎么突然跑到这么奇怪的地方"。
@@ -1091,12 +1276,10 @@ const wchar_t* const kGenericTitleBgm = L"主页曲";
 // 门面那屏的专属配色：assets\title\主页配色.ini（[Color] 段）。
 // 没有这个文件就用内置的暮色暖调——不写也能用，写了能自己调。
 const wchar_t* const kGenericTitlePal  = L"主页配色";
-// 旧位置：assets\bgm\主页.wav。保留兼容——之前 ResolveTitleBgmFor 的兜底就是它，
-// 有人已经放了文件的话不该因为这次改动突然哑掉。
+// 旧位置：assets\bgm\主页.wav。保留兼容——ResolveTitleBgmFor 仍兜底到这里，
+// 有人已经放了文件的话不该因为扫描规则变化突然失效。
 const wchar_t* const kLegacyTitleBgm  = L"主页";
-
 // 只做"显示名"层面的替换：把剧本里的 id 换成显示名
-
 // ---------------------------------------------------------------- Prompt 组装
 // 这个人设 prompt 是"角色说话风格"的主力。返回 system 消息正文。
 // recentPrompt / bondPrompt 是后来加的两层记忆（近期流水 / 关系状态）。
@@ -1110,25 +1293,20 @@ std::wstring BuildCharSystem(const CharDef& def, const std::wstring& playerName,
 // 内置默认角色（没有任何 ini 时用）。导出是为了 README 和选角界面能显示同一份。
 CharDef MakeDefaultChar();
 CharDef MakeDefaultChar();
-
-//==============================================================================================
-//  模块：教学大纲（声明）—— 只定义"要学会什么"，不定义"剧情说什么"
+// 模块：教学大纲（声明）—— 只定义"要学会什么"，不定义"剧情说什么"
 //
-//  大纲里没有一句台词，只有 Goal（讲清哪几件事）和 Task（考什么题）。
-//  格式做成 ini 而不是 JSON：大纲是给【人】写的，作者要能一眼看清这一章教什么。
-//==============================================================================================
+// 大纲里没有一句台词，只有 Goal（讲清哪几件事）和 Task（考什么题）。
+// 格式做成 ini 而不是 JSON：大纲是给人写的，作者要能一眼看清这一章教什么。
 #undef  NOMINMAX
 #define NOMINMAX
-
 // 一道验收题。字段名跟剧本里的 @task 保持一致，方便从旧剧本迁移。
 //
-// 【导演模式的题已经改成选择题】
-// 原来这里是"他写代码、交给模型判"，而"让模型读一段学生代码再判定对错"
+// 导演模式的题已经改成选择题
 // 是整套流程里最不稳的一环——改错一次就是"这一章考了两次"那种穿帮。
-// 现在题目和答案都写在 syllabus.ini 里，【引擎比对选项序号】判定，
+// 现在题目和答案都写在 syllabus.ini 里，引擎比对选项序号判定，
 // 100% 确定，没有任何模型参与。她只剩两件她最擅长的事：
-//   他选对了 -> 用她自己的话说一句
-//   他选错了 -> 讲清楚那个选项错在哪
+// 他选对了 -> 用她自己的话说一句
+// 他选错了 -> 讲清楚那个选项错在哪
 // tpl / tests 保留是为了剧本模式（Vm 那一套仍在用），导演模式不再读它们。
 struct SyllabusTask {
     std::wstring title;                          // 显示给玩家的标题
@@ -1141,12 +1319,11 @@ struct SyllabusTask {
     // ---- 选择题（导演模式）
     std::vector<std::wstring> opts;              // 选项文本（\n 会转成真换行）
     int          answer = 0;                     // 正确选项是第几个，1 起数。0 = 没配
-
     // 这一章有没有配好一道能考的选择题。
     //
-    // 【判据从"有没有代码模板"改成"有没有选项和答案"】
+    // 判据从"有没有代码模板"改成"有没有选项和答案"
     // 导演模式的题改成选择题之后，大纲里不再写 Tpl / Test。
-    // 谁要是还拿 tpl 判"本章有没有题"，会得到【恒为 false】——
+    // 谁要是还拿 tpl 判"本章有没有题"，会得到恒为 false
     // 于是永远开不了考，她讲完课就卡在那儿进不去下一章。
     // 三个判断点（ShouldQuiz / EnterQuiz / noTask）必须都用这一个函数，
     // 分开写迟早漏一处，而漏的那处表现就是"这章莫名过不去"。
@@ -1164,83 +1341,78 @@ struct SyllabusChapter {
     std::wstring bg;
     // 进章时的初始 BGM。留空 = 不强行切歌，沿用上一首 / 交给大模型挑。
     //
-    // 【这里原来是"字段已移除"】
+    // 这里
     // 那时音乐写死两首（主页曲 + 主题曲）。现在游戏内的曲子交给大模型，
     // 它的清单来自扫目录（主页曲已剔除），所以大纲可以指定一个开场曲。
     // 留空仍然是"不动"——不能默认塞一个名字回来，那样"留空"就失效了。
     std::wstring bgm;
     std::wstring outfit;                         // 换装（可空）
-
     //
-    // ---- 结局：这里【不配】，它是从章数推出来的
+    // ---- 结局：这里不配，它是从章数推出来的
     //
-    //  【为什么不要"结局章标记"】
-    //  曾经想过让作者在某一章写 `Ending = 是`。它看着方便，实际上要作者
-    //  同时维护两件互相依赖的事：章数变了，标记也得跟着挪。加一章忘了挪，
-    //  故事就会在倒数第二章结束，最后一章永远演不到——而这种错不报错，
-    //  只是"后面几章莫名不见了"，极难查。这正是本项目反复在清的病：
-    //  同一件事写两遍，改一处忘一处。
+    // 为什么不要"结局章标记"
+    // 曾经想过让作者在某一章写 `Ending = 是`。它看着方便，实际上要作者
+    // 同时维护两件互相依赖的事：章数变了，标记也得跟着挪。加一章忘了挪，
+    // 故事就会在倒数第二章结束，最后一章永远演不到——而这种错不报错，
+    // 只是"后面几章莫名不见了"，极难查。★
+    // 同一件事写两遍，改一处忘一处。
     //
-    //  所以改成自动检测：还有下一章 -> 按钮是「明天见」；
-    //  没有下一章了 -> 按钮变成「今天就到这里」，点了先告别再回主页。
-    //  加一章结局自动往后挪，删一章自动往前挪，剧本写几章都成立。
+    // 所以改成自动检测：还有下一章 -> 按钮是「明天见」；
+    // 没有下一章了 -> 按钮变成「今天就到这里」，点了先告别再回主页。
+    // 加一章结局自动往后挪，删一章自动往前挪，剧本写几章都成立。
     //
-    //  【而且这个游戏本来就不该有"结局"】
-    //  原作的故事在告白或结婚那天就结束了，这个引擎要做的恰恰是让故事
-    //  继续往下长。所以这里不提供"写到哪一章算通关"的写法——
-    //  想停在什么时候，由正在玩的人自己点按钮决定。
+    // 而且这个游戏本来就不该有"结局"
+    // 原作的故事在告白或结婚那天就结束了，这个引擎要做的恰恰是让故事
+    // 继续往下长。所以这里不提供"写到哪一章算通关"的写法
+    // 想停在什么时候，由正在玩的人自己点按钮决定。
     SyllabusTask task;
-
     //
-    // ---- 【剧情幕专用】感情曲线（课程章不用，留空即可）
+    // ---- 剧情幕专用感情曲线（课程章不用，留空即可）
     //
-    //  课程章靠 Goal + Task 推进：讲清哪几件事、考他一道题。
-    //  剧情幕没有考试，所以大纲写的是"这一幕结束时你们之间该到什么位置"：
+    // 课程章靠 Goal + Task 推进：讲清哪几件事、考他一道题。
+    // 剧情幕没有考试，所以大纲写的是"这一幕结束时
     //
-    //    Mood = 这一幕的情绪基调（惊喜、不安、话到嘴边又咽回去）
-    //    Must = 必须发生的事（她要提到那块碎片）
-    //    Ban  = 绝对不能发生的事（不许她主动说出契约 / 不许提前告白）
+    // Mood = 这一幕的情绪基调（惊喜、不安、话到嘴边又咽回去）
+    // Must = 必须发生的事（她要提到那块碎片）
+    // Ban = 绝对不能发生的事（不许她主动说出契约 / 不许提前告白）
     //
-    //  Ban 是这里面最要紧的一栏：不写的话模型大概率第一幕就把底牌掀了，
-    //  后面几幕直接塌掉——而这种塌不报错，只是"后面演得莫名其妙"。
+    // Ban 是这里面最要紧的一栏：不写的话模型大概率第一幕就把底牌掀了，
+    // 后面几幕直接塌掉——而这种塌不报错，只是"后面演得莫名其妙"。
     std::wstring mood;
     std::wstring must;
     std::wstring ban;
-
     //
-    // ---- 【剧情幕专用】Ask：这一幕她要【问他】的那句话
+    // ---- 剧情幕专用Ask：这一幕她要问他的那句话
     //
-    //  【为什么必须单独给一句"她要问什么"】
-    //  课程模式的引擎姿态是「她讲，他答」——她有内容输出，玩家天然有抓手
-    //  （"这里不懂""再讲一遍"）。剧情模式把知识拿掉之后，同一个姿态就变成
-    //  她的独角戏：她一个人在那儿情绪流转，玩家只能看着，那不是互动。
+    // 为什么必须单独给一句"她要问什么"
+    // 课程模式的引擎姿态是「她讲，他答」——她有内容输出，玩家天然有抓手
+    // （"这里不懂""再讲一遍"）。剧情模式把知识拿掉之后，同一个姿态就变成
+    // 她的独角戏：她一个人在那儿情绪流转，玩家只能看着，那不是互动。
     //
-    //  剧情模式的姿态必须反过来：『她问，他答』。
-    //  她问了 -> 玩家有东西可答 -> 她反应 -> 下一轮，方向自己就长出来了。
-    //  Must 说的是"这一幕要发生什么"（给她自己看的剧本任务），
-    //  Ask 说的是"这一句要递给他的球"——两者不是一回事，不能互相替代。
+    // 剧情模式的姿态必须反过来：『她问，他答』。
+    // 她问了 -> 玩家有东西可答 -> 她反应 -> 下一轮，方向自己就长出来了。
+    // Must 说的是"这一幕要发生什么"（给她自己看的剧本任务），
+    // Ask 说的是"这一句要递给他的球"——两者不是一回事，不能互相替代。
     std::wstring ask;
-
     //
-    // ---- 【剧情幕专用】CanDo：给玩家的【可选话术】
+    // ---- 剧情幕专用CanDo：给玩家的可选话术
     //
-    //  没有课程之后，玩家面对"一个喜欢自己的女孩"往往不知道说什么，
-    //  于是打不出字、剧情推不动——这是"自由度太高"真正的来源：
-    //  不是限制太少，是【没有脚手架】。
+    // 没有课程之后，玩家面对"一个喜欢自己的女孩"往往不知道说什么，
+    // 于是打不出字、剧情推不动
+    // 不是限制太少，是没有脚手架。
     //
-    //  【只填进输入框，不直接发送】
-    //  点了以后这句话出现在输入框里，他能改、能删、能干脆不打。
-    //  做成直接发送就成了 Galgame 的选择肢，自由度反而没了——
-    //  这里给的是【方向】，不是【台词】。
+    // 只填进输入框，不直接发送
+    // 点了以后这句话出现在输入框里，他能改、能删、能干脆不打。
+    // 做成直接发送就成了 Galgame 的选择肢，自由度反而没了
+    // 这里给的是方向，不是台词。
     std::vector<std::wstring> cando;
-
     //
-    // ---- 【剧情幕专用】这一幕建议演几轮（可空）
+    // ---- 剧情幕专用这一幕建议演几轮（可空）
     //
-    //  课程章靠"题答对"当终点，剧情幕没有这个，她只能靠 Must 自己判断
-    //  演没演到位。为了避免她一直演下去不收，这里允许作者在 story.ini
-    //  里给每幕写 `Turns = 6`（比如"代价"那一幕值得演久一点）。
-    //  没写就用 kStoryActTurns。
+    // 课程章靠"题答对"当终点，剧情幕没有这个，她只能靠 Must 自己判断
+    // 演没演到位。为了避免她一直演下去不收，这里允许作者在 story.ini
+    // 里给每幕写 `Turns = 6`（比如"代价"那一幕值得演久一点）。
+    // 没写就用 advance::kStoryActTurns。
     int          turns = 0;
 };
 
@@ -1250,43 +1422,40 @@ struct Syllabus {
     //
     // ---- true = 剧情大纲（story.ini），false = 课程大纲（syllabus.ini）
     //
-    //  两种大纲走的都是导演模式（文本实时生成，不是写死的脚本），
-    //  区别只在"每一章/幕里要达成什么"：
-    //    课程：讲清知识点 -> 考一道题 -> 通过
-    //    剧情：走完一段感情曲线 -> 她觉得到位了 -> 玩家点「下一幕」
+    // 两种大纲走的都是导演模式（文本实时生成，不是写死的脚本），
+    // 区别只在"每一章/幕里要达成什么"：
+    // 课程：讲清知识点 -> 考一道题 -> 通过
+    // 剧情：走完一段感情曲线 -> 她觉得到位了 -> 玩家点「下一幕」
     //
-    //  【不用"有没有 Task"来推断】
-    //  那样作者漏写一道题，整个剧本就会静默变成另一种玩法。
-    //  显式声明，错了就让作者看见。
+    // 不用"有没有 Task"来推断
+    // 那样作者漏写一道题，整个剧本就会静默变成另一种玩法。
+    // 显式声明，错了就让作者看见。
     bool isStory = false;
-
     //
     // ---- 整条线的总纲（[Story] Note=），只给剧情大纲用
     //
-    //  每一幕的 Goal 说的是"这一幕结束时到哪儿"，Note 说的是
-    //  "整条线到底在讲什么"。没有它，她只能一幕一幕地演，
-    //  演到第三幕还不知道第四幕该往哪儿收。
+    // 每一幕的 Goal 说的是"这一幕结束时到哪儿"，Note 说的是
+    // "整条线到底在讲什么"。没有它，她只能一幕一幕地演，
+    // 演到第三幕还不知道第四幕该往哪儿收。
     //
-    //  【原来这一栏完全没被读取】
-    //  解析器只认 Title 和 Acts，作者写的 Note 被静默丢掉——
-    //  不报错、不警告，正是本项目反复在清的"写了没接线"。
+    // 解析器只认 Title 和 Acts，作者写的 Note 被静默丢掉
+    // ★ 配置写了就必须接线。
     std::wstring note;
-
     //
-    // ---- 【课程名 + 「讲课词表」：属于剧本，不属于引擎】
+    // ---- 课程名 + 「讲课词表」：属于剧本，不属于引擎
     //
-    //  引擎原本把"什么是讲课"写死成 C 语言那一套：
-    //    · 代码特征词：#include / scanf / printf / int / *p / &a / ->
-    //    · 教学词：    指针 / 数组 / 解引用 / 取地址 / 编译
-    //  教 Python 时这些词一个都不出现，于是"她在讲知识点"永远判不出来，
-    //  章间日常的教学惯性就再也拦不住，system 里还挂着"你是在教他 C 语言"。
+    // 引擎原本把"什么是讲课"写死成 C 语言那一套：
+    // · 代码特征词：#include / scanf / printf / int / *p / &a / ->
+    // · 教学词： 指针 / 数组 / 解引用 / 取地址 / 编译
+    // 教 Python 时这些词一个都不出现，于是"她在讲知识点"永远判不出来，
+    // 章间日常的教学惯性就再也拦不住，system 里还挂着"
     //
-    //  课程是【剧本】的事（角色归角色包、课程归剧本包），所以这三样都搬到
-    //  [Course] 段里：
-    //      Subject   = 课程名，进 system 提示和"举例要用 X"那句
-    //      CodeWords = 这门课的【代码特征词】（出现即基本确定在讲课）
-    //      TeachWords= 这门课的【教学词】（知识点名、催作业这类拉回学习的话）
-    //  剧本没写就退回内置那份（C 语言），老剧本行为一个字都不变。
+    // 课程是剧本的事（角色归角色包、课程归剧本包），所以这三样都搬到
+    // [Course] 段里：
+    // Subject = 课程名，进 system 提示和"举例要用 X"那句
+    // CodeWords = 这门课的代码特征词（出现即基本确定在讲课）
+    // TeachWords= 这门课的教学词（知识点名、催作业这类拉回学习的话）
+    // 剧本没写就退回内置那份（C 语言），老剧本行为一个字都不变。
     std::wstring              subject;
     std::vector<std::wstring> codeWords;
     std::vector<std::wstring> teachWords;
@@ -1307,22 +1476,21 @@ struct Syllabus {
 // 把整份大纲写成给模型看的 prompt 片段。
 // 只写"要教什么"和"考什么"，不写任何台词——台词是模型的事。
 std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter);
-
 // ---------------------------------------------------------------- 剧本包
 //
-//  【为什么剧本要能换，而不只是"一份 syllabus.ini"】
-//  角色已经能换（角色卡 + assets\char\<id>\），只有剧本还焊死在一个路径上。
-//  那就出现了一个很别扭的错位：换了个角色，教的还是同一套课。
-//  剧本跟角色一样是【内容】，不是【引擎的一部分】——
-//  它该跟角色包平级：各自独立、各自可增删。
+// 为什么剧本要能换，而不只是"一份 syllabus.ini"
+// 角色已经能换（角色卡 + assets\char\<id>\），只有剧本还焊死在一个路径上。
+// 那就出现了一个很别扭的错位：换了个角色，教的还是同一套课。
+// 剧本跟角色一样是内容，不是引擎的一部分
+// 它该跟角色包平级：各自独立、各自可增删。
 //
-//  【摆法】assets\syllabus 下一个剧本一个目录，目录里放 syllabus.ini：
-//      assets\syllabus\C语言入门\syllabus.ini
-//      assets\syllabus\数据结构\syllabus.ini
-//  直接往 assets\syllabus 丢一个 .ini 也认（一个文件就是一个剧本）：
-//      assets\syllabus\指针篇.ini
-//  旧的 assets\syllabus.ini（跟 syllabus 目录平级、不是子目录）仍然兼容，
-//  当只有它一份时自动用它，老工程不用改目录就能继续跑。
+// 摆法assets\syllabus 下一个剧本一个目录，目录里放 syllabus.ini：
+// assets\syllabus\C语言入门\syllabus.ini
+// assets\syllabus\数据结构\syllabus.ini
+// 直接往 assets\syllabus 丢一个 .ini 也认（一个文件就是一个剧本）：
+// assets\syllabus\指针篇.ini
+// 旧的 assets\syllabus.ini（跟 syllabus 目录平级、不是子目录）仍然兼容，
+// 当只有它一份时自动用它，老工程不用改目录就能继续跑。
 struct SyllabusPack {
     std::wstring id;        // 目录名 / 文件名（去扩展名），也是存进 config 的键
     std::wstring path;      // syllabus.ini 的完整路径
@@ -1335,21 +1503,21 @@ struct SyllabusPack {
     // 删了之后一个剧本都不剩，dirMode 会静默退回老剧本模式。
     bool legacy = false;
     //
-    // ---- 非空 = 这本是【角色特化】剧本（住在角色包里的 story.ini）
+    // ---- 非空 = 这本是角色特化剧本（住在角色包里的 story.ini）
     //
-    //  剧情必然是角色专属的：这个角色的过往换个人就演不了。
-    //  所以剧情大纲放在 <角色包>\story.ini，目录结构本身就是绑定——
-    //  不需要额外的"这个剧本属于谁"配置，也不需要防着作者配错。
+    // 剧情必然是角色专属的：这个角色的过往换个人就演不了。
+    // 所以剧情大纲放在 <角色包>\story.ini，目录结构本身就是绑定
+    // 不需要额外的"这个剧本属于谁"配置，也不需要防着作者配错。
     //
-    //  空 = 通用剧本（课程），任何角色都能用，可以在剧本页自由切换。
+    // 空 = 通用剧本（课程），任何角色都能用，可以在剧本页自由切换。
     std::wstring charId;
     //
     // ---- 这本是"剧情"还是"课程"
     //
-    //  清单里就摆着 id 和路径，但那是【当前】那一本的信息；
-    //  存档卡片要显示的是【存档当时那一本】的单位（章 / 幕）——
-    //  用当前的去解释别的存档，就会把别人的进度写成"第3幕"。
-    //  所以每本自己带一个标记，查的时候不用去加载整本大纲。
+    // 清单里就摆着 id 和路径，但那是当前那一本的信息；
+    // 存档卡片要显示的是存档当时那一本的单位（章 / 幕）
+    // 用当前的去解释别的存档，就会把别人的进度写成"第3幕"。
+    // 所以每本自己带一个标记，查的时候不用去加载整本大纲。
     bool isStory = false;
 };
 
@@ -1358,27 +1526,23 @@ std::vector<SyllabusPack> ScanSyllabusPacks(const std::wstring& assetDir);
 // 必须在这里先声明：SyDelete（剧本界面，约 16896 行）会调它，
 // 而定义在 19360 行——不声明就是 "LoadSyllabus 找不到标识符"。
 bool LoadSyllabus();
-
-//==============================================================================================
-//  模块：导演状态机（声明）—— 把"教什么"交给大纲，把"怎么演"交给大模型
+// 模块：导演状态机（声明）—— 把"教什么"交给大纲，把"怎么演"交给大模型
 //
-//  分工：
-//     大纲 syllabus   决定教哪个知识点、考哪道题
-//     大模型          决定台词、表情、场景、音乐、换装
-//     玩家            决定聊什么、什么时候觉得可以考了
-//     引擎 Director   决定推进节奏（她是"建议"，这里是"批准"）
+// 分工：
+// 大纲 syllabus 决定教哪个知识点、考哪道题
+// 大模型 决定台词、表情、场景、音乐、换装
+// 玩家 决定聊什么、什么时候觉得可以考了
+// 引擎 Director 决定推进节奏（她是"建议"，这里是"批准"）
 //
-//  推进权必须在引擎手里：模型只给 ready / advance / verdict 建议，
-//  真正出题、判题、进下一章由 Director 拍板。否则它会讲两句就跳章。
-//==============================================================================================
+// 推进权必须在引擎手里：模型只给 ready / advance / verdict 建议，
+// 真正出题、判题、进下一章由 Director 拍板。否则它会讲两句就跳章。
 #undef  NOMINMAX
 #define NOMINMAX
-
 // 导演的当前阶段
 //
-// 【Intro 和 Daily 是恋爱游戏的"日常"部分】
+// Intro 和 Daily 是恋爱游戏的"日常"部分
 // 一上来就念知识点不像 Galgame，像网课。真正的节奏是：
-//   自我介绍 → 教第一章 → 考 → 批改 → 闲聊一段 → 教第二章 → …
+// 自
 // 章间那段闲聊不只是"喘口气"，它是玩家对角色产生感情的地方，
 // 也让下一章的开场不至于突兀。
 enum class DirStage {
@@ -1393,13 +1557,13 @@ enum class DirStage {
     Farewell,   // 告别：玩家点了「明天见」之后，她【先说一句再见】，
                 // 玩家点一下画面，才真正到第二天。
                 //
-                // 【为什么要有这一段】
-                // 原来点「明天见」直接切走：上一幕还在甜品店聊得正好，
+                // 为什么要有这一段
+                // 原本点「明天见」会直接切走，可上一幕明明还在甜品店聊得正好，
                 // 下一句她已经在第二天的教室里打招呼——今天根本没有"结束"过。
                 // 告别是这一天的落点，也是"明天见"这四个字的兑现：
                 // 按钮是玩家点的，说再见的应该是她。
                 //
-                // 【章号在这一段【不】推进】
+                // 章号在这一段【不推进】
                 // 告别属于今天。章号推进发生在玩家点完之后（EnterNextDayIntro）。
     Graduate,   // 全部章节完成
 };
@@ -1414,32 +1578,31 @@ struct DirView {
     std::wstring say;         // 台词
     std::wstring speaker;     // 说话人（角色名）
     bool         changed = false;   // 场景/服装是否有变化（决定要不要转场）
-
     //
-    // ---- 【审计用】她给的值到底有没有被接住
+    // ---- 审计用她给的值到底有没有被接住
     //
-    // 【没有这三个，"✓一致"会骗人】
-    // 校验失败时 v 保持旧值，审计日志拿应用后的值去比，必然"一致"——
-    // 于是"她填错了名字"和"她填对了"在日志里长得一模一样。
-    // 实际运行日志里一致性 100%，表情却连续 4 轮不动，就是这个原因。
+    // 没有这三个，"✓一致"会骗人
+    // 校验失败时 v 保持旧值，审计日志拿应用后的值去比，必然"一致"
+    // 于是"她填错了名字"和"她填对了"在运行时长得一模一样。
+    // 运行时一致性 100%，表情却连续 4 轮不动，就是这个原因。
     bool gavePose = false;   // 她给了非空的 pose
     bool okPose   = false;   // 被接受（精确或模糊匹配命中）
     bool gaveBg = false, okBg = false;
     bool gaveBgm = false, okBgm = false;
     //
-    // ---- 【她填的原文，打回时要摆给她看】
+    // ---- 她填的原文，打回时要摆给她看
     //
-    // 她没有跨轮记忆，打回时只说"你填错了"她根本不知道自己填过什么。
+    // 她没有跨轮记忆，打回时只说"
     // 必须把原样摆出来（连她写的英文、扩展名、目录前缀一起），
     // 她才知道是哪个值有问题、该换成什么。
     std::wstring gavePoseName, gaveBgName, gaveBgmName;
     //
-    // ---- 【被"本轮禁用"挡下的，是设计行为，不是 bug】
+    // ---- 被"本轮禁用"挡下的，是设计行为，不是 bug
     //
-    // 【设计上明确要求】连续两轮用同一张脸，就把那张从白名单里拿掉，
-    // 让她不能再选。她还是填了的话就被拒——这是预期结果。
+    // 设计上明确要求连续两轮用同一张脸，就把那张从白名单里拿掉，
+    // 让她不能再选。她还是填了的话就被拒
     //
-    // 【必须跟 okPose=false 区分开】上一版把它俩混为一谈，
+    // 必须跟 okPose=false 区分开早期版本把它俩混为一谈，
     // 日志一律打「pose被拒!」，容易被当成程序坏了，其实画面是对的
     // （被拒 = 沿用上一张，本来就是"不让她换回同一张"的预期效果）。
     bool poseWasBanned = false;
@@ -1449,13 +1612,13 @@ struct DirView {
     bool bgWasBanned   = false;
     bool bgmWasBanned  = false;
     //
-    // ---- 【背景被"本章锁定"接管】
+    // ---- 背景被"本章锁定"接管
     //
     // 这一轮压根没问她 bg（本章场景已经定死了），
-    // 所以她填什么都【不算错】，不能进打回、也不能标 ★。
+    // 所以她填什么都不算错，不能进打回、也不能标 ★。
     bool bgLocked      = false;
     //
-    // ---- 【接住了，但是靠"猜"接住的】
+    // ---- 接住了，但是靠"猜"接住的
     //
     // 「smile」->「平静」就是典型：程序看是接住了（okPose=true），
     // 可她想说的是开心。这种"猜"出来的映射错了不会有任何报错，
@@ -1466,16 +1629,16 @@ struct DirView {
 class Director {
 public:
     //
-    // ---- 【本轮禁用的表情】校验层也要认，不只是给模型的清单
+    // ---- 本轮禁用的表情校验层也要认，不只是给模型的清单
     //
-    // 【这是一处设计漏洞：被禁用的表情，校验层也必须认，不只是给模型的清单】
+    // 这是一处设计漏洞：被禁用的表情，校验层也必须认，不只是给模型的清单
     // PoseListExcluding 只改了 prompt 里显示的清单文本，
-    // 但校验用的 visible_.pose 仍是完整清单——
+    // 但校验用的 visible_.pose 仍是完整清单
     // 她就算填了被禁的「惊讶」，HasPose 照样返回 true，
     // 于是收窄完全失效：日志显示"✓一致"，表情却一动不动。
     //
-    // 清单收窄必须【同时】作用在两处：给她的选项 + 校验的口径。
-    // 只做前者等于"告诉她不能选，她选了你还接受"。
+    // 清单收窄必须同时作用在两处：给她的选项 + 校验的口径。
+    // 只做前者等于"告诉她不能选，她选了
     void SetBannedPoses(const std::vector<std::wstring>& banned) { bannedPose_ = banned; }
     void SetBannedBg (const std::vector<std::wstring>& b) { bannedBg_  = b; }
     void SetBannedBgm(const std::vector<std::wstring>& b) { bannedBgm_ = b; }
@@ -1495,22 +1658,21 @@ public:
     const SyllabusChapter* Next() const { return syllabus_.At(chapter_ + 1); }
     // 整份剧本（课程名 / 讲课词表在里头）。判定"她是不是在讲知识点"要用。
     const Syllabus& Syl() const { return syllabus_; }
-
     //
-    // ---- 【走过的路径】（流程图的地基）
+    // ---- 走过的路径（流程图的地基）
     //
-    // 【为什么眼下只有一条直线也要记】
-    // 流程图要画的是"你是怎么走到这儿的"，不是"剧本一共有几章"。
+    // 为什么眼下只有一条直线也要记
+    // 流程图要画的是"
     // 单线时它是一条 1→2→3 的链；将来加了分支（选 A 去第 3 章、
-    // 选 B 去第 5 章），走过的就是 [1,2,5]，流程图自然长出分叉——
-    // 这两种情况用的是【同一个数据结构】。
+    // 选 B 去第 5 章），走过的就是 [1,2,5]，流程图自然长出分叉
+    // 这两种情况用的是同一个数据结构。
     //
-    // 反过来，如果现在图省事写成 `for (i=1; i<=Count(); i++)` 画一条线，
-    // 那不是流程图，是章节列表换了个皮：它画不出"你没走过第 4 章"
+    // 反过来，如果现在图省事写成 `for (i=1; i<=Count; i++)` 画一条线，
+    // 那不是流程图，是章节列表换了个皮：它画不出"
     // 这种事实，将来加分支要整个推翻重做。
     //
-    // 【记的是"走过的顺序"，不是"到过的最大章号"】
-    // 有分支之后，最大章号说明不了你从哪来——只有顺序能。
+    // 记的是"走过的顺序"，不是"到过的最大章号"
+    // 有分支之后，最大章号说明不了
     const std::vector<int>& Path() const { return path_; }
     bool HasVisited(int n) const;
     int  MaxReached() const;
@@ -1518,37 +1680,34 @@ public:
     void JumpToChapter(int n);
     // 读档恢复路径。夹到合法范围：作者改过章数的话旧路径会越界。
     void SetPath(const std::vector<int>& p);
-
     //
-    // ---- 【进新的一章 / 新的一幕，该落在哪个阶段】
+    // ---- 进新的一章 / 新的一幕，该落在哪个阶段
     //
-    // 【判据只有这一处】
-    //  课程：开场寒暄（Intro）——聊够了她自己说"开始吧"，再进教学。
-    //        一上来就念知识点是网课，不是 galgame。
-    //  剧情：这一幕的相处（Daily）——剧情大纲里没有"讲课"这一环，
-    //        那段相处【就是】这一幕的内容，不是上课之余的调剂。
+    // 判据只有这一处
+    // 课程：开场寒暄（Intro）——聊够了她自己说"开始吧"，再进教学。
+    // 一上来就念知识点是网课，不是 galgame。
+    // 剧情：这一幕的相处（Daily）——剧情大纲里没有"讲课"这一环，
+    // 那段相处就是这一幕的内容，不是上课之余的调剂。
     //
-    // 【原来这同一个判断散在四处，只有一处有 isStory 分支】
-    //   Load()            -> 一律 Intro
-    //   JumpToChapter()   -> 一律 Intro
-    //   EnterNextDayIntro()-> 一律 Intro
-    //   EnterLesson()     -> 有分支（isStory 进 Daily）
+    // Load -> 一律 Intro
+    // JumpToChapter -> 一律 Intro
+    // EnterNextDayIntro-> 一律 Intro
+    // EnterLesson -> 有分支（isStory 进 Daily）
     // 于是剧情模式开局、跳幕、点「下一幕」之后都掉进课程模式的开场寒暄，
-    // 她收到的提示是"这门课还没开始上、聊聊为什么选这门课"——
-    // 而剧情大纲里根本没有课。玩家看到的就是"说不说话都在聊选课"。
-    // 这正是这个项目反复出问题的模式：同一件事写四遍，改一处忘三处。
+    // 她收到的提示是"这门课还没开始上、聊聊为什么选这门课"
+    // 而剧情大纲里根本没有课。
+    // ★ 同一份状态只在一处维护。
     static DirStage StageForNewChapter(bool isStory);
 
     DirStage Stage() const { return stage_; }
     int  Turn() const { return turn_; }          // 本章已对话轮数
-
     //
-    // ---- 【当前阶段】的轮数，不是本章轮数
+    // ---- 当前阶段的轮数，不是本章轮数
     //
-    // 【这是"日志里轮数永远是 0"的原因】
-    // Turn() 返回的是 turn_（本章教学轮数），
-    // 而自我介绍 / 章间日常各自用 introTurn_ / dailyTurn_ 计数。
-    // 于是整个自我介绍阶段日志都写着「第0轮」——
+    // 这是"运行时轮数永远是 0"的原因
+    // Turn 返回的是 turn_（本章教学轮数），
+    // 而自
+    // 于是整个自
     // 看着像"她一直卡在第一轮没推进"，其实聊了好几句了。
     // 排查阶段推进问题时这个数字是主要依据，必须是阶段内的真实轮数。
     int  StageTurn() const {
@@ -1556,24 +1715,23 @@ public:
         if (stage_ == DirStage::Daily)  return dailyTurn_;
         return turn_;
     }
-
     // ---- 存档
-    // 只存"进度到哪了"。台词、场景这些瞬时状态不存——
+    // 只存"进度到哪了"。台词、场景这些瞬时状态不存
     // 读档时她会自己重新开口，没必要把上一轮的画面也冻住。
     // stage 只记 Intro / Daily / Lesson 三种：Quiz/Judge/Review 是做题中的
     // 临时状态，存下来读回去没有代码可判，一律回落成 Lesson。
     //
-    // 【stage 默认必须是 1（自我介绍），不能是 0】
+    // stage 默认必须是 1（自
     //
-    // 【这是"开局直接开讲、自我介绍从来没出现过"的根因】
-    // BeginStory 用空快照（Director::Snapshot()）把进度归零，
+    // 这是"开局直接开讲、自
+    // BeginStory 用空快照（Director::Snapshot）把进度归零，
     // 而 Restore 里 0 被解码成 Lesson（见 Restore 的 else 分支）。
     // 于是新开一局拿到的是"教学"阶段 —— 玩家还没认识她，她就开始念知识点。
-    // 运行日志里第一条就是「第0轮 阶段=教学」，正好印证。
+    // 运行时第一条就是「第0轮 阶段=教学」，正好印证。
     //
-    // 编码：1=自我介绍 2=章间日常 0=其它（教学/出题/判题），见 Snap()。
+    // 编码：1=自
     // 空快照代表"全新的一局"，就该是 1。
-    // chapterBg：本章锁定的场景。见 BgLockedNow 的说明——
+    // chapterBg：本章锁定的场景。见 BgLockedNow 的说明
     // 不存的话读档回来整章的场景锁会丢，她又能一轮换一个地方。
     struct Snapshot {
         int chapter = 1; int turn = 0; int stage = 1;
@@ -1589,10 +1747,9 @@ public:
     };
     Snapshot Snap() const;
     void Restore(const Snapshot& s);
-
     // ---- 推进
     // 玩家在授课/日常阶段说了一句话之后调用。
-    // 【计数按阶段分开】自我介绍和章间日常各有自己的轮数，
+    // 计数按阶段分开自
     // 不能混进 turn_（那是"这一章讲了几轮"）。
     void NoteTurn();
 
@@ -1600,12 +1757,8 @@ public:
     bool ShouldQuiz() const;
 
     // ---- 日常阶段
-    //
-    // 【这一段聊多久：不少于上一章教学的轮数】
-    // 教学聊了 8 轮，章间就至少聊 8 轮——这样"相处"的分量不会比"上课"轻。
-    // 教得越长，中间休息得也越久，节奏上反而更合理。
-    int  DailyTarget() const;          // 本段日常该聊几轮（= 按钮出现的时机，不是上限）
-    int  ActNudge() const;             // 聊到第几轮提醒她一句"可以收了"（剧情按这一幕的 Turns）
+    // 轮数不用来衡量演得够不够，只用于两件事：按钮别太早出现、提醒别太早发。
+    int  ActNudge() const;             // 第几轮提醒她"可以收了"（剧情按幕的 Turns）
     int  DailyTurn() const { return dailyTurn_; }
     int  IntroTurn() const { return introTurn_; }
 
@@ -1613,98 +1766,37 @@ public:
     // Intro：自我介绍够了；Daily：日常聊够了。
     bool ShouldStartLesson() const;
 
-    //
-    // ---- 【她已经在自我介绍里讲起本章内容了】
-    //
-    // ★ 这是"右上角停在第一章、内容却讲到第二章"的根源
-    // 真实日志：阶段从头到尾是「自我介绍」，可她第 3 轮就说了
-    //   "那我们来学指针……" —— 她自己已经开始上课了，
-    // 而引擎还在等她填 advance=2。她没填，于是阶段永远不转。
-    //
-    // 后果是一串连锁故障：不出题、不判卷、没有章间日常、章号不动。
-    // 玩家看到的是"她明明在教第2章，右上角写着第1章"。
-    //
-    // 她已经开口讲本章内容，就是最明确的"这段自我介绍结束了"的信号，
-    // 比等她记得填 advance 可靠得多——模型经常只顾说话忘了填字段。
+    // ---- 台词里已经开讲本章 / 下一章时，章号与阶段要跟着内容走。
+    // ★ 只认"开讲"措辞与章名，不认"下一章会讲……"这类预告：
+    //   把预告当成已开讲会把本章整个跳过。
     bool IntroSaidLesson(const std::wstring& say) const;
-    // 她在章间日常里开讲下一章了（内容跟章号已经不一致）
     bool DailyStartedNextChapter(const std::wstring& say) const;
-    //
-    // ---- 【她在【教学段】里讲起下一章：章号要跟着内容走】
-    //
-    // 上面那个只认日常段，而同一件事在教学段照样发生：
-    //   她讲完指针、把题出完、判过卷，顺口就接"那我们进第二章——数组"，
-    //   然后当场讲起来。这时阶段已经是 Lesson，上面那条恒 false，
-    //   于是章号一直停在 1，右上角写着"第1章 指针"，而她在讲数组。
-    //
-    // 例：她已经讲到"数组名本身就是一种指针"，存档里 dirChapter 仍是 1。
-    // 存档里 dirChapter 仍是 1。
     bool LessonStartedNextChapter(const std::wstring& say) const;
+    // ---- 推进契约：唯一的出口判据
+    //
+    // ★ 渲染、命中测试、点击处理、状态栏说明都必须读 Progress。
+    // "能不能点"若在别处另算一份，就会出现按钮画着却点不动，
+    // 或画成灰的其实按得下去
+    //
+    // Result 里同时给出：能不能点、还要几轮、按钮文案、状态说明、点下后的本地确认。
+    // 具体规则与阶段矩阵见本文件上方的 advance 契约区。
+    advance::Result Progress() const;
+    bool  CanGoNextDay() const;                       // = Progress().ready
+    int   NextDayWaitTurns() const;                   // = Progress().wait
+    std::wstring NextDayReason() const { return Progress().reason; }
 
-    // ---- 右上角「明天见」按钮现在能不能【露面】
-    //
-    // 只问"这段相处演够了几轮"，不问她准没准备好。
-    // 分开是为了让玩家看得见出口：按钮一直在那儿，
-    // 她还没说"可以走了"的时候是灰的，点了会告诉你是为什么。
-    // 按钮整个消失的话，玩家只会以为程序没画出来。
-    bool CanShowNextDay() const;
-    //
-    // 教学段的手动出口：聊够几轮之后右上角也放一枚按钮，
-    // 点了就是"这节课上完了"——有题就考，没题就进章间日常。
-    //
-    // 【为什么必须有】教学段的出口原来全部依赖她主动填 advance 字段
-    // 或把题面完整说出来，她只顾说话时一条都不成立，
-    // 而 CanShowNextDay() 在教学段恒 false —— 玩家没有按钮可点，
-    // 只能一直听她讲下去。详见 CanGoNextDay()。
-    bool CanShowEndLesson() const;
-    //
-    // ---- 她有没有说"可以走了"（供渲染层决定按钮是亮着还是灰着）
-    bool DailyReady() const { return dailyReady_; }
-    //
-    // ---- 她在章间日常里填了 advance=2：记下资格，但不替玩家做决定
-    //
-    // 只点亮按钮，【不切章】。切章仍然是玩家点按钮之后的事
-    // （先告别，再点到第二天）。见 DirGoNextDay()。
-    void MarkDailyReady() { dailyReady_ = true; }
-    //
-    // ---- 【她可以收回】
-    //
-    // 【设计原话】"按钮点亮后如果玩家继续往下聊，模型有权收回按钮"。
-    // 新一轮请求发出时就作废上一轮的表态（见 StartChat）：
-    // 他没点按钮而是接着聊了，那"可以走了"就不算数了。
-    void ClearDailyReady() { dailyReady_ = false; }
-    //
-    // ---- 【表态只记一次，不逐轮收回】
-    //
-    // ★ 原来是【赋值】语义（SetDailyReady(readyNow)）：她这一轮没再说
-    //   "可以走了"，资格自动收回——按钮【亮一下立刻转灰】。
-    //   她并没有改主意，只是这一轮没重复表态，玩家却以为她反悔了。
-    //
-    // 现在只留"置位"（MarkDailyReady），由进下一段日常时 Clear。
-    // 它只决定右上角那句提示，不再拦着玩家点按钮——见 CanGoNextDay。
-    //
-    // ---- 右上角「明天见」按钮现在能不能点
-    //
-    // 玩家手里有推进剧情的入口，就不用靠"她主动问要不要继续"——
-    // 那句话每次都把气氛打断。她不必问，玩家想走的时候自己点。
-    //
-    // 【不再要两把钥匙】她说了"可以走了"只影响提示，不当门槛。
-    // 走不走由玩家点按钮决定，点了之后还有【告别】那一幕，
-    // 她会把"明天见"说出口。见 CanGoNextDay。
-    bool CanGoNextDay() const;
-    //
-    // ---- 按钮还要几轮才【能点】（-1=这段不该有按钮，0=已可点）
-    //
-    // 灰按钮只写"她还想再聊一会儿"，玩家不知道要等到什么时候，
-    // 也分不清是"程序没画出来"还是"还没到时候"。给个数字好等。
-    int  NextDayWaitTurns() const;
+    // 这一段该发生的事是否已经发生（模型填 advance=2，或台词说了告别）。
+    // ★ 一旦置位，在本段内保持；只有进下一段 / 跳章 / 换章才清。
+    bool ActDone() const { return actDone_; }
+    void MarkActDone()   { actDone_ = true; }
+    void ClearActDone()  { actDone_ = false; }
     //
     // ---- 点了右上角那个按钮，这门课是不是就上完了（没有下一章了）
     //
-    // true  = 最后一章：按钮写「今天就到这里」，点完告别之后回主页
+    // true = 最后一章：按钮写「今天就到这里」，点完告别之后回主页
     // false = 还有下一章：按钮写「明天见」，点完告别之后是第二天见面
     //
-    // 【注意它跟 CanGoNextDay 是两件事】
+    // 注意它跟 CanGoNextDay 是两件事
     // CanGoNextDay 说"按钮能不能点"，这个说"点了之后到哪"。
     // 最后一章也要能点——不然玩家走进一个没有出口的房间。
     bool NextDayEndsCourse() const;
@@ -1714,23 +1806,23 @@ public:
     // 从 Intro / Daily 进入教学。返回后 turn_ 归零，重新计本章轮数。
     void EnterLesson();
     //
-    // ---- 点「明天见」：章号前进，但【先寒暄，不直接上课】
+    // ---- 点「明天见」：章号前进，但先寒暄，不直接上课
     //
-    // 跟 EnterLesson 的区别只有一处：这里进的是【开场】而不是【教学】，
+    // 跟 EnterLesson 的区别只有一处：这里进的是开场而不是教学，
     // 于是第二天见面的问候、转教学的判定，全部复用第一章开场那一套。
     void EnterNextDayIntro();
     //
-    // ---- 点「明天见」的【第一步】：先进【告别】，让她把今天收掉
+    // ---- 点「明天见」的第一步：先进告别，让她把今天收掉
     //
-    // 【章号不动】告别属于今天，第二天是玩家点完之后的事。
-    // 玩家点一下画面 -> 调 EnterNextDayIntro() -> 才推进章号、进第二天。
+    // 章号不动告别属于今天，第二天是玩家点完之后的事。
+    // 玩家点一下画面 -> 调 EnterNextDayIntro -> 才推进章号、进第二天。
     //
     // 拆成两步是为了让"再见"这句话真的被说出来：
     // 一步到位的话，上一句还在甜品店聊得正好，下一句她已经在
     // 第二天的教室打招呼了——今天从来没结束过，按钮点得像瞬移。
     void EnterFarewell();
     //
-    // ---- 她在【教学段】里已经讲起下一章：章号跟着内容走
+    // ---- 她在教学段里已经讲起下一章：章号跟着内容走
     //
     // 不切阶段：她已经在讲了，硬塞一段章间日常会打断她。
     // 本章算过（该记的记账照记），章号前进，让她接着讲新的一章。
@@ -1739,11 +1831,10 @@ public:
 
     // 当前阶段名（给 HUD 用）：自我介绍 / 教学 / 日常 / 做题 …
     std::wstring StageName() const;
-
     // ---- 阶段切换：下一轮必须换全套舞台
     //
-    // 【不换的话玩家根本看不出阶段变了】
-    // 她在教室讲完一章，下一句还在同一个教室闲聊——
+    // 不换的话玩家根本看不出阶段变了
+    // 她在教室讲完一章，下一句还在同一个教室闲聊
     // 画面、音乐、表情全没变，玩家只会觉得"她突然开始说废话"。
     // 换场景/造型/音乐是 Galgame 里"转场"的基本语言。
     //
@@ -1751,14 +1842,13 @@ public:
     // 在模型这一轮回复处理完之后由引擎清掉。
     bool StageChangePending() const { return stageChanged_; }
     void ClearStageChange()         { stageChanged_ = false; }
-
     // ---- 这次转场里，哪几样还没落实
     //
-    // 【为什么不能只看"跟上一轮一不一样"】
-    // 进章时 ApplyChapterStage() 可能已经按大纲把背景切了。
+    // 为什么不能只看"跟上一轮一不一样"
+    // 进章时 ApplyChapterStage 可能已经按大纲把背景切了。
     // 那之后 dv.bg == 上一轮的值依然成立（因为参照点已经是新背景），
     // 按"跟上一轮比"判断会再强制换一次，把作者配的场景冲掉。
-    // 所以按【这次转场有没有落实】记账：谁先换了就销掉谁的账。
+    // 所以按这次转场有没有落实记账：谁先换了就销掉谁的账。
     bool NeedNewBg()   const { return needBg_; }
     bool NeedNewBgm()  const { return needBgm_; }
     bool NeedNewPose() const { return needPose_; }
@@ -1768,14 +1858,13 @@ public:
     // 切换了几次。给"挑一个不同的"当种子用——
     // 否则每次阶段切换都挑到同一张，等于没换。
     int  StageSwitchCount() const { return stageSwitches_; }
-
     //
-    // ---- 她上一轮给了一个【清单里没有、也匹配不上】的名字
+    // ---- 她上一轮给了一个清单里没有、也匹配不上的名字
     //
-    // 【为什么要记住它】
+    // 为什么要记住它
     // 模型没有跨轮记忆。它给了「tsundere」，引擎默默忽略，
     // 它下一轮很可能原样再给一次——同样的错一轮轮重复。
-    // 把这个名字原样摆回给它看（"你上次写的 X 不是有效名字"），
+    // 把这个名字原样摆回给它看（"
     // 它才知道那是无效的、该换成清单里的中文名。
     //
     // 命中有效名字时会清空（见 ApplyAiStage）。
@@ -1784,11 +1873,10 @@ public:
 
     // 进入测验。返回 false 表示本章没有题（那就直接过）。
     bool EnterQuiz();
-
     // 判题结果。
-    // ★ 返回值是"是否通过"，【不是】"是否毕业"—— 只要 passed 就返回 true，
-    //   哪怕只是前进了一章。判断毕业请用 Graduated()。
-    //   这个语义差很容易写错，已经踩过一次。
+    // ★ 返回值是"是否通过"，不是"是否毕业"—— 只要 passed 就返回 true，
+    // 哪怕只是前进了一章。判断毕业请用 Graduated。
+    // 这个语义差很容易写错，已经踩过一次。
     // 通过：进入下一章（或毕业）。失败：回本章补习，turn 减半。
     bool AfterJudge(bool passed);
 
@@ -1797,13 +1885,12 @@ public:
 
     // 给玩家的引导语（输入框上方那行）。按阶段给不同的提示。
     std::wstring Guide() const;
-
     // ---- 开场引导语，由角色包给（[Player] 提示）
     //
-    // 原来写死「先认识一下吧」。但玩家身份已经固定成将臣、两人是续集关系，
-    // "先认识一下"跟设定直接冲突——玩家点输入框就看见一句穿帮的话。
-    // 这句话说的是"你们现在到哪一步"，属于角色包内容，不该写在引擎里。
-    // 没配就按【有没有写 Relation】推：写了关系就不是初次见面。
+// 写死一句「先认识一下吧」会跟角色包里设定的关系冲突
+// 这句话说的是"
+// 没配就按有没有写 Relation推：写了关系就不是初次见面。
+    // 没配就按有没有写 Relation推：写了关系就不是初次见面。
     void SetIntroGuide(const std::wstring& g) { introGuide_ = g; }
 
     // 给模型的"当前情境"。告诉它现在在第几章、什么阶段、该做什么。
@@ -1817,58 +1904,53 @@ public:
     // 上课这段的配乐建议（来自 char.ini [AssetRole] 上课曲）。
     // 清单里找不到就返回空——绝不猜一个名字。
     std::wstring LessonBgmLine(const std::vector<std::wstring>& bgmList) const;
-
     // ---- 模型输出的落地
     //
     // bg / bgm / pose / outfit / emote 全部由模型给名字，按扫描清单校验。
-    // 唯一例外是【主页曲】：它在 ScanVisibleAssets 里就被剔除了，
+    // 唯一例外是主页曲：它在 ScanVisibleAssets 里就被剔除了，
     // 所以模型既看不到也选不到——主页该放什么由 [Bgm] Title 写死。
     //
-    // 【校验依据从"写死的白名单"改成"扫出来的真实文件"】
-    // 原来这里写死 kBgSlots[] / kBgmSlots[] 两份名单：
+    // 校验依据从"写死的白名单"改成"扫出来的真实文件"
     // 作者往 assets/bg/ 丢一张新图，代码里没有 → 模型永远切不过去，
     // 而改名单要重新编译。素材变了要改代码，这件事本身就是错的。
-    // 现在校验 ScanVisibleAssets() 扫出来的清单：文件在，就能切。
+    // 现在校验 ScanVisibleAssets 扫出来的清单：文件在，就能切。
     //
-    // 清单为空（还没扫过）时【放行】而不是全拒：
+    // 清单为空（还没扫过）时放行而不是全拒：
     // 漏调 SetVisible 是程序的错，不该让换场景功能静默失效。
     void SetVisible(const VisibleAssets& v, const CharDef* def = nullptr) {
         visible_ = v; defNow_ = def; poseAll_ = v.pose;
     }
     //
-    // 【按当前服装收窄造型清单：一个背景定死一套衣服】
+    // 按当前服装收窄造型清单：一个背景定死一套衣服
     //
     // 衣服由背景决定，那么"能选哪张脸"就只剩这一套里画过的那些。
     // 收在清单层而不是等她填错再打回，有两个好处：
-    //   ① 她根本选不到别的衣服，不会出现"画面先闪一下穿错的她"；
-    //   ② 清单短——4 套 × 十几张表情全塞给她，她只会一直挑最眼熟那张。
+    // ① 她根本选不到别的衣服，不会出现"画面先闪一下穿错的她"；
+    // ② 清单短——4 套 × 十几张表情全塞给她，她只会一直挑最眼熟那张。
     //
     // outfit 为空 = 没绑定（这个背景没配 / 角色只有一套衣服）→ 还原完整清单。
     void NarrowPoseToOutfit(const std::wstring& outfit) const;
 
     const VisibleAssets& Visible() const { return visible_; }
-
-    // ---- 【她要"选一个地方"时，得先让她知道有哪些地方可去】
+    // ---- 她要"选一个地方"时，得先让她知道有哪些地方可去
     //
-    // 【这是"每局第一章都去田心屋"的根因之一，而且不是优先级问题】
+    // 这是"每局第一章都去那家店"的根因之一，而且不是优先级问题
     // 一次对话的顺序是：先写台词 -> 再配画面。
-    // 而 bg 清单原本只出现在【挑素材】那次请求里——那时台词已经写完了，
+    // 而 bg 清单原本只出现在挑素材那次请求里——那时台词已经写完了，
     // 也就是说"去哪儿"这个决定，是在她**看不见任何地点清单**的情况下做出的。
     // 她只能凭 [Memory] 里记着什么说一个名字，
-    // 而田心屋在那里被写了三遍（在意.3 / 记得.1 / 我们.6），别的地点一条都没有。
-    // 于是"凭记忆说一个地方"必然等于"说田心屋"——信息密度的碾压，不是偏好。
+    // 而那家店在那里被写了三遍（在意.3 / 记得.1 /
+    // 于是"凭记忆说一个地方"必然等于"说那家店"——信息密度的碾压，不是偏好。
     //
-    // 【改法】在她要选地方那一句，把清单（连注解）一起给出去。
+    // 改法在她要选地方那一句，把清单（连注解）一起给出去。
     // 清单和注解都来自 char.ini / 目录扫描，代码不认识任何地点名。
     void SetRecentPlaces(const std::vector<std::wstring>& v) { recentPlaces_ = v; }
-
-    // 记下"去过这个地方"——换景时把【离开的那个】记进来。
+    // 记下"去过这个地方"——换景时把离开的那个记进来。
     //
-    // 【光有 setter 是不够的】之前没有任何地方调用它，recentPlaces_ 永远是空的，
-    // 于是 PlaceChoicesBlock 里"刚去过的排到后面并标注"这条规则从未生效过：
+    // 光有 setter 不够：没有调用方时 recentPlaces_ 永远是空的，
     // 清单退化成全列，而"每次都去同一个地方"正是它要治的病。
-    // 写了机制却没接线，看代码还看不出来——这类问题最难发现。
-    // 【const 是必须的】调用方 ApplyAiStage 是 const（它被设计成"只校验不改状态"），
+    // 写了机制却没接线，看代码还看不出来
+    // const 是必须的调用方 ApplyAiStage 是 const（它被设计成"只校验不改状态"），
     // 而"记下离开的那个地方"是簿记——属于逻辑上的 const，所以配 mutable 成员。
     // 不这么做的话 MSVC 报 C2662（const 对象不能调非 const 成员），编译不过。
     void NotePlaceVisited(const std::wstring& p) const;
@@ -1888,40 +1970,38 @@ public:
     bool ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstring& bgm,
                       const std::wstring& outfit, const std::wstring& emote,
                       const std::wstring& pose = L"") const;
-
     //
-    // ---- 【章内场景锁定：一章之内只用一个背景】
+    // ---- 章内场景锁定：一章之内只用一个背景
     //
-    // 【场景切换规则】"同一章内只能用一个场景，进入恋爱以后才可以换场景，
-    //   然后再到下一章才可以再换。"
+    // 场景切换规则"同一章内只能用一个场景，进入恋爱以后才可以换场景，
+    // 然后再到下一章才可以再换。"
     //
-    // 【日志里的实际病症】同一章内背景被换来换去：
-    //   上课期间的课室 → 空无一人的课室 → 她的卧室 → 空无一人的课室 …
-    //   人还在讲台前讲 scanf，背景却跳到她的卧室。场景不是"没换"，
-    //   是【换得太随便】——她每一轮都重新挑一个地点，而一章讲的是同一件事、
-    //   本来就该在同一个地方。
+    // 运行时的实际病症同一章内背景被换来换去：
+    // 上课期间的课室 → 空无一人的课室 → 她的卧室 → 空无一人的课室 …
+    // 人还在讲台前讲 scanf，背景却跳到她的卧室。场景不是"没换"，
+    // 是换得太随便——她每一轮都重新挑一个地点，而一章讲的是同一件事、
+    // 本来就该在同一个地方。
     //
     // 规则：
-    //   教学 / 做题 / 批改（Lesson · Quiz · Judge · Review） → 整章锁死同一个背景
-    //   章间日常（Daily）                                    → 解锁，可以换地方
-    //   进入下一章                                            → 清空，重新定一个
+    // 教学 / 做题 / 批改（Lesson · Quiz · Judge · Review） → 整章锁死同一个背景
+    // 章间日常（Daily） → 解锁，可以换地方
+    // 进入下一章 → 清空，重新定一个
     //
-    // 【只锁背景，不锁音乐和表情】
+    // 只锁背景，不锁音乐和表情
     // 换教室会穿帮，换曲子不会——音乐跟着情绪走是对的，表情更是每拍都要跟台词。
     bool BgLockedNow() const;
     // 教学段定场景用：这个名字是不是"能上课的地方"。见 BgSuitsTeaching 的说明
     bool BgSuitsTeaching(const std::wstring& name) const;
     // 这一轮【真正接受】的背景集合。见 BgAcceptNow 的说明
     std::vector<std::wstring> BgAcceptNow() const;
-
     //
-    // ---- 【恋爱段：章间日常 + 毕业】
+    // ---- 恋爱段：章间日常 + 毕业
     //
-    // 【这一段是玩家会不会玩下去的关键，规则必须跟教学段相反】
+    // 这一段是
     //
     // 教学段要稳：知识点讲一半教室换了，穿帮。
-    // 恋爱段要活：约会的本质就是换地方——「走，带你去个好地方」
-    //   这句话本身就包含一次转场，锁死背景等于砍掉约会的空间。
+    // 恋爱段要活：约会的本质就是换地方——「走，带
+    // 这句话本身就包含一次转场，锁死背景等于砍掉约会的空间。
     //
     // 设计约定：教学不许换背景，恋爱可以随便换，不限总次数、不限重复。
     // 所以这里反过来定义"自由段"，BgLockedNow 直接取它的反面。
@@ -1930,32 +2010,30 @@ public:
     // 本章锁定的场景（空 = 还没定，这一轮她选的那个就会被记下来）
     const std::wstring& ChapterBg() const { return chapterBg_; }
     void SetChapterBg(const std::wstring& b) { chapterBg_ = b; }
-
     //
-    // ---- 【素材打回重填】
+    // ---- 素材打回重填
     //
-    // 【打回方案：她选错了就直接打回给她，让她自己重选】
-    // 这比在程序里堆匹配算法靠谱得多——她【知道】自己这句话想表达什么情绪，
+    // 打回方案：她选错了就直接打回给她，让她自己重选
+    // 这比在程序里堆匹配算法靠谱得多——她知道自己这句话想表达什么情绪，
     // 只能从字面猜，猜错的表现就是"她说害羞，画面给平静"。
     //
     // 打回时给三样东西，缺一样都会让她继续错：
-    //   ① 她刚刚说的那句台词    —— 重选的依据（没有它她只能瞎选）
-    //   ② 她填错的值 + 错在哪   —— 她没有跨轮记忆，不摆出来她不知道自己填过什么
-    //   ③ 完整清单（重新发一遍）—— 她给错往往就是因为记不住清单，只发"错了"没用
+    // ① 她刚刚说的那句台词 —— 重选的依据（没有它她只能瞎选）
+    // ② 她填错的值 + 错在哪 —— 她没有跨轮记忆，不摆出来她不知道自己填过什么
+    // ③ 完整清单（重新发一遍）—— 她给错往往就是因为记不住清单，只发"错了"没用
     //
-    // 【只求素材，不重新生成台词】台词已经显示给玩家了，
-    // 再生成一次内容会变，玩家会看到同一句话说了两遍不同的版本。
+    // 只求素材，不重新生成台词台词已经显示给玩家了，
+    // 再生成一次内容会变，
     // wantPose2 / badPose2：那一句的第二个表情填错了（恋爱段、教学段都会出现），
     // 要把原因和字段一起塞进打回请求（它不记得自己上一轮填了什么）。
     std::wstring StageFixPrompt(const std::wstring& say, const DirView& v,
                                 bool wantPose2 = false,
                                 const std::wstring& badPose2 = L"") const;
-
-    // ---- 【素材独立请求】只问画面，不问台词
+    // ---- 素材独立请求只问画面，不问台词
     //
     // 跟 StageFixPrompt 的区别：
-    //   打回   = 她填错了，只重填错的那几项
-    //   挑素材 = 每轮都问，三项全要，而且给她 scene / beat 做依据
+    // 打回 = 她填错了，只重填错的那几项
+    // 挑素材 = 每轮都问，三项全要，而且给她 scene / beat 做依据
     // 两者共用 AssetListBlock，保证清单口径一致。
     std::wstring AssetPickPrompt(const std::wstring& say,
                                  const std::wstring& scene,
@@ -1971,35 +2049,11 @@ public:
                (v.gaveBg   && !v.okBg)   ||
                (v.gaveBgm  && !v.okBgm);
     }
-
-    static const int kMinLessonTurns = 2;    // 至少聊这么久才允许开考
-    static const int kIntroMinTurns  = 3;    // 自我介绍至少聊这么久
-    //
-    // ---- 【kDailyMinTurns 已废弃】
-    //
-    // 它原来是"章间日常的保底轮数（取不少于上一章教学轮数）"，
-    // 也就是"教学聊 15 轮，这段相处也要满 15 轮她填的 advance 才作数"。
-    // 本意是"日常的分量不该比上课轻"，实际效果是
-    // "她明明说可以走了，按钮就是不亮"——玩家只看到卡，看不出卡在哪。
-    // 现在这段什么时候收由【她】判断，引擎只管按钮别太早出现
-    // （kNextDayAfter，与 DailyTarget 同一个数）。
-    //
-    // ---- 【剧情模式每幕的建议轮数（提醒用，不是门槛）】
-    //
-    // 剧情幕没有"题答对"这种客观终点，她只能自己判断演没演到位。
-    // story.ini 里可以写 Turns 覆盖；没写就用这个。
-    // 它只决定第几轮提醒她一句"可以收了"，不阻塞她提前表态。
-    static const int kStoryActTurns  = 4;
-    static const int kDailyNudge     = 6;    // 日常聊到这么久才【提醒一次】可以收了（不是上限）
-    static const int kDailyGrace     = 4;    // 聊够之后再多给这几轮，然后引擎兜底推进
-    //
-    // ---- 章间日常聊够这几轮，右上角才出现「明天见」
-    //
-    // 早于这个数就摆按钮，等于催她走——那正是"气氛正好被拉回教室"的成因。
-    // 先给她几轮把这段相处演完，之后按钮【常驻】：想多聊几轮照样能聊，
-    // 什么时候走由玩家决定。
-    static const int kNextDayAfter   = 3;
-
+    // 节奏常量集中在 advance 命名空间的 constexpr（本文件上方），本类不再另定义门槛。
+    // ★ 同一个数字写两份，迟早出现"按钮按这里的数画、判据却用那里的数"。
+    // kMinTurnsBeforeExit：出口最早出现的轮数、开考下限、日常转教学下限
+    // advance::kIntroMinTurns / kIntroGrace：开场转教学的下限与引擎接管宽限
+    // advance::kStoryActTurns / advance::kDailyNudge：提醒"可以收了"的轮数，只提醒不阻塞
 private:
     Syllabus syllabus_;
     int      chapter_ = 1;
@@ -2010,30 +2064,20 @@ private:
     int      introTurn_ = 0;                 // 开场自我介绍轮数
     int      dailyTurn_ = 0;                 // 当前这段日常的轮数
     //
-    // ---- 【她有没有说"可以走了"】（章间日常的双钥匙之一）
-    //
-    // 玩家想走就能走 -> 那一幕会在气氛最好的时候被他自己掐断，
-    //   而"聊多久"本来就是这段戏的一部分。
-    // 她说了算就走   -> 就是以前那次事故：人还在往甜品店走，
-    //   她顺手填了个 advance=2，引擎当场切进下一章，告别那一幕整个没了。
-    //
-    // 所以推进要【两把钥匙同时在手】：
-    //   · 她觉得气氛到了 -> 填 advance=2 -> 引擎记下"她准备好了"
-    //   · 玩家点右上角那个按钮 -> 才真的走（先告别，再点到第二天）
-    // 她没准备好，玩家点了也没用；她准备好了，玩家不点也不会自己走。
-    //
-    // 进一段新的日常时清掉（见 EnterDaily 处），否则上一幕的资格会带过来。
-    bool     dailyReady_ = false;
+    // 这一段该发生的事是否已经发生。它是 progress.done，不是"资格"：
+    // 置位后出口立刻出现，但走不走仍由玩家点按钮决定。
+    // 只在进下一段 / 跳章 / 换章时清，玩家接着聊不会把它收回。
+    bool     actDone_ = false;
     int      lastLessonTurns_ = 0;           // 上一章教学聊了几轮（算日常目标用）
     int      fails_   = 0;                   // 本章失败次数
     //
-    // ---- 这一章是【第二天二人再次见面】开场
+    // ---- 这一章是第二天二人再次见面开场
     //
     // 玩家点「明天见」进的下一章，不是"考完接着上下一章"。
     // 课上完了、各自回家、第二天再见面——时间感才是顺的，
     // 而且"第二天"给了她写转场的余地（画面跟着她的台词走，不先于叙事跳）。
     //
-    // 【只在进章那一句有效】说完就清，见 NoteTurn。
+    // 只在进章那一句有效说完就清，见 NoteTurn。
     bool     meetAgain_ = false;
     bool     stageChanged_ = false;          // 刚切了阶段，下一轮必须换舞台
     bool     needBg_ = false, needBgm_ = false, needPose_ = false;
@@ -2051,36 +2095,33 @@ private:
     // 当前角色的定义。Director 自己没有 App 的 Def()，而真值表查询
     // （这套衣服画了哪些表情）需要它——在 SetVisible 时一并记下来。
     const CharDef* defNow_ = nullptr;
-
     //
     // 本章锁定的场景（见 BgLockedNow 的说明）
     //
-    // 【mutable 的理由和 lastBadPose_ 一样】ApplyAiStage 是 const 方法，
-    // 而"这一章的场景就定在这张图上"必须在这里记下来——
+    // mutable 的理由和 lastBadPose_ 一样ApplyAiStage 是 const 方法，
+    // 而"这一章的场景就定在这张图上"必须在这里记下来
     // 不记的话下一轮她又能换，锁定形同虚设。
     mutable std::wstring chapterBg_;
-
     //
-    // 【刚考完那第一轮，场景锁先不松】
+    // 刚考完那第一轮，场景锁先不松
     //
-    // 【实测现象："做题前后背景突然跳到神社"，第二条可能就在这里】
-    // 判卷通过 -> 进章间日常，这里原来【立刻】把 chapterBg_ 清空，
+    // 实测现象："做题前后背景突然跳到神社"，第二条可能就在这里
+    // 判卷通过 -> 进章间日常，这里原来立刻把 chapterBg_ 清空，
     // 于是她下一轮可以任选。可她那一轮的台词往往还写在教室里：
-    //   「今天的课就到这里？」…「她坐到课桌边缘，抱着膝盖」
+    // 「今天的课就到这里？」…「她坐到课桌边缘，抱着膝盖」
     // 而她顺手挑了个"气氛最软"的地方 —— 神社夜晚、她的卧室之类。
     // 台词在教室、画面在夜神社，穿帮非常扎眼。
     //
-    // 现在：进日常那一轮【沿用考场】，等这一轮说完（NoteTurn）再松锁，
+    // 现在：进日常那一轮沿用考场，等这一轮说完（NoteTurn）再松锁，
     // 那时她多半已经写了"走吧""去吃点东西"，换过去才对得上。
     // 只压一轮，不影响"恋爱段随便换"。
     bool dailyBgHeld_ = false;
-
     //
-    // ---- 【这一段刚开始：地点还没定过】
+    // ---- 这一段刚开始：地点还没定过
     //
-    // 【为什么需要它】恋爱段的 bg 提示有两种语气，而它们互相打架：
-    //   · 刚从教学切过来 —— 该"鼓励换地方"（课结束了，带他去别处）
-    //   · 已经聊了几轮   —— 该"留在原地"（填同一个地方＝还在这儿）
+    // 为什么需要它恋爱段的 bg 提示有两种语气，而它们互相打架：
+    // · 刚从教学切过来 —— 该"鼓励换地方"（课结束了，带他去别处）
+    // · 已经聊了几轮 —— 该"留在原地"（填同一个地方＝还在这儿）
     // 之前只有后一种，于是刚考完那轮她在教室里开始约会；
     // 而只写前一种的话，她又会每轮都换，地点无意义地抖。
     //
@@ -2088,7 +2129,7 @@ private:
     // 进日常 / 进毕业时置真，她在这一段给出有效 bg 后置假。
     // 读档不继承（那不知道她聊到第几句了，保守按"已安定"处理）。
     //
-    // 【mutable 的理由和 chapterBg_ 一样】：ApplyAiStage 是 const 方法，
+    // mutable 的理由和 chapterBg_ 一样：ApplyAiStage 是 const 方法，
     // 而"她这一轮给了有效 bg"是在那里判定并收起这个标记的。
     mutable bool dailyFresh_ = false;
 
@@ -2109,18 +2150,15 @@ private:
     mutable std::vector<std::wstring> recentPlaces_;
     DirStage stage_   = DirStage::Intro;
 };
-
-//==============================================================================================
-//  模块：剧本 DSL（声明）—— 解析器 + 编译期检查 + 虚拟机
+// 模块：剧本 DSL（声明）—— 解析器 + 编译期检查 + 虚拟机
 //
-//  设计取向：【骨架固定，血肉生成】。
-//  剧本只负责"什么时候出题、什么时候分支、变量怎么算"，具体台词交给大模型。
+// 设计取向：骨架固定，血肉生成。
+// 剧本只负责"什么时候出题、什么时候分支、变量怎么算"，具体台词交给大模型。
 //
-//  编译期就报出场景未定义、跳转目标不存在这类错误——运行时才发现的话，
-//  玩家已经卡在半路了，而且很难复现。
+// 编译期就报出场景未定义、跳转目标不存在这类错误——运行时才发现的话，
+// 玩家已经卡在半路了，而且很难复现。
 //
-//  表达式（$好感 >= 10）编译成 RPN 再求值，见 expr.h。
-//==============================================================================================
+// 表达式（$好感 >= 10）编译成 RPN 再求值。
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -2315,15 +2353,12 @@ private:
 };
 
 } // namespace ck
-
-//==============================================================================================
-//  模块：大模型对话（声明）—— WinHTTP 对话、SSE 流式解析、记忆库、玩家画像
+// 模块：大模型对话（声明）—— WinHTTP 对话、SSE 流式解析、记忆库、玩家画像
 //
-//  这一层最不稳定：网络会断、接口会改、模型会胡说。设计原则：
-//     1. 失败必须能降级（兜底台词），绝不把玩家卡在"她在想…"
-//     2. 模型给的一切都当不可信输入：舞台指令过白名单、台词解析失败有兜底
-//     3. 错误信息要能诊断——带 host/port/HTTP 状态，别只说"网络不可达"
-//==============================================================================================
+// 这一层最不稳定：网络会断、接口会改、模型会胡说。设计原则：
+// 1. 失败必须能降级（兜底台词），绝不把玩家卡在"她在想…"
+// 2. 模型给的一切都当不可信输入：舞台指令过白名单、台词解析失败有兜底
+// 3. 错误信息要能诊断——带 host/port/HTTP 状态，别只说"网络不可达"
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -2335,48 +2370,45 @@ struct LlmConfig {
     std::wstring apiKey;                                     // 留空时某些本地服务也能跑
     std::wstring model   = L"deepseek-chat";
     double temperature   = 0.9;
-
     //
-    // ---- 【输出长度：一律不限制】
+    // ---- 输出长度：一律不限制
     //
-    // 曾经的 max_tokens / "Token 预算" 开关已【整体移除】。
+    // 曾经的 max_tokens / "Token 预算" 开关已整体移除。
     // 玩家明确说过不需要省 token，而这两个开关带来的问题比解决的更多：
-    //   · max_tokens 太小 -> JSON 在中间被切断 -> 解析失败
-    //     -> 走兜底台词 -> 玩家看到"网络断了"，真正的错误被这个假象盖住
-    //   · 只放开输出而上下文 / 记忆仍在砍 -> 表现依然是"她记不住前面聊的"，
-    //     而玩家以为自己已经设置好了
+    // · max_tokens 太小 -> JSON 在中间被切断 -> 解析失败
+    // -> 走兜底台词 ->
+    // · 只放开输出而上下文 / 记忆仍在砍 -> 表现依然是"她记不住前面聊的"，
+    // 而
     //
-    // 现在的做法跟"无上限"档位一致：【根本不发送 max_tokens 字段】，
+    // 现在的做法跟"无上限"档位一致：根本不发送 max_tokens 字段，
     // 服务端用模型默认的最大输出长度。
     // （不能发一个很大的数：超过模型自身上限会被服务端 400 拒掉，
-    //   表现是"她一句话都说不出来"，比截断还糟。）
+    // 表现是"她一句话都说不出来"，比截断还糟。）
     //
     // 上下文不裁剪、记忆全带，见 main.cpp 里的 kCtxMaxTurns 相关说明。
-
     int    timeoutSec    = 180;   // 不限输出后某些网关会攒够整段再转发，60 秒太短
     bool   stream        = true;                             // 流式：边收边打字
-
     //
-    // ---- 【素材独立请求：台词和画面分两次问】
+    // ---- 素材独立请求：台词和画面分两次问
     //
-    // 运行日志里最扎眼的一类问题：空着没填的素材字段。
-    // 它不会被打回（打回只管"填错了"），引擎只能沿用上一张脸——
+    // 典型现象：的一类问题：空着没填的素材字段。
+    // 它不会被打回（打回只管"填错了"），引擎只能沿用上一张脸
     // 这才是"换脸不勤"最直接的来源。
     //
     // 一次请求里她的注意力全在台词上，pose/bg/bgm 是最后随手补的：
-    // 运行日志里"清了清嗓子，认真起来"却配「叹气」就是这么来的。
+    // 运行时"清了清嗓子，认真起来"却配「叹气」就是这么来的。
     // 分开之后第二次请求只输出三个名字，它有余量去判断这一拍的情绪。
     //
     // 打回本来就是第二次请求，这里只是把"出错才做"改成"每轮都做"。
     bool   splitAsset    = true;   // true = 素材单独发一次请求；config.ini [LLM] SplitAsset
     //
-    // ---- 【离线模式已移除】
+    // ---- 离线模式已移除
     //
     // 曾经它是一个可切换的模式：不联网、用预置台词。
     // 移除的理由是它制造的错误比解决的更多：
-    //   · 联网失败时玩家会以为是"离线模式"没关，去查设置，
-    //     而真正的故障（Key 错 / 网关拒 / 超时）被这个解释盖住了
-    //   · 导演模式下它直接停掉整个玩法，玩家看到的是"游戏坏了"
+    // · 联网失败时
+    // 而真正的故障（Key 错 / 网关拒 / 超时）被这个解释盖住了
+    // · 导演模式下它直接停掉整个玩法，
     // 现在只有一种模式：联网。联网失败就如实报错（见 LlmChat 的 err）。
 };
 
@@ -2394,19 +2426,16 @@ struct LlmResult {
 
     // ★ 结束原因（choices[0].finish_reason）："stop" 说完了 / "length" 被输出上限掐断 / 空 = 没给。
     std::wstring finishReason;
-
     // ★ 流式有没有收到 [DONE]。
-    //   没收到 = 流在中途断了（网络 / 网关掐的），这跟 length 截断【修法不同】：
-    //   中途断的重发一次大概率能拿到完整内容，length 截断重发还是会断。
-    //   非流式（整包返回）恒为 true——整包能解析出来就是拿全了。
+    // 没收到 = 流在中途断了（网络 / 网关掐的），这跟 length 截断修法不同：
+    // 中途断的重发一次大概率能拿到完整内容，length 截断重发还是会断。
+    // 非流式（整包返回）恒为 true——整包能解析出来就是拿全了。
     bool        streamDone = false;
-
-    // ★ 拿到的内容是【半截】的。
+    // ★ 拿到的内容是半截的。
     //
     // 流式中途断了（没收到 [DONE]）、换成整包重发一次也没救回来，
-    // 于是退回用那半截。此时 ok 仍是 true、full 也非空——
-    // 以前调用方只看 ok，把半句当完整台词用，
-    // 玩家看到的就是「所以，你觉得 scanf(」后面什么都没有。
+    // 于是退回用那半截。此时 ok 仍是 true、full 也非空
+    // 早期版本调用方只看 ok，把半句当完整台词用，
     //
     // 跟 finishReason=="length" 是两回事：那是模型/服务端的输出上限，
     // 这个是网络把流掐了。两者修法不同，必须分开标记。
@@ -2428,62 +2457,57 @@ struct LlmReply {
     std::vector<std::wstring> mem;          // 本轮新记住的事实
     std::wstring hint;                      // 给玩家的提示（判题失败时用）
     bool         parsed = false;            // 是否成功解析成 JSON
-
     // ---- 舞台指令：让模型自己决定画面
     //
     // 之前场景/音乐/服装全写死在剧本里，模型只能填空台词。
-    // 现在把这三样也交给它：她讲着讲着说"我们换个地方"是真的会换背景。
+    // 现在把这三样也交给它：她讲着讲着说"
     //
-    // 值都是【槽位名】而不是文件名，由角色包映射成自己的素材。
-    // 交给 Director::ApplyAiStage 做白名单校验后才生效——
+    // 值都是槽位名而不是文件名，由角色包映射成自己的素材。
+    // 交给 Director::ApplyAiStage 做白名单校验后才生效
     // 模型不知道角色包里有哪些图，不校验会得到空白画面。
     std::wstring bg;                        // 场景槽位：课 / 题 / 通过 / 卡住 ...
     std::wstring bgm;                       // BGM 槽位：平静 / 紧张 / 结局 ...
     std::wstring outfit;                    // 服装 id（不校验，服装是自动发现的）
     std::wstring mood;                      // 她对当前氛围的想法（仅用于记忆，不显示）
-
-    // ---- 【素材独立请求】用：她写台词时定下的"这一拍"
+    // ---- 素材独立请求用：她写台词时定下的"这一拍"
     //
     // 主请求不再要 pose/bg/bgm（见 splitAsset），画面改由第二次请求挑。
     // 第二次请求必须拿到 scene / beat：那是她写台词时刚想清楚的情境，
-    // 比"让她重新读一遍自己的台词再判断"准得多——
+    // 比"让她重新读一遍自己的台词再判断"准得多
     // 正是因为主请求里先写了 scene/beat，后面的素材才跟台词一致。
     std::wstring scene;                     // 眼前是哪儿、有什么
     std::wstring beat;                      // 这一拍发生了什么
-
     //
-    // ---- 【恋爱段：同一句台词的第二个表情】
+    // ---- 恋爱段：同一句台词的第二个表情
     //
     // 玩家翻到下一页时切换过去，于是她一句长台词里有一条情绪弧线
     // （害羞 -> 心动），而不是一张静图挂全程。
     // 只有恋爱段（章间日常 / 毕业）会要这个字段，教学段不出现。
     std::wstring pose2;
-
     // 造型：服装 + 表情捆绑后的完整立绘名，如「校服_平静」。
     //
-    // 【这是画面主字段，优先于 outfit × emote】
+    // 这是画面主字段，优先于 outfit × emote
     // 立绘是服装 × 表情一张张画的，分开组合会得到没画的那张
-    // （校服 + 害羞 可能根本不存在），降级链会悄悄退回平静脸——
-    // 模型以为选对了，玩家看到的却是错的。
+    // （校服 + 害羞 可能根本不存在），降级链会悄悄退回平静脸
+    // 模型以为选对了，
     // pose 是整段名字，选到的必然真实存在。
     std::wstring pose;
 
     // 是否【建议】进入测验。只是建议，真正的门槛在 Director::ShouldQuiz()
-    //（至少聊够 kMinLessonTurns 轮）。推进权必须在引擎手里。
+    //（至少聊够 advance::kMinTurnsBeforeExit 轮）。推进权必须在引擎手里。
     bool         ready = false;
 
     // 这句是从被 max_tokens 截断的回复里抢救出来的（可能说到一半）。
     // 调用方可以据此提示玩家"她的话没说完"。
     bool         truncated = false;
-
     // ---- 推进权（教学权限放开）
     //
-    //   advance  0=继续本章   1=出题考他   2=跳过测验直接进下一章
-    //   verdict  只在点评阶段用："pass" = 认为他过了，"fail" = 不算过
+    // advance 0=继续本章 1=出题考他 2=跳过测验直接进下一章
+    // verdict 只在点评阶段用："pass" = 认为他过了，"fail" = 不算过
     //
-    // 【为什么要把判定权给她】
-    // 编译器只能告诉你"跑没跑通"，判不了"是不是真会了"。
-    // 玩家写 printf("5 3") 硬编码输出，测试用例照样过——
+    // 为什么要把判定权给她
+    // 编译器只能告诉
+    // 玩家写 printf("5 3") 硬编码输出，测试用例照样过
     // 引擎会判通过，但任何一个看过代码的人都知道这不算。
     // 这种"形式上通过、实质上没会"的情况只有她能看出来。
     //
@@ -2495,12 +2519,11 @@ struct LlmReply {
 
 // 从模型原文里尽量抠出结构化内容。抠不出来就把整段当台词，绝不返回空。
 LlmReply ParseReply(const std::wstring& raw);
-
-// 从【可能还不完整】的模型输出里抠出台词，用于流式边收边显示。
+// 从可能还不完整的模型输出里抠出台词，用于流式边收边显示。
 //
-// 【为什么必须有这个】
+// 为什么必须有这个
 // 流式收到的增量是模型的原始输出，也就是一整段 JSON：
-//   {"say":"哼，看懂了？","emote":"joy","pose":"校服_开心"}
+// {"say":"哼，看懂了？","emote":"joy","pose":"校服_开心"}
 // 原来直接把它塞进 view.body 显示——于是玩家在"她在想…"的那几秒里，
 // 看到的是带着 {} 和 "say": 这些键名的机器原文，
 // 读完才是正常台词。加载存档时正好卡在思考中，这个现象特别明显。
@@ -2512,16 +2535,15 @@ LlmReply ParseReply(const std::wstring& raw);
 // 返回 false 表示还没收到 say（可能只到了 "emote" 之类的字段），
 // 调用方此时应该保持空白，不要显示任何东西。
 bool ExtractStreamSay(const std::wstring& raw, std::wstring& out);
-
-// 这段文本【像不像机器格式】（JSON / 字段名 / 转义残留）？
+// 这段文本像不像机器格式（JSON / 字段名 / 转义残留）？
 //
-// 【为什么要有它，而且流式路径也要用】
+// 为什么要有它，而且流式路径也要用
 // 对话框里出现 {"say":"...} 这种原始文本是最刺眼的一类 bug，
 // 玩家一眼就知道"程序坏了"。单靠"提取成功就显示"挡不住全部情况：
-//   · 模型把 JSON 嵌套写错，抠出来的片段本身带着 { 和 "say"
-//   · 流式期间刚好切在 "say":" 和正文之间
-// 所以在【最终要显示之前】统一再判一次：像机器格式就宁可不显示。
-// 不显示只是空白一下，显示出来是事故——这个取舍毫无悬念。
+// · 模型把 JSON 嵌套写错，抠出来的片段本身带着 { 和 "say"
+// · 流式期间刚好切在 "say":" 和正文之间
+// 所以在最终要显示之前统一再判一次：像机器格式就宁可不显示。
+// 不显示只是空白一下，显示出来是事故
 bool LooksLikeMachineText(const std::wstring& s);
 bool LooksLikeCode(const std::wstring& s);
 // 从她的判卷台词里读结论：1=通过 -1=没过 0=判不出来（调用方保持原样）
@@ -2537,22 +2559,21 @@ struct MemoryFact {
     int          weight = 50;      // 0~100，越高越"记得牢"
     long long    ts = 0;           // 写入时间（FILETIME 低精度版，够排序用）
 };
-
 // 三层记忆里的"长期事实层"。短期对话历史和玩家画像不在这里。
 //
-// ---- 【为什么分层】
+// ---- 为什么分层
 //
 // 原来只有一条平铺列表，而引擎每轮都往里塞一条"玩家说过：xxx"（w=40）。
-// 这些话【本来就在对话历史里】（hist 已进 prompt），再存一份只是白占额度：
-// 容量 60 满了会永久删最轻的，于是 w=40 的流水账把 w=60 的真记忆挤掉——
+// 这些话本来就在对话历史里（hist 已进 prompt），再存一份只是白占额度：
+// 容量 60 满了会永久删最轻的，
 // 表现就是"越聊到后面她越平，早期的事全忘了"。
 //
 // 现在分三层：
-//   · 长期事实 facts_   —— 模型自己给的 mem 字段，值得记住的事。占容量。
-//   · 近期流水 recent_  —— 最近几轮他说了什么。不占容量，只留最近几条。
-//   · 关系状态 bond_    —— 章末让她自己写一句"现在我对他是……"。不占容量。
+// · 长期事实 facts_ —— 模型自己给的 mem 字段，值得记住的事。占容量。
+// · 近期流水 recent_ —— 最近几轮他说了什么。不占容量，只留最近几条。
+// · 关系状态 bond_ —— 章末让她自己写一句"现在
 //
-// 【bond 为什么让她自己写，而不是由引擎定一个关系档位】
+// bond 为什么让她自己写，而不是由引擎定一个关系档位
 // 档位要硬编码"数值>60 = 恋人"——换角色包就得重配一套，而且"恋人"这个词
 // 对别的包未必成立。她自己写，内容归包，代码不认识任何关系名。
 class Memory {
@@ -2562,11 +2583,10 @@ public:
     void Add(const std::wstring& fact, int weight = 50);       // 长期事实
     bool Forget(const std::wstring& fact);                     // 玩家手动删一条
     void Clear();
-
     // ---- 近期流水（他说过的话）
     //
     // 不进长期记忆：那些话在对话历史里已经有了，再存一份只会挤掉真记忆。
-    // 另存这一层只为【万一上下文被裁剪时她不至于当场失忆】。
+    // 另存这一层只为万一上下文被裁剪时她不至于当场失忆。
     void AddRecent(const std::wstring& text);
     std::wstring RecentPrompt(int n = 6) const;
 
@@ -2586,12 +2606,11 @@ public:
 
     const std::vector<MemoryFact>& All() const { return facts_; }
     size_t Size() const { return facts_.size(); }
-
     //
     // ---- 记忆容量（默认 60 条，超了丢最轻的）
     //
-    // 【为什么"不缺 token"也要放开这一项】
-    // 这条限制【会真的删掉内容】，不只是截断 prompt：
+    // 为什么"不缺 token"也要放开这一项
+    // 这条限制会真的删掉内容，不只是截断 prompt：
     // 满了之后 Add 会把权重最低的永久丢掉。
     // 如果只放开"带进 prompt 的条数"而容量还卡在 60，
     // 那"记忆全带"就是句空话——早期的事早被删了，根本轮不到被带。
@@ -2632,34 +2651,31 @@ struct PersonaCfg {
     std::wstring trait;             // 人设：傲娇 / 温柔 / 毒舌……
     std::wstring world;             // 世界观补充
 };
-
-// vis 是【扫出来的真实素材清单】。directorMode 下会把它原样交给模型，
+// vis 是扫出来的真实素材清单。directorMode 下会把它原样交给模型，
 // 于是模型只能在真实存在的图/音乐/服装里挑——不用再维护任何写死的名单。
 // 传 nullptr 表示不限制（那时 bg / bgm / outfit 字段的清单为空，模型会留空）。
 //
 // recent：最近几轮实际用上的素材，用于"别连续用同一个"的约束。
-// 【模型没有跨轮记忆】不告诉它刚才用了什么，它就会一直沿用最省力的那个。
+// 模型没有跨轮记忆不告诉它刚才用了什么，它就会一直沿用最省力的那个。
 struct RecentAssets {
     std::vector<std::wstring> poses;
     std::vector<std::wstring> bgs;
     std::vector<std::wstring> bgms;
     int streak = 0;                  // 连续多少轮用了同一个 pose
-
     //
     // ---- 本轮禁用的表情（连续用过就从她能选的清单里拿掉）
     //
-    // 【这个字段必须和 Director 校验用的禁用名单同源】
+    // 这个字段必须和 Director 校验用的禁用名单同源
     // 收窄只改 prompt 文本、校验仍用完整清单的话，
     // 她填被禁的名字照样被接受——收窄就成了摆设。
     // 由调用方算好后同时喂给两边。
     std::vector<std::wstring> banned;
-
     //
     // ---- 背景 / 音乐也禁（连用太久就从清单里拿掉）
     //
-    // 【实测日志：整局 8 轮 bg 和 bgm 从头到尾一个样】
-    //   bg  = 上课期间的课室（8 次）
-    //   bgm = 她的日常.Quiet Version（8 次）
+    // ★ 症状：整局 8 轮里 bg 和 bgm 从头到尾一个样。
+    // bg = 上课期间的课室（8 次）
+    // bgm = 她的日常.Quiet Version（8 次）
     // 原因跟 pose 完全一样：prompt 里给了"想保持不变就照抄"的出口，
     // 照抄最省 token，于是她永远抄。
     //
@@ -2667,11 +2683,10 @@ struct RecentAssets {
     // 场景和音乐本来就该稳定，换太勤反而像抽搐。
     std::vector<std::wstring> bannedBg;
     std::vector<std::wstring> bannedBgm;
-
     //
-    // ---- 她上一轮给了一个【清单里没有、也匹配不上】的名字
+    // ---- 她上一轮给了一个清单里没有、也匹配不上的名字
     //
-    // 【没有这个字段，同样的错会一轮一轮重复】
+    // 没有这个字段，同样的错会一轮一轮重复
     // 模型不记得自己写过什么。给了「tsundere」，引擎默默忽略，
     // 它下一轮很可能原样再给一次。把原话摆回给它看才有用。
     std::wstring badPose;
@@ -2685,25 +2700,20 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
                        const RecentAssets* recent = nullptr,
                        const std::wstring* assetNote = nullptr,
                        bool splitAsset = false);
-
 // 组装"点评代码作业"的 user 消息：把编译器的报错原样喂给她
 // 点评代码。题面 / 模板也一并给她——看不到卷子就没法批改，
 // 只给"通过 / 未通过"两个字的话她只能说出"不错嘛"这种空话。
 // 交代码给她看。
 //
-// 【不再有"编译运行结果"和"系统判定"两个参数】
-// 原来这两个字段来自本机跑 cl.exe。现在不跑本地工具链了——
+// 不再有"编译运行结果"和"系统判定"两个参数
 // 判定权完全在她手里，机器不再给任何前置结论，
 // 否则她容易顺着机器结论随声附和（"系统说通过了，那就通过吧"）。
 std::wstring BuildCodeReviewUser(const std::wstring& taskTitle, const std::wstring& stmt,
                                  const std::wstring& tpl, const std::wstring& code);
-
-//==============================================================================================
-//  模块：音频（声明）—— XAudio2：BGM 循环 + 音效 + 语音
+// 模块：音频（声明）—— XAudio2：BGM 循环 + 音效 + 语音
 //
-//  只放本地 WAV，不引解码库：WAV 头自己解析，PCM 整块塞进 XAudio2。
-//  音效分固定槽（hover/click），避免划过一排菜单连开数槽把重要音效挤掉。
-//==============================================================================================
+// 只放本地 WAV，不引解码库：WAV 头自己解析，PCM 整块塞进 XAudio2。
+// 音效分固定槽（hover/click），避免划过一排菜单连开数槽把重要音效挤掉。
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -2733,16 +2743,15 @@ public:
 
     // 一次性播放（不占用固定槽位，用动态槽）。返回槽位号，-1 表示失败。
     int  PlayOneShot(const std::wstring& path);
-
     // 界面音（hover / click）专用：固定槽 + 路径缓存。
     //
-    //  为什么不能直接用 PlayOneShot：
-    //   · 动态槽是轮转的，鼠标快速划过一排菜单会连开好几个槽，
-    //     把真正重要的音效（点击、剧情 SE）挤掉；
-    //   · 每次都 LoadWav 会反复读盘——hover 音是高频操作，划一次菜单就几十次 I/O。
+    // 为什么不能直接用 PlayOneShot：
+    // · 动态槽是轮转的，鼠标快速划过一排菜单会连开好几个槽，
+    // 把真正重要的音效（点击、剧情 SE）挤掉；
+    // · 每次都 LoadWav 会反复读盘——hover 音是高频操作，划一次菜单就几十次 I/O。
     //
-    //  固定槽意味着"同样的音只占一个槽"，新的一次会顶掉上一次，
-    //  这正是 hover 想要的效果（不会叠成一团糊音）。
+    // 固定槽意味着"同样的音只占一个槽"，新的一次会顶掉上一次，
+    // 这正是 hover 想要的效果（不会叠成一团糊音）。
     void PlayUi(const std::wstring& path, int slot);
 
     // 槽位编号：固定的几个
@@ -2791,25 +2800,22 @@ private:
     int    dynNext_ = SLOT_DYN;
     bool   init_ = false;
 };
-
 //
-
 // ---------------------------------------------------------------- 文本回想（backlog）
 //
-// 【为什么需要它】
+// 为什么需要它
 // 对话框只显示当前一句，说过的话想回头看只能凭记忆。
-// 而本项目是【打字对话推进剧情】的，玩家自己说过的话尤其重要——
+// 玩法是打字对话推进剧情，玩家自己说过的话尤其重要
 // 他得知道自己刚才问了什么、承诺了什么，否则聊到后面会接不上。
 struct HistLine {
     std::wstring speaker;        // 说话人；空 = 旁白
     std::wstring text;
     bool  isPlayer = false;      // 是否是玩家自己说的（渲染时用另一套配色）
-
     //
-    // ---- 说这句话的时刻（本地时间字符串，如 "13:36:46"）
+    // ---- 说这句话的时刻（本地时间字符串，如 "HH:MM:SS"）
     //
-    // 【没有它就没法跟素材调用日志对照】
-    // 素材调用日志每轮都带时间戳，而对话记录没有——
+    // 没有它就没法跟素材调用日志对照
+    // 素材调用日志每轮都带时间戳，而对话记录没有
     // 于是"她说了什么"和"她当时选了什么素材"对不上号，
     // 想核对"这句台词对应哪个立绘"只能靠猜顺序。
     // 两边都有时间就能直接按时间对上。
@@ -2819,22 +2825,20 @@ struct HistLine {
 };
 struct HistLayout;   // 定义在下面（Renderer 的 CalcHistLayout 用到它）
 struct MemLayout;    // 同上
-// ============================================================================
-//  模块：渲染（声明）—— 背景 / 立绘 / 对话框 / 打字机 / 选项 / 代码面板
+// 模块：渲染（声明）—— 背景 / 立绘 / 对话框 / 打字机 / 选项 / 代码面板
 //
-//  渲染管线跟桌宠那个是同一套思路，只是内容多了：
-//    · 离屏位图 + GDI+ Graphics，WM_PAINT 里一次 BitBlt 到窗口，避免闪烁；
-//    · 图片按路径缓存，同一个立绘反复出现不会每次重新解码；
-//    · 每帧只画"变了的"——但这里偷了个懒：逻辑分辨率固定 1280x720，
-//      缩放靠 StretchBlt，所以每帧重画整屏的开销是可控的。
+// 渲染管线跟桌宠那个是同一套思路，只是内容多了：
+// · 离屏位图 + GDI+ Graphics，WM_PAINT 里一次 BitBlt 到窗口，避免闪烁；
+// · 图片按路径缓存，同一个立绘反复出现不会每次重新解码；
+// · 每帧只画"变了的"
+// 缩放靠 StretchBlt，所以每帧重画整屏的开销是可控的。
 //
-//  【为什么不用分层窗口】
-//  桌宠用 WS_EX_LAYERED + UpdateLayeredWindow 是因为它要"贴"在桌面上。
-//  但分层窗口有个致命限制：子窗口不会被合成进去，画不出来。
-//  而这里的代码编辑器必须是真子窗口（要能吃键盘输入、能选区、能右键菜单），
-//  所以整个游戏用普通窗口 + 双缓冲。这是跟桌宠最大的一处架构差异，
-//  别照着桌宠的代码改这里。
-// ============================================================================
+// 为什么不用分层窗口
+// 桌宠用 WS_EX_LAYERED + UpdateLayeredWindow 是因为它要"贴"在桌面上。
+// 但分层窗口有个致命限制：子窗口不会被合成进去，画不出来。
+// 而这里的代码编辑器必须是真子窗口（要能吃键盘输入、能选区、能右键菜单），
+// 所以整个游戏用普通窗口 + 双缓冲。这是跟桌宠最大的一处架构差异，
+// 别照着桌宠的代码改这里。
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -2844,77 +2848,15 @@ struct MemLayout;    // 同上
 // 好处：换 DPI、换缩放比例时布局代码一行都不用改。
 #define CK_BASE_W 1280
 #define CK_BASE_H 720
-
 // 「章」还是「幕」——课程剧本和剧情剧本的单位不同。
 //
-// 【为什么不能全写「章」】
+// 为什么不能全写「章」
 // 剧情大纲里演的是一幕一幕的感情戏，右上角写着「第3章」，
-// 玩家会以为自己在上课；存档列表里写着「第3章 那块碎片」也很怪。
 // 反过来课程剧本里写「第3幕」同样不对。
 // 单位来自剧本本身（Syllabus::isStory），不是靠猜文件名。
 static std::wstring ChapterUnit(bool isStory) { return isStory ? L"幕" : L"章"; }
-
-// 右上角那枚推进按钮上写什么。
-//
-// 【判据只有这一处】
-// 按钮是同一个，但三种玩法里它是三个意思：
-//   课程，还有下一章 -> 「明天见」（点了是第二天的课）
-//   剧情，还有下一幕 -> 「下一幕」（剧情幕不一定是"第二天"，写明天见是错的）
-//   最后一章/幕      -> 「今天就到这里」（没有下一幕了，点了先告别再回主页）
-//
-// 渲染层、命中测试的提示、日志、状态栏都读这个函数。
-// 各写一份的话，迟早出现"按钮写着下一幕、日志写明天见"。
-static std::wstring NextDayLabelOf(bool isStory, bool isLast) {
-    if (isLast) return L"今天就到这里";
-    return isStory ? L"下一幕" : L"明天见";
-}
-
-// 她这句话算不算"这一段演完了，可以收了"。
-//
-// 【收口成文件级函数，是因为它现在有两个调用点】
-//   章间日常：她说了 -> 按钮那句提示变成"她也该回去了"
-//   教学段  ：她说了 -> 这一章讲完了，该考了（见 sheWantsQuiz）
-// 两处各写一份词表迟早漏一处，而漏的那处就是"她明明说了却没人理"。
-static bool SaidFarewellIn(const std::wstring& say, bool isStory) {
-    if (say.empty()) return false;
-    //
-    // ---- 通用：明确表示"这一段到此为止"
-    //
-    // ★ 原表只有 5 个词，太窄：她更常说「时间不早了，回去吧」
-    //   「今天就这样吧」，一个都不匹配——她都散场了按钮却不亮。
-    //   「走吧」仍然不收（"走吧，去商店街"是换地方），
-    //   但「走吧，回」这种带回归方向的要收。
-    static const wchar_t* kF[] = {
-        L"今天就到这里", L"今天先到这里", L"今天就这样",
-        L"先这样吧", L"那就先这样", L"就到这里", L"就到这儿",
-        L"该回去了", L"该回家了", L"回去吧", L"回去了",
-        L"时间不早了", L"不早了", L"走吧，回", L"回去吧，"
-    };
-    for (int i = 0; i < (int)(sizeof(kF) / sizeof(kF[0])); ++i)
-        if (say.find(kF[i]) != std::wstring::npos) return true;
-    //
-    // ---- 【分模式】
-    //
-    // 课程：收"隔夜"的说法。两段日常之间真的过了一夜，
-    //       她说"明天见""晚安"就是散场。
-    // 剧情：幕与幕之间【不隔夜】，她不会说明天见。
-    if (isStory) {
-        static const wchar_t* kS[] = {
-            L"这一幕就到这里", L"这一幕就到这儿",
-            L"到这里吧", L"到这儿吧", L"先到这儿"
-        };
-        for (int i = 0; i < (int)(sizeof(kS) / sizeof(kS[0])); ++i)
-            if (say.find(kS[i]) != std::wstring::npos) return true;
-    } else {
-        static const wchar_t* kC[] = {
-            L"明天见", L"明天再见", L"晚安", L"今天也累了"
-        };
-        for (int i = 0; i < (int)(sizeof(kC) / sizeof(kC[0])); ++i)
-            if (say.find(kC[i]) != std::wstring::npos) return true;
-    }
-    return false;
-}
-
+// 按钮文案与散场词表只在 advance 命名空间实现（本文件上方），调用点直接引用，
+// 本文件不再留转发函数。
 // 渲染需要的"每帧状态"。渲染层不保存游戏逻辑状态，全部由调用方每帧填进来，
 // 这样渲染层可以随意重入、也方便做截图/回放。
 struct RenderState {
@@ -2922,11 +2864,10 @@ struct RenderState {
     bool   textDone = false;         // 本页是否已显示完
     int    textPage = 0;             // 当前页（长台词分页，一页 4 行）
     bool   textPageAtEnd = false;    // 是否已到最后一页（决定是否画"下一句"三角）
-
-    // 总页数【由渲染层实测得出后写回】。
+    // 总页数由渲染层实测得出后写回。
     //
-    // 【为什么不能让 main.cpp 自己估算页数】
-    // 分页的本质单位是"行"，而行数只能靠 GDI+ 真实 MeasureString 才知道——
+    // 为什么不能让 main.cpp 自己估算页数
+    // 分页的本质单位是"行"，而行数只能靠 GDI+ 真实 MeasureString 才知道
     // 中英混排、标点、换行符都会让实际行数跟"按字数估算"差很多。
     // main.cpp 拿不到 Graphics，只能瞎猜，猜少了就永远翻不到最后一页
     // （等于又把内容截断了），猜多了会翻出空白页。
@@ -2934,7 +2875,6 @@ struct RenderState {
     // 所以让唯一能做真实测量的渲染层把结果写回来，
     // 逻辑层只管翻页。初始值 1（还没渲染过，当作一页）。
     int    textPageCount = 1;
-
     // 当前页的结束字符位置（相对整段 body 的下标）。
     // 同样由渲染层实测后写回——打字机走到这里就算"本页显示完"。
     // 有了它，textShown 就是一个全程单调的游标，
@@ -2947,106 +2887,92 @@ struct RenderState {
     int    hoverChoice = -1;         // 鼠标悬停的选项下标
     int    hoverBtn = -1;            // 鼠标悬停的按钮（0=运行 1=放弃 2=记忆）
     //
-    // ---- 右上角「明天见」：章间日常里玩家自己推进剧情的入口
+    // ---- 右上角推进按钮：出口状态全部来自 Progress
     //
-    // 有了它，就不用靠她开口问"要不要继续"——那句话每次都把气氛打断。
-    // 她不必问，玩家想走的时候自己点，剧情推进权在他手里。
-    bool   showNextDay = false;
+    // ★ 画出来 = 能点。判据只在 advance::Evaluate（本文件上方），
+    // 渲染、命中、点击、状态说明读同一份结果，不另算一次。
+    // 因此这里只留一个 showNextDay：不要再存第二份"能不能点"。
+    bool   showNextDay  = false;
     bool   hoverNextDay = false;
+    int    nextDayWait  = -1;     // 未就绪时还要几轮；-1 = 该阶段没有出口
+    std::wstring nextDayWhy;      // 未就绪原因，状态条下一行显示
     //
-    // ---- 那个按钮【亮着还是灰着】
+    // ---- 按钮文案由契约层的 LabelOf 决定
     //
-    // 【画出来 = 能点】它跟 showNextDay 是同一个值（Director::CanGoNextDay）。
-    // 原来它是 DailyReady()（她有没有说"可以走了"），而点击走的是另一个函数，
-    // 于是"画成灰的、其实点得动"——玩家得不到任何"现在能走了"的信号。
-    // 现在合一：只有【不画】一种状态，画出来就一定按得下去。
-    bool   nextDayReady = false;
-    //
-    // ---- 右上角那个按钮写什么：false=「明天见」，true=「今天就到这里」
-    //
-    // 【为什么由 Director 算好送进来，而不是渲染层自己看章数】
-    // 渲染层拿不到 syllabus_，硬要看就得再抄一份"章数"过去——
-    // 那是这个项目反复出问题的模式（同一件事两处各算一遍，改一处忘一处）。
-    // 判据只有 Director::NextDayEndsCourse() 一个，画的和点的是同一个答案。
-    //
-    // 【最后一章为什么不能沿用「明天见」】
-    // 没有明天了。点了它却跳到"第二天的课"，等于凭空多出一章。
-    // 而「今天就到这里」是在陈述一件已经发生的事，不承诺下一幕。
-    bool   nextDayIsLast = false;
+    // ★ 不在渲染层判 isStory / 章数：同一判据只算一遍。
+    // 画的和点的是同一个答案，也不会出现「按钮写明天见、日志写下一幕」。
+    // 最后一章不沿用「明天见」——没有明天了，点了却跳到"第二天的课"
+    // 等于凭空多出一章；「今天就到这里」只陈述已经发生的事。
     //
     // ---- 那个按钮上写哪三个字
     //
-    //  课程：还有下一章 -> 「明天见」；最后一章 -> 「今天就到这里」
-    //  剧情：还有下一幕 -> 「下一幕」；  最后一幕 -> 「今天就到这里」
+    // 课程：还有下一章 -> 「明天见」；最后一章 -> 「今天就到这里」
+    // 剧情：还有下一幕 -> 「下一幕」； 最后一幕 -> 「今天就到这里」
     //
-    //  【为什么在这里存成品文案，而不是渲染层自己判 isStory】
-    //  剧本模式/剧情模式的判定在 Director 手里，渲染层拿不到；
-    //  让它自己再判一次就是"同一件事两处各算一遍"——
-    //  按钮写着「明天见」、日志却写「下一幕」，玩家只会以为点了别的按钮。
+    // 为什么在这里存成品文案，而不是渲染层自己判 isStory
+    // 剧本模式/剧情模式的判定在 Director 手里，渲染层拿不到；
+    // 让它自己再判一次就是"同一件事两处各算一遍"
+    // 按钮写着「明天见」、日志却写「下一幕」，玩家只会以为点了别的按钮。
     std::wstring nextDayLabel;
     bool   codeMode = false;         // 代码面板模式：隐藏对话框
     //
     // 选择题模式：对话框里显示题干，选项按钮画在对话框上方。
     //
-    // 【跟 codeMode 分开，不能复用】
+    // 跟 codeMode 分开，不能复用
     // codeMode 会把编辑框放出来、并且让"点画面"变成"回到编辑器"。
     // 选择题没有编辑器，复用它就得在每一处再判一次"其实是选择题"，
-    // 那是这个项目的老毛病（同一个意图两套判据，改一处忘一处）。
+    // ★ 同一意图不要两套判据。
     bool   quizMode = false;         // 选择题：等玩家点选项
     //
     // 选择题的选项文本。放在这里而不是让渲染层去翻 App，
     // 是为了让"画什么"和"命中哪一块"读同一份数据——
     // 两边各读一处迟早出现"画的是 4 个、能点的只有 3 个"。
     std::vector<std::wstring> quizOpts;
-
     //
-    // ---- 【可选话术】：剧情模式给玩家的方向（点了只填进输入框，不发送）
+    // ---- 可选话术：剧情模式给玩家的方向（点了只填进输入框，不发送）
     //
-    //  来源是 story.ini 里的 CanDo1..CanDo4，只在【剧情模式 + 自由输入】时画。
+    // 来源是 story.ini 里的 CanDo1..CanDo4，只在剧情模式 + 自由输入时画。
     //
-    //  【为什么不做成"点了就发出去"】
-    //  那就是 Galgame 的选择肢了——自由度正是这个项目最值钱的东西，不能丢。
-    //  这里的定位是【脚手架】：他不知道该说什么时有个方向；
-    //  想自己说就自己说，想改这句也能改。给方向，不给台词。
+    // 为什么不做成"点了就发出去"
+    // 那就是 Galgame 的选择肢了——自由度是这份设计最要紧的东西，不能丢。
+    // 这里的定位是脚手架：他不知道该说什么时有个方向；
+    // 想自己说就自己说，想改这句也能改。给方向，不给台词。
     std::vector<std::wstring> candoOpts;
     int hoverCanDo = -1;
     bool   inputMode = false;        // 自由输入模式：编辑框在画面下方
     std::wstring inputGuide;         // 输入框上方的引导（@free 的话题）
     //
-    // ---- 是不是【剧情模式】（story.ini，按"幕"推进，不是按"章"上课）
+    // ---- 是不是剧情模式（story.ini，按"幕"推进，不是按"章"上课）
     //
-    //  渲染层拿不到 Director，让它自己再判一次 isStory 就是
-    //  "同一件事两处各算一遍"——按钮写着「下一幕」、界面却按课程画，
-    //  玩家只会以为程序坏了。所以跟 nextDayLabel 一样存成品：
-    //  Director 那边算好，这里只管读。
+    // 渲染层拿不到 Director，让它自己再判一次 isStory 就是
+    // "同一件事两处各算一遍"——按钮写着「下一幕」、界面却按课程画，
+    // 玩家只会以为程序坏了。所以跟 nextDayLabel 一样存成品：
+    // Director 那边算好，这里只管读。
     //
-    //  用途：剧情模式【不画】输入框上方那条引导语。
-    //  那一幕的话术（CanDo）已经列在对话框上方了，再挂一条引导语
-    //  是重复提示，而且会把话术那一排往下挤。
+    // 用途：剧情模式不画输入框上方那条引导语。
+    // 那一幕的话术（CanDo）已经列在对话框上方了，再挂一条引导语
+    // 是重复提示，而且会把话术那一排往下挤。
     bool   storyMode = false;
-
-    // 对话框里显示的【玩家自己刚说的话】。
-    // 玩家回车提交后、角色还没回的这一两秒，画面不能是空的——
+    // 对话框里显示的玩家自己刚说的话。
+    // 玩家回车提交后、角色还没回的这一两秒，画面不能是空的
     // 打字对话的玩法里，他必须看到自己刚才说了什么。
     // 渲染层用它换名字牌配色（玩家色 vs 角色主题色），跟角色的台词区分开。
     bool   playerEcho = false;
-
     // ---- 她正在思考（等大模型返回）
     //
-    // 【为什么必须有这个状态】
-    // 这个项目的回复格式是【JSON 对象】：模型返回的是
+    // 为什么必须有这个状态
+    // 回复格式是JSON 对象：模型返回的是
     // {"say":"哼，看懂了？…","emote":"joy","bg":"教室"} 这样一整段。
-    // 流式期间拿到的是这段 JSON 的【前缀】，可能停在任何位置：
-    //   {"say":"哼，看懂
-    //   {"say":"哼，看懂了？","emo
-    // 原来 WM_TIMER 每帧直接 `a.view.body = g_chatFull`——
+    // 流式期间拿到的是这段 JSON 的前缀，可能停在任何位置：
+    // {"say":"哼，看懂
+    // {"say":"哼，看懂了？","emo
+    // 原来 WM_TIMER 每帧直接 `a.view.body = g_chatFull`
     // 于是对话框里一格一格打出来的就是带花括号的机器原文。
-    // 玩家看到的正是"角色思考时对话框出现 {}"。
     //
     // 读档时尤其明显：AbortAsync 清了缓冲，新请求还在思考，
     // 而 view.body 里可能残留着上一周目那半截 JSON。
     //
-    // 现在：思考期间【一律不显示任何文本】，只显示"她在想…"。
+    // 现在：思考期间一律不显示任何文本，只显示"她在想…"。
     // 真正的台词等 OnChatDone 解析出 say 之后再走打字机显示。
     bool   thinking = false;
 
@@ -3054,7 +2980,7 @@ struct RenderState {
     bool   histOpen = false;         // 滚轮上滑打开
     // 输入框收起。点画面空白处收起、点对话框呼出。
     //
-    // 【为什么需要它】编辑框是 EDIT 子窗口，永远浮在 GDI+ 绘制之上，
+    // 为什么需要它编辑框是 EDIT 子窗口，永远浮在 GDI+ 绘制之上，
     // 画多少层都盖不住它。于是打开回想面板时，编辑框会挡住面板底部
     // （正好是"继续下滑或按 Esc 返回对话"那行提示）。收起才能真正让开。
     bool   inputCollapsed = false;
@@ -3085,27 +3011,25 @@ struct RenderState {
     // 当前服装 id（剧本 @outfit 切）。空 = 用角色 ini 里的默认那套。
     // 换装只影响立绘文件名里的中缀，不影响布局，所以换起来是瞬间的。
     std::wstring outfit;
-
-    // 当前【造型】：服装 + 表情捆绑后的完整立绘名（如 校服_平静）。
+    // 当前造型：服装 + 表情捆绑后的完整立绘名（如 校服_平静）。
     //
-    // 【为什么不继续拆两个维度】
+    // 为什么不继续拆两个维度
     // 立绘是服装 × 表情一张张画的，拆开组合会得到没画的那张
-    // （校服 + 害羞 可能根本不存在），降级链悄悄退回平静脸——
-    // 模型以为选对了，玩家看到的是错的，日志还一切正常。
+    // （校服 + 害羞 可能根本不存在），降级链悄悄退回平静脸
+    // 模型以为选对了，
     // 所以直接存整段名字，取图就是拼文件名，选到的必然存在。
     //
-    // 非空时【优先于】 outfit + emote 的组合。
+    // 非空时优先于 outfit + emote 的组合。
     std::wstring pose;
 
     // 场上立绘对应的角色定义。决定立绘从哪找、画多大、放哪。
     // 和 speakerDef 分开是因为"正在说话的人"和"画面上站着的人"可以不是同一个
     //（比如 @ch A 让 A 站在场上，但旁白/另一个人在说话）。
     const CharDef* spriteDef = nullptr;
-
     // ---- 背景转场
     // 切场景时不能硬切——真正的视觉小说都是交叉淡化：旧背景淡出、新背景淡入。
     // 这两项由调用方（App）每帧算好填进来，渲染层本身不记状态，可以随意重入。
-    // 背景路径是【解析后】的：角色包可以有自己的一套背景，
+    // 背景路径是解析后的：角色包可以有自己的一套背景，
     // 剧本里写的只是"槽位名"（课 / 题 / 结局_真……），由 App 层翻译成实际路径。
     // 空表示"没解析"，渲染层会退回 assets/bg/<view.bg>。
     std::wstring bgPath;            // 当前背景
@@ -3115,20 +3039,19 @@ struct RenderState {
     float  bgFade = 1.0f;           // 0 = 全是旧图，1 = 全是新图。1 表示转场已结束
     std::wstring spritePath;        // 【调试】这一帧实际画出来的立绘文件（渲染层回填）
     //
-    // 【立绘对齐：解析好的具体文件】
-    // 非空时渲染层【必须原样画这一张】，跳过 GetCharImage 的整条降级链。
+    // 立绘对齐：解析好的具体文件
+    // 非空时渲染层必须原样画这一张，跳过 GetCharImage 的整条降级链。
     // 空（剧本模式 / 还没解析）才走降级链。
     //
     // 这是"调试写平静、画面却是叹气"的根治办法：
-    // 原来渲染层拿到的是【名字】，自己去猜文件，猜错了就换一张，
+    // 原来渲染层拿到的是名字，自己去猜文件，猜错了就换一张，
     // 而现在拿到的是路径，画不出就是画不出，不会画成别的。
     std::wstring posePath;
-
-    // 【她还没开口过：连立绘都不要画】
+    // 她还没开口过：连立绘都不要画
     //
-    // posePath 为空时渲染层会走降级链，而降级链【一定会画出一张图】
+    // posePath 为空时渲染层会走降级链，而降级链一定会画出一张图
     // （默认造型 / 本体图）。所以光把 posePath 清空，
-    // 画面上照样有个立绘 —— 玩家看到的是"她还没说话，人已经站那儿了"，
+    // 画面上照样有个立绘
     // 而且那张脸是引擎猜的，跟她待会要用的表情毫无关系。
     //
     // 这正是"新建存档时还没思考完就已经有立绘"的机制：
@@ -3176,12 +3099,10 @@ public:
     // 点是否落在【输入区】里（引导语带 + 输入框外框）。
     // 展开着打字时这两条带子在对话框下方，点它们不该被当成"点画面别处=收起"。
     bool HitInputPanel(const RenderState& st, int lx, int ly) const;
-
     // CG 缩略图（给回想界面用）。走同一份缓存，不会重复解码大图。
     // 找不到返回 nullptr。
-    // Thumb()（CG 回想用的缩略图）已随 CG 收集玩法一起移除。
-
-    // 背景图（给角色卡素材页预览用）。传【完整路径前缀】（不含扩展名），
+    // Thumb（CG 回想用的缩略图）已随 CG 收集玩法一起移除。
+    // 背景图（给角色卡素材页预览用）。传完整路径前缀（不含扩展名），
     // 可以是绝对（角色包内的）也可以是相对 assets/ 的。找不到返回 nullptr。
     Gdiplus::Image* Bg(const std::wstring& pathNoExt);
 
@@ -3189,15 +3110,14 @@ public:
     // 没配就退回立绘本体。找不到返回 nullptr——选角界面会画一个带首字的圆形占位，
     // 所以没素材也能选。
     Gdiplus::Image* CharPortrait(const CharDef* def);
-
     // 标题插画（主页右侧那张大图）。
     //
-    //  优先角色包里 [Title] Art= 指定的图；没配就退回该角色的立绘
-    //  （默认服装 + 平静表情）。找不到返回 nullptr，标题界面会画装饰性占位。
+    // 优先角色包里 [Title] Art= 指定的图；没配就退回该角色的立绘
+    // （默认服装 + 平静表情）。找不到返回 nullptr，标题界面会画装饰性占位。
     //
-    //  为什么插画不能直接用立绘：两者的绘画意图不同——立绘是对话用的半身像、
-    //  按固定站位画；标题插画是单独构图的全身/场景图。用同一张的话，
-    //  要么插画区空一大块，要么人物被裁得只剩半张脸。
+    // 为什么插画不能直接用立绘：两者的绘画意图不同——立绘是对话用的半身像、
+    // 按固定站位画；标题插画是单独构图的全身/场景图。用同一张的话，
+    // 要么插画区空一大块，要么人物被裁得只剩半张脸。
     Gdiplus::Image* TitleArt(const CharDef* def);
 
     // 独立于角色包的标题插画（assets\title\主页插画.png）。
@@ -3205,7 +3125,6 @@ public:
     Gdiplus::Image* TitleArtGeneric();
 
     const std::wstring& AssetDir() const { return assetDir_; }
-
     // 立绘。def 决定了三件事：在哪个目录找（Sprite Dir）、表情标签怎么映射成
     // 文件后缀（[Emote] 段）、以及找不到时的降级顺序。
     // def 为 nullptr 时退回 ch\key 的默认规则。
@@ -3213,8 +3132,8 @@ public:
     // 文件后缀（[Emote] 段）、当前穿哪套衣服（[Outfit] 段）、以及找不到时的降级顺序。
     // def 为 nullptr 时退回 ch\key 的默认规则。
     //
-    // 服装是【服装 × 表情】的二维组合，不是"每套衣服一整套图"：
-    //  实际用下来问题比价值大：同一场景、同一章里角色往往穿过好几套衣服，
+    // 服装是服装 × 表情的二维组合，不是"每套衣服一整套图"：
+    // 实际用下来问题比价值大：同一场景、同一章里角色往往穿过好几套衣服，
     // 一套衣服只需按表情各出一张，而不是把整个角色重画一遍。
     // mouthOpen 参数已移除：立绘不再做口型切换，一张静态图到底。
     // 原来打字时每 22 帧切 8 帧张嘴图，画面一直在跳，看久了很吵。
@@ -3226,13 +3145,11 @@ public:
 
     // 逻辑坐标 -> 实际窗口坐标（供放置子窗口用）
     void LogicToClient(int& x, int& y, int& w, int& h) const;
-
     // ---------------------------------------------------------------- 预缩放
     //
     // 把一张图缩放到指定尺寸并缓存结果。同样的 (图, 宽, 高) 只算一次。
     //
-    // 【为什么必须有这个】之前每帧都直接 DrawImage 大图到目标矩形，
-    // 于是 1920x1080 的背景每秒被重采样 30 次——每次算出来的像素一模一样。
+    // 为什么必须有这个之前每帧都直接 DrawImage 大图到目标矩形，
     // 导入大图后帧率直接掉到个位数，而素材目录空着时完全不卡，
     // 这个"有没有图"的强相关性就是它的指纹。
     //
@@ -3248,10 +3165,9 @@ public:
     Gdiplus::Image* CachePut(const std::wstring& key, Gdiplus::Bitmap* bmp);
     Gdiplus::Image* MakeScaled(Gdiplus::Image* src, const std::wstring& srcKey,
                                int dw, int dh, int sx, int sy, int sw, int sh);
-
     // 算回想面板的布局（每条多高、总高多少、最多能滚多少）。
     //
-    // 【滚动必须按像素而不是按条数】
+    // 滚动必须按像素而不是按条数
     // 每条的高度不一样（有没有说话人、正文折了几行），
     // 按条数滚的话"翻 3 条"在不同位置距离差很多，手感很跳，
     // 而且滚到底的判定会因为高度不一致而错位。
@@ -3261,15 +3177,14 @@ public:
 
     // 记忆面板布局。跟上面同一套思路：条目折行后按实测行高排，超出的靠滚动。
     void CalcMemLayout(const std::vector<std::wstring>& lines, MemLayout& out);
-
     // 给定"想要画到哪"的矩形，返回应实际绘制的图，并把矩形改写成
-    // 【跟该图像素尺寸严格一致的整数矩形】。
+    // 跟该图像素尺寸严格一致的整数矩形。
     //
     // 为什么要改写：GDI+ 只有 dst 尺寸 == 图的像素尺寸时才走块拷贝快速路径；
     // 尺寸差 0.5 个像素也会退化成重采样，位置是小数同理。所以这里统一取整。
     //
     // 极端比例的图（比如 100x10000 的长条按 cover 铺满）会被放大到惊人的尺寸，
-    // 那种情况下放弃预缩放、退回原来的每帧缩放——慢，但不会吃掉几百 MB 内存。
+    // 那种情况下放弃预缩放、退回
     bool ScaleTargetOk(Gdiplus::Image* src, const Gdiplus::RectF& want, int& dw, int& dh);
     Gdiplus::Image* PrepareScaled(Gdiplus::Image* src, const std::wstring& srcKey,
                                   const Gdiplus::RectF& want, Gdiplus::RectF& out);
@@ -3296,10 +3211,9 @@ private:
     std::map<std::wstring, long long> cacheUsed_;
     long long cacheTick_ = 0;
     std::map<std::wstring, bool> missing_;
-
     // 内容包围盒缓存。key 跟 cache_ 一样（素材路径）。
     //
-    // 计算一次要 LockBits 扫全图，对 1000x2000 的立绘是 200 万次读——
+    // 计算一次要 LockBits 扫全图，对 1000x2000 的立绘是 200 万次读
     // 每帧做一次会直接掉到个位数帧率。所以必须缓存，
     // 而且它跟图片内容绑定，图不变结果就不变，缓存是安全的。
     std::map<std::wstring, Gdiplus::Rect> bbox_;
@@ -3319,11 +3233,10 @@ private:
 // 文本折行：按字符贪心，尽量在空格处断开（中英混排够用）
 void WrapText(Gdiplus::Graphics& g, const std::wstring& text, Gdiplus::Font& font,
               float maxW, std::vector<std::wstring>& out);
-
 // ---------------------------------------------------------------- 文本回想
 //
-// 【面板几何放在这里，绘制和滚动共用】
-// 之前绘制处写死 kHX/kHY/kHW/kHH，滚动处却按"固定 34px 一行"算能放几行——
+// 面板几何放在这里，绘制和滚动共用
+// 之前绘制处写死 kHX/kHY/kHW/kHH，滚动处却按"固定 34px 一行"算能放几行
 // 两边数字对不上：实际一行的高度是 名字行 + 最多 2 行正文 + 间距，
 // 折行后普遍 80px 上下，于是"能放 13 行"是假的，真正画出来只有 5 行。
 // 后果：滚动范围按 13 行算，翻到一半就到底了，早先的对话永远看不到。
@@ -3340,15 +3253,14 @@ struct HistLayout {
     int viewH    = 0;            // 可视区高度
     int maxScroll = 0;           // 最大滚动偏移（像素），0 = 内容不足一屏
 };
-
 // ---------------------------------------------------------------- 记忆面板
 //
-// 【为什么要单独做一套布局】
+// 为什么要单独做一套布局
 // 原来记忆面板是「画 14 行、每行固定 32px」：
-//   · 条目不折行 —— 一条记忆常常是整段对话（她记的是"他叫什么 + 说过什么"），
-//     一画就冲出面板右边界；
-//   · 第 13、14 条正好压在底部那行提示上，就是玩家看到的「字符重叠」；
-//   · 超过 14 条的干脆不显示，看着像"她只记得这些"。
+// · 条目不折行 —— 一条记忆常常是整段对话（她记的是"他叫什么 + 说过什么"），
+// 一画就冲出面板右边界；
+// · 第 13、14 条正好压在底部那行提示上，就是
+// · 超过 14 条的干脆不显示，看着像"她只记得这些"。
 // 现在跟回想面板同一套做法：WrapText 实测行高 → 滚动 → 裁剪绘制。
 extern const int kMemX;
 extern const int kMemY;
@@ -3361,13 +3273,10 @@ struct MemLayout {
     int viewH    = 0;
     int maxScroll = 0;
 };
-
-//==============================================================================================
-//  模块：子界面（声明）—— 标题画面 / 存档槽 / 背景库 / 设置面板 / 剧本选择
+// 模块：子界面（声明）—— 标题画面 / 存档槽 / 背景库 / 设置面板 / 剧本选择
 //
-//  单独拆出来是因为渲染层只负责"把当前该显示的东西画出来"，
-//  不该知道"现在在哪个界面"。
-//==============================================================================================
+// 单独拆出来是因为渲染层只负责"把当前该显示的东西画出来"，
+// 不该知道"现在在哪个界面"。
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -3378,23 +3287,21 @@ enum class Screen {
     Play,       // 游戏本体
     Settings,   // 设置
     SaveLoad,   // 存档槽列表：读档 / 存档
-
     // ---- 角色卡：一条龙管住"一个角色包里有什么"
     //
     // 为什么要把"背景库"换成这三个界面：
-    //   ① 核心玩法要求 pose / bg / bgm 三类素材都能随意增删，
-    //      而背景库只管 bg 一类——换角色包这件事缺了一大半。
-    //   ② 旧背景库有个"通用"系列，素材不属于任何角色。
-    //      这跟"角色包可更换"直接冲突：换包时通用素材就是孤儿。
-    //   ③ 注解只能改磁盘上的 char.ini —— 而它恰恰是调得最多的一样东西。
-    //      （"神社夜晚适合正式对话"那类误导措辞，只能靠改 ini 修）
+    // ① 核心玩法要求 pose / bg / bgm 三类素材都能随意增删，
+    // 而背景库只管 bg 一类——换角色包这件事缺了一大半。
+    // ② 旧背景库有个"通用"系列，素材不属于任何角色。
+    // 这跟"角色包可更换"直接冲突：换包时通用素材就是孤儿。
+    // ③ 注解只能改磁盘上的 char.ini —— 而它恰恰是调得最多的一样东西。
+    // （"神社夜晚适合正式对话"那类误导措辞，只能靠改 ini 修）
     CharCard,   // 角色卡列表：每个角色一张卡，点进去编辑
     AssetLib,   // 素材页：立绘 / 背景 / 音乐三类，导入即填注释
     Persona,    // 人设页：名字 / 标签 / 简介 / 温度
     Avatar,     // 头像页：挑一张图当卡面（选角卡片上那张脸）
     Memory,     // 前世记忆页：[Memory] 段——出身 / 在意的人 / 记得的小事 / 雷区
     PersonaText,// 人设全文页：[Prompt] 段——她怎么说话（多行）+ 示例台词
-
     // ---- 剧本包：assets\syllabus 下每份一个，点选切换 / 删除
     //
     // 跟角色卡平级：角色决定"谁来教"，剧本决定"教什么"。
@@ -3403,21 +3310,19 @@ enum class Screen {
     Syllabus,   // 剧本列表：标题 / 章数，点选切换，可删，可打开目录
     SyllabusEdit,// 剧本编辑：章节增删 + 每章的标题/目标/题干/选项/答案
                  //
-                 // 【为什么剧本必须能在界面里编，而不只是"换一份"】
+                 // 为什么剧本必须能在界面里编，而不只是"换一份"
                  // 换一份只解决了"用哪个剧本"，没解决"改剧本"。
                  // 而章数写死在代码里（ch[8] 是编译期常量）时，
                  // 作者想写 12 章就得重新编译——"十章、一百章"根本做不到。
                  // 章节改成动态清单之后，界面里加一章就等于文件里多一段。
 };
-
 // ---------------------------------------------------------------- 收藏
 // CG 收集玩法已移除。
 //
 // 原来 Collection 里有一份 cg 集合 + 标题页的"CG 回想"界面，
 // 剧本里用 @cg 登记、解锁时弹"解锁 CG：xxx"。
-// 这套东西在这个项目里没有意义：CG 是"通关奖励图"，
+// 这里不需要：CG 是"通关奖励图"，
 // 而这里的剧情由大模型自由展开，根本没有"打到某个节点给一张图"的时机，
-// 于是 CG 回想永远是一片灰块。留着只是让菜单多一个空入口。
 //
 // ---------------------------------------------------------------- 界面状态
 struct UiState {
@@ -3437,13 +3342,12 @@ struct UiState {
 
     // 选角界面：hover 是卡片下标，选中要二次确认（点一下选中、再点一下开始）
     int  pick = -1;               // 当前选中的角色下标，-1 = 还没选
-
     // ---- 选角界面的"表情 / 服装"预览
-    //  不是为了好看，是为了让配错的素材当场暴露：
-    //  点了"惊吓"却还是平静脸，说明文件名拼错了——比进了游戏才发现强得多。
+    // 不是为了好看，是为了让配错的素材当场暴露：
+    // 点了"惊吓"却还是平静脸，说明文件名拼错了——比进了游戏才发现强得多。
     // ---- 角色卡 / 素材页 / 人设页
     //
-    // 【素材注释统一存在 char.ini 的 [AssetMood]】
+    // 素材注释统一存在 char.ini 的 [AssetMood]
     // 三类素材共用一张表，键就是素材名。所以"注释编辑"只有一套代码，
     // 不需要为立绘/背景/音乐各写一遍。
     std::wstring cardId;                 // 正在编辑哪个角色（角色 id）
@@ -3467,15 +3371,14 @@ struct UiState {
     // 所以先提醒一次：进素材页时只列名字，再进一次才真删（见 GoScreen）。
     std::vector<std::wstring> orphanNames; // 待清的注解键名（提醒用）
     bool orphanArmed = false;              // 已经提醒过 -> 下次进素材页真清
-
     // ---- 新建角色卡：命名态
-    //  true 时角色卡页只画命名面板，不画卡片网格。
+    // true 时角色卡页只画命名面板，不画卡片网格。
     //
-    //  【为什么必须先命名、不能先建后改】
-    //  名字同时是【目录名】（也就是角色 id，存档、解绑名单、剧本锁定都按它记）
-    //  和 [Char] Name（界面上显示的名字）。先建一个默认名的目录再改 Name，
-    //  两套名字就不一致了：界面显示的是包里的名字，存档和解绑名单里却还写着旧名字。
-    //  改名要连目录一起搬，风险比在建目录之前问清楚大得多。
+    // 为什么必须先命名、不能先建后改
+    // 名字同时是目录名（也就是角色 id，存档、解绑名单、剧本锁定都按它记）
+    // 和 [Char] Name（界面上显示的名字）。先建一个默认名的目录再改 Name，
+    // 两套名字就不一致了：界面显示的是包里的名字，存档和解绑名单里却还写着旧名字。
+    // 改名要连目录一起搬，风险比在建目录之前问清楚大得多。
     bool newCharName = false;
 
     // 注释编辑：noteEdit 为真时素材页只画编辑面板，不画网格。
@@ -3501,23 +3404,21 @@ struct UiState {
     // 点了「新增」但还没保存的那一行：只存在于界面上，ini 里还没有。
     // 不单独存组名的话，保存时无从知道这条该写进 在意.N 还是 记得.N。
     std::wstring memDraft;               // 空 = 没有待存的新行
-
     // ---- 剧本编辑页
     //
-    //  剧本跟角色包一样是【内容】，作者该能自己加减章节、改题。
-    //  章数写死在代码里（原来 ch[8] 是编译期常量）就意味着
-    //  "十章、一百章"做不到——想加一章得重新编译。
+    // 剧本跟角色包一样是内容，作者该能自己加减章节、改题。
+    // 章数写死在代码里（原来 ch[8] 是编译期常量）就意味着
+    // "十章、一百章"做不到——想加一章得重新编译。
     int  syEdCh = -1;        // 选中的章节下标（0 起），-1 = 没选
     int  syEdField = -1;     // 选中右侧哪个字段行，-1 = 没选
     // 字段行对应的键名，由布局现算（章节不同、选项数不同，行也不一样）。
     // 存它而不是行号，是为了"画出来"和"点得到"读同一份数据。
     std::vector<std::wstring> syEdKeys;
-
     // ---- 头像页
-    //  卡面是"选角卡片上那张脸"，跟立绘是两回事：
-    //  立绘是模型每轮在挑的表情，卡面只是选角时展示用的一张图。
-    //  所以它单独一页配置，不混进素材页——混进去会出现
-    //  "给卡面写了情绪注解、模型却拿它当表情去挑"这种错位。
+    // 卡面是"选角卡片上那张脸"，跟立绘是两回事：
+    // 立绘是模型每轮在挑的表情，卡面只是选角时展示用的一张图。
+    // 所以它单独一页配置，不混进素材页——混进去会出现
+    // "给卡面写了情绪注解、模型却拿它当表情去挑"这种错位。
     std::vector<std::wstring> avatarPaths; // 候选图（不含扩展名的完整路径）
     int  avatarPick = -1;                  // 选中的候选图，-1 = 没选
 
@@ -3541,10 +3442,9 @@ struct UiState {
     int  saveMode = 0;                   // 0 = 读档，1 = 存档
     int  slotPick = -1;                  // 当前选中的槽下标（0-based），-1 = 没选
     bool slotConfirmDel = false;         // 删除要二次确认
-
     // ---- 流程图（存档页里的覆盖层）
     //
-    // 【为什么是覆盖层而不是新开一个 Screen】
+    // 为什么是覆盖层而不是新开一个 Screen
     // 它是"这个存档的流程图"，离开槽就失去意义。做成独立 Screen 的话，
     // 返回时要自己记"从哪个槽进来的"，多一份状态就多一处可能不同步。
     // 覆盖层天然绑在当前选中的槽上，Esc 一关就回到槽列表。
@@ -3579,15 +3479,12 @@ void UiCommitEdit(App& a, const std::wstring& text);
 std::wstring UiEditValue(const App& a, int row);
 
 void UiTip(App& a, const std::wstring& text, int seconds = 4);
-
-// ============================================================================
-//  模块：全局状态 App —— 一局游戏里所有可变的东西都挂在这里
+// 模块：全局状态 App —— 一局游戏里所有可变的东西都挂在这里
 //
-//  桌宠那边是"一堆全局变量平铺"，这里收成一个 App 结构，唯一的理由是可维护性：
-//  这个项目的子系统（渲染 / 剧本 / 大模型 / 判题 / 音频 / 记忆）比桌宠多得多，
-//  平铺全局变量会让"哪个模块改了哪个状态"变得不可追踪。
-//  除此之外，编码约定、注释密度、ini 配置习惯都跟桌宠保持一致。
-// ============================================================================
+// 桌宠那边是"一堆全局变量平铺"，这里收成一个 App 结构，唯一的理由是可维护性：
+// 各子系统（渲染 / 剧本 / 大模型 / 判题 / 音频 / 记忆）比桌宠多得多，
+// 平铺全局变量会让"哪个模块改了哪个状态"变得不可追踪。
+// 除此之外，编码约定、注释密度、ini 配置习惯都跟桌宠保持一致。
 #undef  NOMINMAX
 #define NOMINMAX
 
@@ -3625,7 +3522,7 @@ enum class Phase {
     //
     // 选择题：等玩家点选项。
     //
-    // 【为什么不复用 CodeInput】
+    // 为什么不复用 CodeInput
     // CodeInput 身上挂了一整套编辑器逻辑：F5 提交、WM_APP_RUN_CODE、
     // 滚轮归编辑框……选择题没有编辑器，复用它就会有一堆判据"成立了但没意义"，
     // 而且 Scroll / F5 那些分支会误触发。单独一个 phase，分支干净。
@@ -3649,33 +3546,33 @@ struct SaveSlotInfo {
     //
     // ---- 存档当时用的是哪份剧本
     //
-    // 【没有它，跳章会跳进错的课】
-    // 玩家存了 C 语言第 3 章的档，回标题换成 Python，再回来点流程图第 3 章——
+    // 没有它，跳章会跳进错的课
+    // 玩家存了 C 语言第 3 章的档，回标题换成 Python，再回来点流程图第 3 章
     // 引擎会把"第 3 章"当成 Python 的第 3 章跳过去，讲的东西完全不是那一章。
     // 而且这种错不报错：章号合法、剧本也在，只是内容对不上。
     std::wstring syllabusId;
     //
-    // ---- 【有没有这个字段，跟字段是不是空，是两件事】
+    // ---- 有没有这个字段，跟字段是不是空，是两件事
     //
-    //  原来靠 `syllabusId.empty()` 判断"这是不是旧版本存的档"。
-    //  但"没有剧本时存的档"写进去的就是空串——它明明是【新档】，
-    //  却被当成旧档拒掉：玩家存完就读不了，而且提示是句完全不相干的话
-    //  （"这是旧版本存的"）。所以分开记：字段存不存在、值是什么。
+    // 原来靠 `syllabusId.empty` 判断"这是不是旧版本存的档"。
+    // 但"没有剧本时存的档"写进去的就是空串——它明明是新档，
+    // 却被当成旧档拒掉：玩家存完就读不了，而且提示是句完全不相干的话
+    // （"这是旧版本存的"）。所以分开记：字段存不存在、值是什么。
     bool         hasSyllabusId = false;
     long long    ts = 0;             // 存档时间（FILETIME）
     std::wstring preview;            // 最后一句台词，读档前能回想"聊到哪了"
     //
-    // ---- 【读不了就把原因写在这里，别让玩家猜】
+    // ---- 读不了就把原因写在这里，别让玩家猜
     //
-    //  这些情况在【正常操作下根本不可能出现】——新程序读老档、
-    //  手动把存档拷进别人的角色目录、存档记的剧本被删了……
-    //  它们全是"越界/非法"状态，而这类状态共同的长相是：
-    //  程序照常跑、章号也合法，只是内容一路串味。
+    // 这些情况在正常操作下根本不可能出现——新程序读老档、
+    // 手动把存档拷进别人的角色目录、存档记的剧本被删了……
+    // 它们全是"越界/非法"状态，而这类状态共同的长相是：
+    // 程序照常跑、章号也合法，只是内容一路串味。
     //
-    //  早先的处理是"尽量凑合着读"（切个角色、退回个剧本、章号夹一下），
-    //  结果是错得更隐蔽。现在改成：扫描时就把它们认出来，
-    //  界面上直接写明为什么读不了，并且【拒绝这次读取】。
-    //  宁可让玩家知道"这份档坏了、坏在哪"，也不要让他玩到一半才发现内容不对。
+    // 早先的处理是"尽量凑合着读"（切个角色、退回个剧本、章号夹一下），
+    // 结果是错得更隐蔽。现在改成：扫描时就把它们认出来，
+    // 界面上直接写明为什么读不了，并且拒绝这次读取。
+    // 宁可让玩家知道"这份档坏了、坏在哪"，也不要让他玩到一半才发现内容不对。
     std::wstring reject;             // 非空 = 禁止读取，内容是人话原因
 };
 
@@ -3693,12 +3590,11 @@ struct App {
     // ---- 子系统
     ck::Program prog;
     ck::Vm      vm;
-
     // ---- 导演模式
     //
     // dirMode = true 时，剧情由大模型实时生成，预制剧本只作为离线兜底。
     // 分工：大纲决定"教什么、考什么"，Director 决定"进度到哪了"，
-    //       大模型决定"说什么、什么表情、切什么场景"。
+    // 大模型决定"说什么、什么表情、切什么场景"。
     //
     // 大纲加载失败会自动退回 dirMode=false（走预制剧本），
     // 所以没配大纲 / 大纲写错的情况下游戏照样能玩。
@@ -3709,54 +3605,49 @@ struct App {
     // 导演模式下由大模型返回的槽位名驱动，所以得单独记一份。
     std::wstring dirCurBg;              // 留空 = 由扫描 / 大模型决定，不写死槽位名
     std::wstring dirCurBgm;             // 同上，留空交给扫描
-
     //
-    // ---- 【读档要恢复的舞台：存档里记的那一刻的画面】
+    // ---- 读档要恢复的舞台：存档里记的那一刻的画面
     //
-    // 【这是"读档后没有立绘"的另一半】
+    // 这是"读档后没有立绘"的另一半
     // 存档原来只记进度（章号 / 轮数），不记画面。
-    // 于是读档回来画面是【空的】，必须等模型回一轮才有立绘和背景——
-    // 玩家看到的是"读了个档，屏幕空着，人半天不出来"。
+    // 于是读档回来画面是空的，必须等模型回一轮才有立绘和背景
     // 而存档的意义就是"回到那一刻"，那一刻的画面本来就该一起存。
     //
     // 这三个值由 LoadGameNow 从存档里读出来，
     // 真正的铺画面在 DirResumeAfterLoad 里（必须在 PromptStageReset 之后，
-    // 否则刚恢复就被清掉）。见 RestoreStageFromSave()。
+    // 否则刚恢复就被清掉）。见 RestoreStageFromSave。
     std::wstring loadPose;              // 存档里那一刻的造型名（空 = 没记）
     std::wstring loadBg;                // 同上：背景名
     std::wstring loadBgm;               // 同上：曲名
-
     // 大纲里第一章配的 Bg：不再是"开场就画"，而是"她第一轮没指定时的兜底"。
     //
-    // 【为什么不再开局就画】
-    // 先画出来再等她开口，玩家看到的就是"画面比文字早一步"——
+    // 为什么不再开局就画
+    // 先画出来再等她开口，
     // 她开口说去神社，背景才跟着切，观感上等于慢一轮。
     // 挪到她开口时再用，两者就同一拍了。
     std::wstring dirPendingBg;
     bool         dirReady  = false;      // 模型本轮是否建议进入测验（旧字段）
-
     //
-    // ---- 【恋爱段：一句台词两个表情】
+    // ---- 恋爱段：一句台词两个表情
     //
     // pose1 = 开口时的脸（玩家第一眼看到的）
     // pose2 = 后半句的脸（玩家翻到 switchPage 页时切换过去）
     //
-    // 【为什么不是"跨轮必换"】
+    // 为什么不是"跨轮必换"
     // 傲娇类角色的害羞就是默认表情。跨轮禁用等于逼她别害羞，
-    // 逼出来的往往是不搭的脸。约束挪到【同轮】：两个必须不同，
+    // 逼出来的往往是不搭的脸。约束挪到同轮：两个必须不同，
     // 于是每一句都有一条情绪弧线，跨轮连用却完全允许。
     std::wstring pose1Name, pose1Path;   // 第一个表情（翻回去时要能还原）
     std::wstring pose2Name, pose2Path;   // 第二个表情
     bool         pose2Switched = false;  // 本句已经切过去了没有
     int          pose2MarkerLine = -1;   // 台词里第一个转场标记（---）在第几行，-1=没有
     size_t       pose2MarkerChar = 0;    // 上面那个标记在【折行后】落在第几个字符（单页切换用）
-
     //
     // ---- 背景也跟着同一个节拍切（"台词和画面不同步"的修法）
     //
-    // 【实测现象：现象】日常段她写"答应得这么快啊……走了走了。【推开门】"，
-    //   人明明是【推开门之后】才到甜品店，可背景在【她开口的第一个字】
-    //   就跳过去了——前半句还站在教室里说话，脚下已经是甜品店。
+    // 实测现象：现象日常段她写"答应得这么快啊……走了走了。推开门"，
+    // 人明明是推开门之后才到甜品店，可背景在她开口的第一个字
+    // 就跳过去了——前半句还站在教室里说话，脚下已经是甜品店。
     //
     // 表情早就不是这个问题了：pose2 有"说到 --- 才换脸"这一套
     // （ApplyPose2ForTyping / ApplyPose2ForPage），脸跟台词是对齐的。
@@ -3774,66 +3665,61 @@ struct App {
     // 做题中途点了"问她"。她答完要把玩家送回编辑器——
     // 他正在写代码，被打断一次已经够烦了，不能再让他自己找路回去。
     bool         askedDuringTask = false;
-
     // ---- 本轮他回答了多少次（用来卡"至少答几次才开考"）
     //
-    // 【这是"她问了个问题，你一点就进考试"的解药】
+    // 这是"她问了个问题，
     // prompt 要求她每轮都留钩子（通常是抛一个问题）。
     // 而她同一条回复里可能带着 advance=1（该出题了）。
-    // 于是玩家点一下想回答她的问题，引擎却直接 DirEnterTask()——
+    // 于是玩家点一下想回答她的问题，引擎却直接 DirEnterTask
     // 她的问题永远没人回答，玩家还以为自己被无视了。
     //
     // 现在：她说"该考了"时不立刻考，先开输入框让他答；
     // 答够 kQuizMinAnswers 次才真正开考。
     //
-    // 【不设上限】：他答够最低次数之后就不再由引擎拦着，
+    // 不设上限：他答够最低次数之后就不再由引擎拦着，
     // 完全听她的——她继续给 advance=1 就继续聊，直到她认为教懂了。
-    // 引擎不再有"聊太久就替你开考"这种兜底。
+    // 引擎不再有"聊太久就替
     int          quizAnswers = 0;
-
     // ---- 最近几轮实际用到的素材（给 prompt 的"别重复"约束用）
     //
-    // 【模型没有"我刚才用了什么"的记忆】
-    // 每一轮请求对它来说都是独立的一局，它只看到【当前画面】那一个值。
-    // 于是最容易、也最省力的策略就是"沿用"——玩家看到的是连续好几轮同一张脸。
+    // 模型没有"
+    // 每一轮请求对它来说都是独立的一局，它只看到当前画面那一个值。
+    // 于是最容易、也最省力的策略就是"沿用"
     // 把最近几轮列给它，"别再用了"才有具体所指。
     std::vector<std::wstring> recentPoses;
     // 本轮真正被禁用的表情（去重后）。审计日志显示它，不能自己重算。
     std::vector<std::wstring> bannedPoseNow;
-
-    // ========================================================================
-    //  素材笔记
+    // 素材笔记
     //
-    // 【为什么要让模型自己先写一遍素材说明】
-    // 素材说明原本是【作者写在 char.ini 里的】，而真正要用它的是模型。
+    // 为什么要让模型自己先写一遍素材说明
+    // 素材说明原本是作者写在 char.ini 里的，而真正要用它的是模型。
     // 作者的措辞和模型理解方式对不上时，就会出现
-    // "作者写的是无奈，模型当成讲课用"——这正是日志里连续 6 轮「叹气」的成因。
+    // "作者写的是无奈，模型当成讲课用"
     //
-    // 让模型【自己】看一遍清单、自己总结一遍，写出来的就是它自己的理解方式，
+    // 让模型自己看一遍清单、自己总结一遍，写出来的就是它自己的理解方式，
     // 之后每轮把这份笔记带进上下文，选素材时参照的是它能读懂的说法。
     //
     // 每章结束再复盘一次：把这一章实际用到的素材和她当时的台词一起给她看，
     // 让她自己说哪些贴切、哪些不合适。引擎只能判断"名字接没接住"，
     // 判断不了"这张脸配这句台词对不对"——只有她自己知道。
-    // ========================================================================
     std::wstring assetBrief;          // 她自己写的素材笔记（开局生成一次）
     std::wstring assetReview;         // 上一章的素材复盘
     //
-    // 生成笔记时的【素材集指纹】。
+    // 生成笔记时的素材集指纹。
     //
-    // 【为什么需要它——直接服务"随意增删素材"】
+    // 为什么需要它——直接服务"随意增删素材"
     // 笔记是模型照着当时的素材清单写的。作者后来往目录里丢了一张新图、
     // 或删掉一首曲子，清单变了，可笔记还是旧的：
-    //   · 加了新图 -> 笔记里根本没它，模型不知道有这个表情，等于白加
-    //   · 删了旧图 -> 笔记里还写着它，模型照着选，被拒、打回，白跑一趟
+    // · 加了新图 -> 笔记里根本没它，模型不知道有这个表情，等于白加
+    // · 删了旧图 -> 笔记里还写着它，模型照着选，被拒、打回，白跑一趟
     // 两种情况都不报错，极难发现。存一份指纹，对不上就重新生成一次。
     std::wstring assetBriefKey;
     bool  assetBriefBusy = false;     // 正在生成，别重复发起
     int   assetBriefGen  = 0;         // 期间读档 / 换人则结果作废
     //
-    // 【当前在飞的那一笔是第几代】
+    // 当前在飞的那一笔是第几代
     // 只有它跟消息里带的 gen 对得上，才允许把 assetBriefBusy 解掉。
-    // 原来只看 assetBriefGen：上一局的笔记在【这一局】等待期间回来时，
+    // 原来只看 assetBriefGen：上一局的笔记在这一局等待期间回来时，
     // 它会把这一局还在飞的请求的 busy 提前解掉（见 WM_APP_ASSET_NOTE）。
     int   assetBriefBusyGen = 0;
     // 本章的素材调用记录（章末复盘的输入）。存的是给人看的一行一行文本。
@@ -3860,23 +3746,22 @@ struct App {
     // 换太勤像抽搐，但整局不变又太呆板。
     static const int kAssetStreakMax = 4;
     //
-    // ---- 阶段切换时【引擎自己换掉的】素材
+    // ---- 阶段切换时引擎自己换掉的素材
     //
-    // 【为什么必须记下来】
+    // 为什么必须记下来
     // 转场时她没换背景/音乐的话，引擎会替她挑一个（见 ApplyAiStage）。
-    // 这在画面上表现为"她给的跟实际的不一样"，但那是【设计行为】，
+    // 这在画面上表现为"她给的跟实际的不一样"，但那是设计行为，
     // 不是 bug。不记下来的话，审计日志会把它标成 ★真问题，
-    // 玩家拿着日志去查"程序没接住"，白白绕一大圈——
-    // 实际运行日志里那一轮"她给课间的课室→实际神社"就是被这样误标了。
+    // 玩家拿着日志去查"程序没接住"，白白绕一大圈
+    // 运行时那一轮"她给课间的课室→实际神社"就是被这样误标了。
     std::wstring stageForced;   // 形如 " bg bgm"
-
     //
-    // 【这两个字段已经不用了】
+    // 这两个字段已经不用了
     // 引擎强制换脸的机制删除了（换出来的脸经常跟台词对不上），
     // 换脸现在完全交给她，引擎只在 prompt 里提要求。
     // 留着会误导后来者以为还有这条路径。
     //
-    // 当前画面是【引擎预置的占位】，不是模型选的。
+    // 当前画面是引擎预置的占位，不是模型选的。
     // 开局时模型还在思考，画面不能空着，所以引擎先猜一张。
     // 但它只是占位：模型第一轮返回后要无条件换成模型选的那张，
     // 不能因为"跟当前一样"就被沿用逻辑跳过，也不能拿它去算"连用几轮"。
@@ -3884,38 +3769,35 @@ struct App {
 
     // 记一轮用到的素材。只留最近 kRecentKeep 条，且跟当前相同才累加 streak。
     void NoteAssets(const std::wstring& pose, const std::wstring& bg, const std::wstring& bgm);
-
     //
     // ---- 她最近一次说的话
     //
-    // DirAdvance() 里要用它判断"她是不是已经开口讲本章内容了"，
+    // DirAdvance 里要用它判断"她是不是已经开口讲本章内容了"，
     // 而那个函数拿不到 LlmReply（台词在 OnChatDone 里解析完就散了）。
     // 从 hist 里反查也可行，但得判断说话人是不是她、还要处理空表，
     // 不如在这里直接留一份干净的文本。
     std::wstring lastHerSay;
     static const size_t kRecentKeep = 6;
-
     // ★ 她上一句话有没有被掐断（说了一半）。
     //
-    // 只影响【下一轮】的提示词：告诉她"你上一句没说完，接着把那半句说完"。
+    // 只影响下一轮的提示词：告诉她"
     // 用完即清（提示词构建处读完就置回 false）——留着不清除的话，
     // 之后每一轮都会背着一句"接着说完"，她会一直以为自己欠着话没说。
     bool lastSayTruncated = false;
-
     // ---- 素材打回重填
     //
-    // 【stageFixTries 必须跟着"轮"走，不能跟着"会话"走】
+    // stageFixTries 必须跟着"轮"走，不能跟着"会话"走
     // 它是"这一轮已经打回过几次"的计数。忘了重置的话，
-    // 第一轮打回一次之后，之后【所有轮】都不再打回——
+    // 第一轮打回一次之后，之后所有轮都不再打回
     // 表现是"打回只生效了一次，后面又全是错的"，极难发现。
     int      stageFixTries = 0;
     bool     stageFixing   = false;
     //
-    // ---- 【挑素材整轮失败时的重试次数】
+    // ---- 挑素材整轮失败时的重试次数
     //
     // 跟 stageFixTries 两码事：那个是"她填错了名字"，这个是
-    // 【这一句压根没拿到画面】——请求发不出去（网络）、或者她一个字没填。
-    // 以前这两种情况直接放弃，画面沿用上一轮，日志写一行"没配画面"就完了。
+    // 这一句压根没拿到画面——请求发不出去（网络）、或者她一个字没填。
+    // 早期版本这两种情况直接放弃，画面沿用上一轮，日志写一行"没配画面"就完了。
     // 这里要做的是"只要没接住就重挑"，所以这里给它一次机会。
     // 计数同样跟着"轮"走（StartChat 里重置），不会累积成死循环。
     int      assetPickRetry = 0;
@@ -3924,44 +3806,41 @@ struct App {
     std::wstring lastPickSay, lastPickScene, lastPickBeat;
     //
     // 打回是因为"连用被禁"发起的（不是因为她填了错名）。
-    // 打回失败时得靠它决定要不要走兜底轮换——
+    // 打回失败时得靠它决定要不要走兜底轮换
     // 错名的场合保持原样就好，被禁的场合必须真的换一张，
     // 否则"两轮必换"在打回失败时等于失效。
     bool     stageFixWasBanned = false;
-
-    // ---- 【打回期间的挂起呈现】
+    // ---- 打回期间的挂起呈现
     //
-    // 【"立绘在打回前生效"这个 bug 的关键状态，曾被反复报过三次】
-    // 原来的顺序是：校验 -> 【立刻把画面画出来】-> 显示台词 -> 最后才发起打回。
-    // 于是她填错时，玩家先看到一张错的脸，一两秒后打回回来才换成对的——
+    // "立绘在打回前生效"这个 bug 的关键状态，曾被反复报过三次
+    // 于是她填错时，玩家先看到一张错的脸，一两秒后打回回来才换成对的
     // 体感是"画面闪一下又变了"，正好配着新台词，比不换还扎眼。
     //
-    // 现在要打回的那一轮：画面【完全不动】、台词【先不显示】，
-    // 等打回结果回来，正确的画面和台词【一起】呈现。
+    // 现在要打回的那一轮：画面完全不动、台词先不显示，
+    // 等打回结果回来，正确的画面和台词一起呈现。
     //
-    // 【代价：多出了一个必须收尾的状态】
+    // 代价：多出了一个必须收尾的状态
     // 台词挂起后只存在于 pendingSay 里，对话框是空的。
     // 打回的每一条结束路径（成功 / 请求失败 / 结果过期 / 她没给有效值）
     // 都必须把台词放出来，漏一条就是"她这句话永远不显示"。
     bool     stageFixPending = false;   // 这一轮的台词还在等打回
     std::wstring pendingSay;            // 挂着的台词（打回回来后显示）
     std::wstring pendingEmote;          // 挂着的台词配套表情
-
     // ---- 开场提示：等素材笔记生成完再发
     //
-    // 【为什么要挂起开场，而不是让笔记在后台慢慢生成】
-    // 笔记请求和开场对话是两个并行的线程，谁先回来【不确定】。
+    // 为什么要挂起开场，而不是让笔记在后台慢慢生成
+    // 笔记请求和开场对话是两个并行的线程，谁先回来不确定。
     // 实测是开场先回来——于是她开口那几轮根本没有笔记可参照，
     // 素材就是她对着的清单瞎猜；等笔记生成完，前面几轮的素材
     // 已经选完写进日志了，改不回来。
     //
-    // 笔记是"她对自己素材的理解"，必须在她【第一次露脸之前】就位。
+    // 笔记是"她对自己素材的理解"，必须在她第一次露脸之前就位。
     // 所以开场那句话先存着，笔记回来了（或者确定拿不到）再让她开口。
     std::wstring pendingKick;           // 挂着的开场提示（笔记就绪后发）
     //
-    // ---- 【开场画面也跟着一起挂起】
+    // ---- 开场画面也跟着一起挂起
     //
-    // 光挂台词不够：原来 ApplyStageChange 在发起笔记请求【之前】就跑了，
+    // 光挂台词不够：原来 ApplyStageChange 在发起笔记请求之前就跑了，
     // 于是背景和服装在笔记还没生成时就已经铺到屏幕上。
     // 笔记的作用是"她怎么理解这批素材"，而开场的立绘/背景正是
     // 第一批要被它影响的画面——先铺后生成等于让第一批画面裸奔。
@@ -3970,42 +3849,40 @@ struct App {
     //
     // 挂起是从什么时候开始的。
     // 挂起唯一的出口是"笔记回来"那条消息，而那条消息可能永远不来
-    //（线程没起来、结果被判成上一局的、网络超时后没回）。
-    // 没有起点时间就没法定"等太久就不再等"，玩家会被永远晾在空舞台上。
+    // （线程没起来、结果被判成上一局的、网络超时后没回）。
+    // 没有起点时间就没法定"等太久就不再等"，
     unsigned long long pendingStageT = 0;
     //
     // 读档那条路是【静默模式】（思考期间不显示流式碎片），
     // 挂起之后要原样带过去，否则读档回来的第一句会露出半截原文。
     bool         pendingKickSilent = false;
-
     // ---- 素材白名单：开局 / 读档时生成一次，之后复用
     //
-    // 【为什么不每轮扫】
+    // 为什么不每轮扫
     // 扫描要遍历 bg / bgm / sprite 好几个目录；更要紧的是白名单要
-    // 【预校验】（每一项都过一遍真正的解析函数），那是几十次文件查询。
-    // 素材中途变了（装了新角色包、加了图）时调 InvalidateWhitelist() 重来。
+    // 预校验（每一项都过一遍真正的解析函数），那是几十次文件查询。
+    // 素材中途变了（装了新角色包、加了图）时调 InvalidateWhitelist 重来。
     VisibleAssets  whitelist;
     WhitelistReport whitelistRep;
     bool           whitelistReady = false;
     //
-    // 【素材热更新——直接服务"随便增删素材"这个最终目标】
+    // 素材热更新——直接服务"随便增删素材"这个最终目标
     //
     // 白名单只在开局 / 读档扫一次，中途往目录里丢一张新图，
-    // 模型【永远看不到它】——清单里没有，选不到，也不报错。
+    // 模型永远看不到它——清单里没有，选不到，也不报错。
     // 玩家得退出重开才生效，那就谈不上"随意增删"。
     //
     // 存一份"当初扫的是哪批素材"的指纹，每次要用到清单时比对一次：
     // 对不上就说明作者动过素材目录，重新扫。
-    // 用【扫描结果】做指纹而不是白名单本身——加了张解析不了的图也会触发，
+    // 用扫描结果做指纹而不是白名单本身——加了张解析不了的图也会触发，
     // 于是"加了图却没出现"会在 素材白名单.txt 的剔除明细里写出来，
     // 而不是无声无息。
     std::wstring   whitelistStamp;
-
     // ---- 推进权归模型
-    //   dirAdvance  0=继续  1=出题  2=跳过测验进下一章
-    //   dirVerdict  "pass"/"fail"，点评阶段她对代码的最终判定
+    // dirAdvance 0=继续 1=出题 2=跳过测验进下一章
+    // dirVerdict "pass"/"fail"，点评阶段她对代码的最终判定
     //
-    // 【为什么引擎不再自己拍板】
+    // 为什么引擎不再自己拍板
     // 引擎只能看"跑没跑通"，判不了"是不是真会了"。
     // 硬编码的门槛（聊满 N 轮就开考）不知道她讲到哪了，
     // 于是经常她还想讲却被拉去出题，或者她讲完了还在硬聊。
@@ -4013,8 +3890,7 @@ struct App {
     std::wstring dirVerdict;
     // lastDirBgm 已删除：BGM 判重统一用 main.cpp 里的 g_bgmNow
     // （"槽里实际是什么"）。留着第二份缓存就是 bug 的根源。
-
-    // 导演模式的当前验收题。判题线程读它，而不是从 Vm 拿指令——
+    // 导演模式的当前验收题。判题线程读它，而不是从 Vm 拿指令
     // 因为导演模式下 Vm 根本没在跑。
     Syllabus     dirSyllabus;   // 大纲本体（生成 prompt 时要读全部章节）
 
@@ -4024,32 +3900,31 @@ struct App {
     std::vector<SyllabusPack> syllabusPacks;
     std::wstring syllabusId;    // 当前剧本 id（存进 config.ini 的 [Game] Syllabus）
     //
-    // ---- 当前剧本【锁定的角色】，只有角色特化剧本（story.ini）才设它
+    // ---- 当前剧本锁定的角色，只有角色特化剧本（story.ini）才设它
     //
-    //  非空 = 开始游戏只能选这个角色。
+    // 非空 = 开始游戏只能选这个角色。
     //
-    //  【为什么不由"先选剧本再选角"的先后顺序来保证】
-    //  那样只是界面上的顺序碰巧对，而读档、切剧本、清数据都能绕过界面
-    //  直接改角色。锁在 Selectable() 这一个过滤点上，所有调用处一起生效。
+    // 为什么不由"先选剧本再选角"的先后顺序来保证
+    // 那样只是界面上的顺序碰巧对，而读档、切剧本、清数据都能绕过界面
+    // 直接改角色。锁在 Selectable 这一个过滤点上，所有调用处一起生效。
     std::wstring storyLockedChar;
     std::wstring syllabusPath;  // 当前那份 syllabus.ini 的完整路径
     // 上一次 LoadSyllabus() 失败的原因。切换剧本失败时要说清楚是哪一份、
     // 为什么，否则玩家只看到"没切过去"，不知道是自己刚点的那份有问题。
     std::wstring syllabusErr;
     //
-    // 上一次 LoadScript() 失败的原因（找不到 main.cks / 编译出错）。
+    // 上一次 LoadScript 失败的原因（找不到 main.cks / 编译出错）。
     //
-    // 【为什么不直接写进 a.view】
-    // 启动时是无条件 LoadScript() 的，而导演模式（有大纲）根本用不着剧本——
+    // 为什么不直接写进 a.view
+    // 启动时是无条件 LoadScript 的，而导演模式（有大纲）根本用不着剧本
     // 写进 view 的话，这条"找不到剧本文件"会一直挂在对话框上，
     // 连名字牌都被写成「系统」，进游戏后开场第一眼看到的就是它。
-    // 剧本模式（没有大纲）才是真的没剧本就玩不了，那时候才需要显示。
+    // 剧本模式（没有大纲）才是真的没剧本就玩不了，
     std::wstring scriptErr;
-
     // ---- 剧本编辑页正在改的这一份
     //
-    // 【为什么要单独加载一份，不直接改 a.syllabus】
-    // a.syllabus 是【正在玩的那一份】，编辑页可能改的是另一份
+    // 为什么要单独加载一份，不直接改 a.syllabus
+    // a.syllabus 是正在玩的那一份，编辑页可能改的是另一份
     // （先编辑、之后才切换过去）。共用一份会出现
     // "编辑了 B 却把正在玩的 A 改了"，而且保存前的不完整状态会污染局内。
     // 单独加载：编辑是编辑，游玩是游玩，保存时才落到磁盘。
@@ -4057,14 +3932,14 @@ struct App {
     //
     // ---- 跳章时的前情提要
     //
-    // 【只给"被跳过的那几章"】
+    // 只给"被跳过的那几章"
     // 走过的章节她真的经历过（记忆里有），再讲一遍是啰嗦；
-    // 跳过的是她【没经历过】的，不讲她就是一脸茫然地开始新的一章。
-    // 内容直接来自剧本的章节名+教学目标，不额外调模型——
+    // 跳过的是她没经历过的，不讲她就是一脸茫然地开始新的一章。
+    // 内容直接来自剧本的章节名+教学目标，不额外调模型
     // 跳章是玩家的即时操作，不该再让他等一次生成。
     std::wstring  jumpBrief;
     //
-    // ---- 【刚从流程图跳过来的标记】
+    // ---- 刚从流程图跳过来的标记
     //
     // jumpBrief 只在"有被跳过的章"时才非空——跳到第 2 章（一章都没跳过）
     // 时它是空的，可那种情况同样需要让开口那句知道"这一章讲什么"，
@@ -4086,52 +3961,49 @@ struct App {
     // 收藏（CG / 成就）已整体移除：CG 回想和成就墙都不再属于这个玩法，
     // 留着只会让菜单多两个永远填不满的空入口。
     UiState   ui;
-
     // ---- 存档槽
     //
-    // 【为什么槽位是全局的，而不是"每个角色一套槽"】
-    // Galgame 的存档槽就是"一个存档位置"，玩家可以槽1存角色A、槽2存角色B——
+    // 为什么槽位是全局的，而不是"每个角色一套槽"
+    // Galgame 的存档槽就是"一个存档位置"，玩家可以槽1存角色A、槽2存角色B
     // 这才是大家对存档的直觉。按角色分槽的话，选角界面里还得先选人再选槽，
     // 而且"槽1"在不同角色下含义不同，读档时极易搞混。
-    // 所以槽里【记录自己玩的是哪个角色】，读档时自动把角色切回去。
+    // 所以槽里记录自己玩的是哪个角色，读档时自动把角色切回去。
     int  curSlot = 1;                       // 当前周目写进哪个槽（1..kSaveSlots）
     std::vector<SaveSlotInfo> slots;        // 扫描结果，进存档界面时刷新
     //
     // ---- 上一次读档失败的原因
     //
-    //  LoadFromSlot 只会返回一个 bool，而三个调用点原来一律弹
-    //  「存档读取失败」——那句话把具体原因盖掉了。
-    //  存档读不了往往是因为"内容对不上"（老档 / 拷错目录 / 剧本没了），
-    //  玩家需要知道的是【哪一条对不上】，才知道该去补文件还是开新局。
-    //  所以失败原因单独存一份，调用点优先显示它。
+    // LoadFromSlot 只会返回一个 bool，而三个调用点原来一律弹
+    // 「存档读取失败」——那句话把具体原因盖掉了。
+    // 存档读不了往往是因为"内容对不上"（老档 / 拷错目录 / 剧本没了），
+    // 玩家需要知道的是哪一条对不上，才知道该去补文件还是开新局。
+    // 所以失败原因单独存一份，调用点优先显示它。
     std::wstring slotLoadErr;
-
     // ---- 待进入的玩家输入
     //
-    // 【为什么需要它】
-    // 原来角色回复一到就立刻 EnterInputMode()，输入框和她的台词同时出现：
+    // 为什么需要它
+    // 原来角色回复一到就立刻 EnterInputMode，输入框和她的台词同时出现：
     // 打字机还在显示她的话，白色编辑框已经压在对话框上了，
     // 玩家既读不完台词，也不知道该不该立刻打字。
     //
-    // 现在改成两段式：她说完 → 玩家【点击一下】→ 才切到输入。
-    // 这跟 Galgame 的手感一致（读完再决定），也让"轮到我了"有明确的分界。
+    // 现在改成两段式：她说完 → 玩家点击一下→ 才切到输入。
+    // 这跟 Galgame 的手感一致（读完再决定），也让"轮到
     bool pendingInput = false;       // 点击后要不要进输入模式
     std::wstring pendingGuide;       // 进输入模式时用的引导语
-
     // ---- 文本回想
     //
-    // 【为什么上限 300】
+    // 为什么上限 300
     // 一周目聊下来几十到一两百句，300 足够回看完整流程；
     // 不设上限的话长线玩家的内存会一直涨，而回想面板一次也只显示十几条。
     // 超出从头淘汰——丢的是最老的，玩家极少翻到那么远。
     std::vector<HistLine> hist;
     static const size_t kHistMax = 300;
     // 存进存档的历史条数与每条长度上限。
-    // kHistMax 是【内存里】的上限（防长会话吃内存），
-    // 这两个是【写进文件】的上限（防自动存档文件越滚越大）。
+    // kHistMax 是内存里的上限（防长会话吃内存），
+    // 这两个是写进文件的上限（防自动存档文件越滚越大）。
     // 分开是对的：内存里 300 条无所谓，但每 60 秒写一次盘，
     // 全写进去的话存档文件会到几百 KB。
-    // kHistSaveLen 原来是 400 字 —— 而她现在一句能讲 800~1300 字，
+    // kHistSaveLen
     // 存进去的时候就被砍掉大半，读档回来回想里看到的仍是半截。
     // 回想是"完整回看"的功能，存档截断等于把它废掉。
     //
@@ -4153,7 +4025,7 @@ struct App {
     std::wstring exeDir, assetDir, appDir, configPath, savePath, memPath, profPath, scriptPath;
     std::wstring dataRoot;  // data 根目录：启动日志之类【不属于任何角色】的东西
     std::wstring dataDir;   // 当前角色的存档目录 = dataRoot\<charId>
-                            // 【为什么按角色分开】
+                            // 为什么按角色分开
                             // 多个角色包共用一个 data 时，存档槽、对话记录、
                             // 素材调用日志、打回记录、素材笔记缓存全部混在一起：
                             // 换角色后槽位被别的角色占着，日志互相覆盖，
@@ -4167,29 +4039,26 @@ struct App {
     // ---- 打字机
     int textSpeed = 40;             // 字符/秒
     double textAcc = 0.0;           // 累积不足一字的余量
-
     // ---- 自由对话
     //
-    // 【这两个字段是死的，已删】
+    // 这两个字段是死的，已删
     // chatBuf / chatPartial 原本是给"流式累积"用的，但真正干活的是
     // 全局的 g_chatFull（见 main.cpp）。这两个只在 StartChat 里 clear 过一次，
     // 从头到尾没有别处读写——留着会让人以为流式内容存在这里，
     // 改打字机时改错地方。
-    //
     std::wstring chatTopic;         // 本轮话题
     std::wstring chatSpeaker;       // 本轮说话人
     std::wstring chatEmote;
     std::wstring chatHint;          // @free 给的话题：既是给 LLM 的指令，也是给玩家的引导
     bool chatting = false;
-
-    // 思考期间【不显示任何文本】。
+    // 思考期间不显示任何文本。
     //
     // 流式回复每帧都会把"已收到的那一段"抠一抠显示出来。抠取本身有
     // 好几道闸（ExtractStreamSay + LooksLikeMachineText），但流式的中间
-    // 状态千奇百怪——SSE 分包、模型前面加客套话、字段顺序不定——
+    // 状态千奇百怪——SSE 分包、模型前面加客套话、字段顺序不定
     // 总有漏网的时候，漏了就是对话框里出现带 {} 和 "say": 的机器原文。
     //
-    // 【读档时必须静默】
+    // 读档时必须静默
     // 读档会打断上一周目在飞的流式任务，新旧内容可能在同一帧里混着到达，
     // 这种"半截拼半截"的碎片最容易突破所有判据。
     // 而读档本身就是一次明显的场景切换，玩家不会期待立刻有台词；
@@ -4197,13 +4066,12 @@ struct App {
     //
     // 由 StartChat(silent=true) 置位，OnChatDone 清除。
     bool chatSilent = false;
-
     // ---- 异步任务代号
     //
-    // 【为什么需要它】
+    // 为什么需要它
     // 网络和判题都在后台线程跑，而玩家可以在等待期间切界面、读档、甚至开新周目。
-    // 旧线程迟早会回来报到，如果照单全收，它就会把【上一个周目】的回复
-    // 盖到【新读进来】的存档上 —— 表现为读档后她答非所问，或者干脆再也不开口。
+    // 旧线程迟早会回来报到，如果照单全收，它就会把上一个周目的回复
+    // 盖到新读进来的存档上 —— 表现为读档后她答非所问，或者干脆再也不开口。
     //
     // 每次发起新任务 +1；结果回来时代号对不上就整包丢弃。
     // 这个模式比"试图取消线程"可靠得多：WinHTTP 的同步请求没法安全地中途打断，
@@ -4226,29 +4094,26 @@ struct App {
     int  triesLeft = 0;
     // 她这次没给出明确的 pass/fail（模型漏了 verdict 字段）。
     //
-    // 【为什么不能简单按 fail 处理】
+    // 为什么不能简单按 fail 处理
     // 没给结论是模型的锅，不是玩家的锅。直接算 fail 会扣他一次机会，
     // 连续几次他就卡死在这一章了，而且完全不知道自己做错了什么。
-    // 所以：算没过，但【不扣次数】，让他原样再交一次。
+    // 所以：算没过，但不扣次数，让他原样再交一次。
     bool verdictMissing = false;
     //
-    // 【上一轮已经因为"没给结论"让他重交过一次了】
+    // 上一轮已经因为"没给结论"让他重交过一次了
     //
-    // 【运行日志 2026-10-27：考试结束后又考了一次】
-    // 第一次判卷她说了"你真的写出来了""思路很清楚，没写错语法"——
+    // 第一次判卷她说了"
     // 那就是通过，可她没填 verdict 字段，词表也没认出来，
     // 于是判不出来 -> 让他原样再交 -> 她又从头到尾把评语说了一遍。
-    // 玩家看到的是"这一章考了两次"。
     //
-    // 这一轮要让她的第二次判卷【不再重复整段评语】：
+    // 这一轮要让她的第二次判卷不再重复整段评语：
     // 只给一个明确结论 + 一句不同的话。这样即便真的走了第二次，
     // 观感也只是"她又确认了一遍"，而不是"又考了一次"。
     bool verdictAsked = false;
     std::wstring lastCode;
-
     // ---- 选择题（导演模式的验收题）
     //
-    // 【对错由引擎判，模型不参与】
+    // 对错由引擎判，模型不参与
     // 玩家点了第几个是确定的事实，比对一下选项序号就行，
     // 不需要模型读代码、理解意图、再给结论 —— 那是整套流程里最不稳的一环。
     // 她要做的只有两件她最擅长的事：他选对了说一句；他选错了讲清楚错在哪。
@@ -4259,13 +4124,13 @@ struct App {
     // 这一题累计答错几次。用来决定"答错几次之后把 Hint 交给她提示"。
     int  quizWrong = 0;
     //
-    // 对错已经由引擎比对了，她这句话回来时【不要再让判卷逻辑改判】。
+    // 对错已经由引擎比对了，她这句话回来时不要再让判卷逻辑改判。
     //
-    // 【不加这个标记会怎样】
+    // 不加这个标记会怎样
     // 判卷那段是"读她回复里的 verdict 字段、没有就从台词里猜"。
-    // 选择题里我们根本没让她填 verdict，于是判不出来 -> verdictMissing=true
-    // -> AdvanceClick 当作"没过"扣次数，次数用完还会 EnterCodeMode()
-    //    把他丢进一个根本不该存在的编辑器。
+    // 选择题里没有让她填 verdict，于是判不出来 -> verdictMissing=true
+    // -> AdvanceClick 当作"没过"扣次数，次数用完还会 EnterCodeMode
+    // 把他丢进一个根本不该存在的编辑器。
     // 她的话只是"说一句 / 讲一下"，不是判词，不该被拿去再判一次。
     bool quizEngineVerdict = false;
 
@@ -4321,19 +4186,15 @@ static void MigrateSavesToCharDirs();    // data 根目录的旧存档搬进 dat
 void BeginStory();                       // 选角完成 → 真正开始剧情（含角色专属剧本）
 static void ResetRuntimeUi();            // 开新周目/读档前，把界面状态整份归零
 static void SyncInputEdit();             // 改完输入态后同步 EDIT 子窗口（定义在后面）
-
-// ============================================================================
-//  模块：JSON 解析 —— 递归下降
+// 模块：JSON 解析 —— 递归下降
 //
-//  两个防御点值得说明，都是被真实数据坑出来的：
-//   1. 深度限制。模型偶尔会把 JSON 写坏成层层嵌套，或者你手滑喂了整个网页。
-//      不设限的话递归会爆栈——而爆栈是 SEH 异常，try/catch 不到，直接进程没了。
-//      这里 64 层足够任何正常响应，超了就明确报错。
-//   2. 数字解析用 strtod 而不是自己按位算。自己算容易在 1e-7、-.5、1E+3 这些
-//      边界上翻车，而 strtod 已经处理了全部情况。
-// ============================================================================
+// 两个防御点值得说明，都是被真实数据坑出来的：
+// 1. 深度限制。模型偶尔会把 JSON 写坏成层层嵌套，或者
+// 不设限的话递归会爆栈——而爆栈是 SEH 异常，try/catch 不到，直接进程没了。
+// 这里 64 层足够任何正常响应，超了就明确报错。
+// 2. 数字解析用 strtod 而不是自己按位算。自己算容易在 1e-7、-.5、1E+3 这些
+// 边界上翻车，而 strtod 已经处理了全部情况。
 // （NOMINMAX 已在文件顶部定义）
-
 namespace ck {
 
 // ---------------------------------------------------------------- 取值辅助
@@ -4692,21 +4553,18 @@ std::string JsonDump(const JValue& v, int indent) {
 }
 
 } // namespace ck
-
-// ============================================================================
-//  模块：表达式 —— 词法 + 调度场算法 + 栈式求值
+// 模块：表达式 —— 词法 + 调度场算法 + 栈式求值
 //
-//  支持的运算符（优先级从高到低）：
-//      ! -(一元)           5
-//      * / %               4
-//      + -                 3
-//      > < >= <= == !=     2
-//      &&                  1
-//      ||                  0
+// 支持的运算符（优先级从高到低）：
+// ! -(一元) 5
+// * / % 4
+// + - 3
+// > < >= <= == != 2
+// && 1
+// || 0
 //
-//  除法对 0 的处理：返回 0 而不是崩。剧本里出现除 0 通常是作者写错了，
-//  让引擎直接挂掉是最糟的结果——静默降级 + 编译期警告才是好体验。
-
+// 除法对 0 的处理：返回 0 而不是崩。剧本里出现除 0 通常是作者写错了，
+// 让引擎直接挂掉是最糟的结果——静默降级 + 编译期警告才是好体验。
 namespace ck {
 
 std::wstring EValue::toStr() const {
@@ -5008,24 +4866,16 @@ void ExprRefVars(const std::vector<ETok>& rpn, std::vector<std::wstring>& out) {
 }
 
 } // namespace ck
-
-// ============================================================================
-//  模块：通用工具 —— 字符串 / 路径 / 文件 / 时间
-
-// ============================================================================
-//  调试开关：默认 0。
-//  改成 1 会把大模型的原始响应打到 VS 输出窗口 —— 任何挂了调试器或装了
-//  DebugView 的人都能看到对话正文。排查解析问题时临时打开，用完请改回 0。
-// ============================================================================
+// 模块：通用工具 —— 字符串 / 路径 / 文件 / 时间
+// 调试开关：默认 0。
+// 改成 1 会把大模型的原始响应打到 VS 输出窗口 —— 任何挂了调试器或装了
+// DebugView 的人都能看到对话正文。排查解析问题时临时打开，用完请改回 0。
 #undef  CK_ENABLE_DEBUG_LOG
 #define CK_ENABLE_DEBUG_LOG 0
-
-// ============================================================================
-//  开发人员开关（发布版务必为 0）
-//  改成 1：所有章节立即解锁，不看数值，方便直接跳到
-//  任意一段剧情测试。也可以在 VS 里加一个「Debug-Dev」配置，预处理器定义里
-//  写 DEV_UNLOCK_ALL=1，这样切配置就能来回切，源文件不用动。
-// ============================================================================
+// 开发人员开关（发布版务必为 0）
+// 改成 1：所有章节立即解锁，不看数值，方便直接跳到
+// 任意一段剧情测试。也可以在 VS 里加一个「Debug-Dev」配置，预处理器定义里
+// 写 DEV_UNLOCK_ALL=1，这样切配置就能来回切，源文件不用动。
 #undef  DEV_UNLOCK_ALL
 #define DEV_UNLOCK_ALL 0
 
@@ -5136,7 +4986,6 @@ std::wstring Unescape(const std::wstring& s) {
     }
     return o;
 }
-
 // Unescape 的反向：把真换行 / 制表符写回 ini 的转义形式。
 //
 // 剧本编辑页要用：题干和选项里是有换行的（选项是一段代码），
@@ -5240,11 +5089,10 @@ bool ReadTextFile(const std::wstring& path, std::wstring& out) {
     CloseHandle(h);
     if (!ok || rd == 0) return false;
     raw.resize(rd);
-
     // BOM 识别：
-    //   EF BB BF      UTF-8
-    //   FF FE         UTF-16LE
-    //   FE FF         UTF-16BE
+    // EF BB BF UTF-8
+    // FF FE UTF-16LE
+    // FE FF UTF-16BE
     if (raw.size() >= 3 && (unsigned char)raw[0] == 0xEF && (unsigned char)raw[1] == 0xBB && (unsigned char)raw[2] == 0xBF) {
         out = W(std::string(raw.begin() + 3, raw.end()));
         return true;
@@ -5309,27 +5157,25 @@ bool ReadFileBytes(const std::wstring& path, std::string& out) {
     out.resize(rd);
     return true;
 }
-
 // ---------------------------------------------------------------- ini
 //
 // ★ 为什么不用 GetPrivateProfileStringW：
-//   那个 API 是 Windows 的老古董，对 ini 文件的编码处理不可靠 —— 文件是
-//   UTF-8 时，在中文系统上会被按 GBK 解，中文全变乱码（表现为"生僻字"）。
-//   实测：源码里的中文显示正常、只有从 ini 读的角色名乱码，就是这个原因。
+// 那个 API 是 Windows 的老古董，对 ini 文件的编码处理不可靠 —— 文件是
+// UTF-8 时，在中文系统上会被按 GBK 解，中文全变乱码（表现为"生僻字"）。
+// 实测：源码里的中文显示正常、只有从 ini 读的角色名乱码，就是这个原因。
 //
-//   所以这里自己解析：先用带编码探测的 DecodeTextBytes 把文件读成正确的
-//   UTF-16，再逐行认 [section] 和 key=value。写回也自己来，保证读写编码一致。
+// 所以这里自己解析：先用带编码探测的 DecodeTextBytes 把文件读成正确的
+// UTF-16，再逐行认 [section] 和 key=value。写回也自己来，保证读写编码一致。
 //
-//   —— 曾经被这个坑了两轮，别改回 GetPrivateProfileStringW。
-
+// —— 曾经被这个坑了两轮，别改回 GetPrivateProfileStringW。
 namespace {
 
 struct IniKV {
     std::wstring key;
     std::wstring val;
-    // 这一行【之前】的注释 / 空行原文。
+    // 这一行之前的注释 / 空行原文。
     //
-    // 【为什么要存】ini 里那几十行 "; 说明：……" 是写给包作者看的。
+    // 为什么要存ini 里那几十行 "; 说明：……" 是写给包作者看的。
     // 角色卡里每保存一次就重写整个文件，原先只输出 [sec] 和 k = v，
     // 于是改一次注解，所有注释静默消失——而且没有任何提示。
     std::vector<std::wstring> lead;
@@ -5364,10 +5210,9 @@ struct IniDoc {
 };
 
 std::map<std::wstring, IniDoc> g_iniCache;
-
 // 把文件原始字节解成 UTF-16。
-//   · 有 BOM：按 BOM 走（UTF-8 / UTF-16LE / UTF-16BE）
-//   · 无 BOM：先严格试 UTF-8；有非法序列就退回 CP936(GBK)
+// · 有 BOM：按 BOM 走（UTF-8 / UTF-16LE / UTF-16BE）
+// · 无 BOM：先严格试 UTF-8；有非法序列就退回 CP936(GBK)
 //
 // 顺序不能反：GBK 的双字节几乎任意组合都"解得出东西"，用 GBK 探测会把
 // UTF-8 文件也误判成 GBK。而 UTF-8 有严格的字节结构，非法序列几乎必然
@@ -5465,10 +5310,9 @@ IniDoc& IniLoad(const std::wstring& path) {
         for (size_t i = 0; i < lines.size(); ++i) {
             std::wstring ln = lines[i];
             std::wstring t = Trim(ln);
-
             // ---- 续行：行首一个空格或 tab 表示"还是上面那个键的内容"
             //
-            // 【为什么只吃掉一个字符】留着其余缩进，作者才能排多层缩进；
+            // 为什么只吃掉一个字符留着其余缩进，作者才能排多层缩进；
             // 而且规则简单可预测：多敲几个空格，值里就多几个空格。
             if (lastKV && !ln.empty() && (ln[0] == L' ' || ln[0] == L'\t')) {
                 lastKV->val += L'\n';
@@ -5523,12 +5367,10 @@ IniDoc& IniLoad(const std::wstring& path) {
     g_iniCache[path] = doc;
     return g_iniCache[path];
 }
-
-// 【返回值 = 写盘是否成功】
+// 返回值 = 写盘是否成功
 //
-// 原来是 void：写失败（文件只读、被编辑器独占、磁盘满、路径不存在）时
 // 完全没有反馈。 ini 层还持着"改过了"的缓存，于是：
-//   界面提示"已保存/已删除"，磁盘上那一行却原封不动 —— 重开又回来了。
+// 界面提示"已保存/已删除"，磁盘上那一行却原封不动 —— 重开又回来了。
 // 这类失败必须是"看得见的失败"，所以每一步都把结果传回去。
 bool IniFlush(const std::wstring& path, const IniDoc& doc) {
     std::wstring text;
@@ -5558,10 +5400,9 @@ bool IniFlush(const std::wstring& path, const IniDoc& doc) {
 }
 
 } // namespace
-
 // 三个取值函数共用的查找：定位到 key 的原文，找不到返回 nullptr。
 //
-// 【这三个函数原来各自写了 7 行一模一样的查找】
+// 这三个函数原来各自写了 7 行一模一样的查找
 // 差别只在最后一步"把字符串转成什么"。转类型的逻辑各自保留，
 // 但"文档 -> section -> key"这段走同一份，加缓存/改匹配规则只改一处。
 static const std::wstring* FindIniRaw(const std::wstring& path, const wchar_t* sec,
@@ -5573,24 +5414,21 @@ static const std::wstring* FindIniRaw(const std::wstring& path, const wchar_t* s
         if (s->kv[i].key == key) return &s->kv[i].val;
     return nullptr;
 }
-
-// ============================================================
-// 【素材语义角色】——【代码不认识任何素材名】
+// 素材语义角色——代码不认识任何素材名
 //
 // 之前所有"这个词对应哪张脸 / 哪个背景"都硬编码在代码里：
-//   kRule(情绪规则) / kEmotionAlias(英文别名) / kCnEmotionAlias(中文别名)
-//   / kStrongNeg(强负面) / kPrefs(主题曲) / 教室·开场背景关键词 / 默认表情 …
+// kRule(情绪规则) / kEmotionAlias(英文别名) / kCnEmotionAlias(中文别名)
+// / kStrongNeg(强负面) / kPrefs(主题曲) / 教室·开场背景关键词 / 默认表情 …
 // 那是"人物包可更换"的死敌：素材名写在代码里，换一个角色包就全废，
-// 而且【不报错】——日志上完全看不出来，只能等玩家发现"怎么老换错脸"。
+// 而且不报错——日志上完全看不出来，只能等玩家发现"怎么老换错脸"。
 //
 // 现在全部搬到 char.ini 的 [AssetRole]，代码只做"读配置 + 按片段匹配"：
-//   讲课 / 教室 / 开场 / 避开 / 默认表情 / 主题 / 上课曲 = 名字片段，| 分隔
-//   别名.<词> = 候选1|候选2       模型写了清单外的词时的兜底
-//   情绪.<台词词> = <期望片段>|<权重>
+// 讲课 / 教室 / 开场 / 避开 / 默认表情 / 主题 / 上课曲 = 名字片段，| 分隔
+// 别名.<词> = 候选1|候选2 模型写了清单外的词时的兜底
+// 情绪.<台词词> = <期望片段>|<权重>
 //
-// 【铁律】留空 / 不配 = 不做该限制。程序绝不猜一个默认素材名——
-//   不限制只是少一层约束；猜错是直接换错脸，代价大得多。
-// ============================================================
+// 铁律留空 / 不配 = 不做该限制。程序绝不猜一个默认素材名
+// 不限制只是少一层约束；猜错是直接换错脸，代价大得多。
 struct AssetRole {
     std::vector<std::wstring> teachPose;   // 讲课用的表情
     std::vector<std::wstring> classBg;     // 教学段接受的地方（由 教学地点 指向的类别）
@@ -5641,14 +5479,14 @@ AssetRole AssetRoleParse(const std::wstring& iniPath) {
     AssetRole r;
     r.teachPose  = AssetRole::Split(IniGetStr(iniPath, L"AssetRole", L"讲课", L""));
     //
-    // ---- 【教学段限制在哪类地方：类别名本身可配置】
+    // ---- 教学段限制在哪类地方：类别名本身可配置
     //
-    // placeKey 是一个【类别名】，真正的关键词写在这个类别自己的行里
-    //   （比如「教室 = 课室|教室|课堂」）。
+    // placeKey 是一个类别名，真正的关键词写在这个类别自己的行里
+    // （比如「教室 = 课室|教室|课堂」）。
     // 换角色包只要改这一行的值：道场 / 实验室 / 咖啡馆…… 代码不认识任何具体名字，
     // 也不知道"教学应该在什么地方发生"——那是角色包作者该告诉它的事。
     //
-    // 【留空 = 该限制整体关闭】绝不猜一个默认类别。
+    // 留空 = 该限制整体关闭绝不猜一个默认类别。
     // 少一层约束只是没拦住；猜错是把整章锁死在错的地方，代价大得多。
     r.placeKey   = AssetRole::Trim(IniGetStr(iniPath, L"AssetRole", L"教学地点", L""));
     if (!r.placeKey.empty())
@@ -5663,12 +5501,12 @@ AssetRole AssetRoleParse(const std::wstring& iniPath) {
     r.themeBgm   = AssetRole::Split(IniGetStr(iniPath, L"AssetRole", L"主题", L""));
     r.defaultPose= IniGetStr(iniPath, L"AssetRole", L"默认表情", L"");
     //
-    // ---- 【上课曲】上课这段该放哪首 ----
+    // ---- 上课曲上课这段该放哪首
     //
-    // 【为什么要可配】作者删掉某首曲子（比如那段旋律不对味）之后，
+    // 为什么要可配作者删掉某首曲子（比如那段旋律不对味）之后，
     // 清单里就没有它了，可模型不知道该换哪首——它只会照着注解猜。
-    // 作者在这里写片段，代码按片段在【当前清单】里找，找到才提。
-    // 【留空 = 不提】换包后这一行指向不存在的曲子时，只是少一句建议。
+    // 作者在这里写片段，代码按片段在当前清单里找，找到才提。
+    // 留空 = 不提换包后这一行指向不存在的曲子时，只是少一句建议。
     r.lessonBgm  = AssetRole::Split(IniGetStr(iniPath, L"AssetRole", L"上课曲", L""));
 
     std::vector<std::wstring> keys = IniEnumKeys(iniPath, L"AssetRole");
@@ -5769,11 +5607,10 @@ bool IniHasKey(const std::wstring& path, const wchar_t* sec, const wchar_t* key)
         if (s->kv[i].key == key) return true;
     return false;
 }
-
 // 删掉一个键。
 //
-// 剧本编辑里"把选项从 4 个减到 3 个"必须真的删掉 Opt4——
-// 只把值清空不行：Opt 是【读空即停】的，留着一个空 Opt4 会让第 5 个选项
+// 剧本编辑里"把选项从 4 个减到 3 个"必须真的删掉 Opt4
+// 只把值清空不行：Opt 是读空即停的，留着一个空 Opt4 会让第 5 个选项
 // （如果还有）永远读不到；而只改前面的又会留下一个幽灵选项。
 bool IniDelKey(const std::wstring& path, const wchar_t* sec, const wchar_t* key) {
     IniDoc& doc = IniLoad(path);
@@ -5787,11 +5624,10 @@ bool IniDelKey(const std::wstring& path, const wchar_t* sec, const wchar_t* key)
     }
     return false;
 }
-
 // 删掉一整个段。
 //
 // 删章节用：章节段名是连续数字（[1] [2] [3]…），
-// 删掉中间一章之后，后面所有章要整体前移，最后多出来的那个段得真的删掉——
+// 删掉中间一章之后，后面所有章要整体前移，最后多出来的那个段得真的删掉
 // 留着它，[Course] Chapters 减了 1，文件里却还躺着一整章，
 // 下次加载会读到"第 N 章没写 Name"这种莫名其妙的错。
 bool IniDelSec(const std::wstring& path, const std::wstring& name) {
@@ -5929,9 +5765,9 @@ std::wstring PathStem(const std::wstring& path) {
     size_t dot = f.rfind(L'.');
     if (dot != std::wstring::npos && dot > 0) f.erase(dot);
     //
-    // ---- 【首尾空白必须清掉】
+    // ---- 首尾空白必须清掉
     //
-    // 【实测白名单里出现过「思考 」，就是这个没清】
+    // 实测白名单里出现过「思考 」，就是这个没清
     // 资源管理器里重命名时不小心留了个空格，文件名成了「思考 .png」，
     // 于是素材名带着一个尾随空格进白名单，prompt 里列的也是「思考 」。
     // 而模型照着语义填的是「思考」——一个字符之差，精确匹配失败，
@@ -6038,13 +5874,8 @@ void Dbg(const wchar_t* fmt, ...) {
     // _vsnwprintf_s(buf, 1024, _TRUNCATE, fmt, ap); va_end(ap);
     // OutputDebugStringW(L"[CK] "); OutputDebugStringW(buf); OutputDebugStringW(L"\n");
 }
-
-// ============================================================================
-//  模块：角色库 —— 加载 / 语气变换 / 人设 prompt
-
-// ============================================================================
-//  小工具
-// ============================================================================
+// 模块：角色库 —— 加载 / 语气变换 / 人设 prompt
+// 小工具
 namespace {
 
 // 解析 RRGGBB / #RRGGBB 十六进制颜色。失败返回 def。
@@ -6059,13 +5890,12 @@ Gdiplus::ARGB ParseHex(const std::wstring& s, Gdiplus::ARGB def) {
     unsigned long v = wcstoul(t.c_str(), nullptr, 16);
     return (Gdiplus::ARGB)(0xFF000000u | v);
 }
-
-// 替换自称 / 对称，但要跳过"我们""我的""你们""你的"这类词。
+// 替换自称 / 对称，但要跳过"
 //
-//  中文里"我""你"经常是词的一部分，无脑全量替换会产出"人家们""你这家伙们"
-//  这种鬼东西——这是汉化 Galgame 里自称替换最常见的坑，不处理的话
-//  角色每说一句"我们"就会出戏一次。
-//  做法是：代词后面紧跟某些字时，认定它是一个词，整体不动。
+// 中文里"
+// 这种鬼东西
+// 角色每说一句"
+// 做法是：代词后面紧跟某些字时，认定它是一个词，整体不动。
 void ReplacePronoun(std::wstring& s, wchar_t target, const std::wstring& to) {
     if (to.empty() || to == std::wstring(1, target)) return;
     // 们 的 自 己 家 俩 两 —— 跟在代词后面基本都是成词的
@@ -6117,23 +5947,23 @@ static std::vector<std::wstring> ListSpriteFiles(const CharDef& d);   // 定义�
 
 static void ScanOutfitsFromDisk(CharDef& d) {
     //
-    // =====【服装机制已移除】=====
+    // =====服装机制已移除=====
     //
     // ★ 原作者决定去掉"换装"这个维度，理由很实在：
-    //   1) 原作里同一个背景、同一章可能穿过很多套衣服，模型很难做到按场景
-    //      灵活切换——它要么永远不换，要么换错；
-    //   2) 不换装游戏也已经完备，服装带来的收益远小于它带来的复杂度。
+    // 1) 原作里同一个背景、同一章可能穿过很多套衣服，模型很难做到按场景
+    // 灵活切换——它要么永远不换，要么换错；
+    // 2) 不换装游戏也已经完备，服装带来的收益远小于它带来的复杂度。
     //
-    // ★ 做法是【封掉入口】而不是删光代码：服装和立绘在底层是缠在一起的——
-    //   造型名 pose 是「服装_表情」整段，文件名拆分、真值表、降级链全都建在
-    //   这个结构上。硬删这 200 多处，最先崩的是【立绘选择】——那不是服装，
-    //   是画面本身。这里只让服装恒为"零套"：outfitOrder 为空 = 没有这个维度，
-    //   下游所有分支都已有处理好的"无服装分化"路径（文件名里的就是表情名，
-    //   不按下划线切）。表现上等于服装不存在，且不留死代码。
+    // ★ 做法是封掉入口而不是删光代码：服装和立绘在底层是缠在一起的
+    // 造型名 pose 是「服装_表情」整段，文件名拆分、真值表、降级链全都建在
+    // 这个结构上。硬删这 200 多处，最先崩的是立绘选择——那不是服装，
+    // 是画面本身。这里只让服装恒为"零套"：outfitOrder 为空 = 没有这个维度，
+    // 下游所有分支都已有处理好的"无服装分化"路径（文件名里的就是表情名，
+    // 不按下划线切）。表现上等于服装不存在，且不留死代码。
     //
-    // ★ 唯一要主动处理的是【子目录】：表情扫描只在有服装时才进子目录，
-    //   所以禁掉服装之后 sprite\子目录\ 这种目录里的图会【静默消失】——
-    //   不报错、界面上只是"少了几张脸"。必须明确告诉作者，不能让他自己撞。
+    // ★ 唯一要主动处理的是子目录：表情扫描只在有服装时才进子目录，
+    // 所以禁掉服装之后 sprite\子目录\ 这种目录里的图会静默消失
+    // 不报错、界面上只是"少了几张脸"。必须明确告诉作者，不能让他自己撞。
     if (!d.spriteDir.empty()) {
         std::vector<std::wstring> subs = ListOutfitSubdirs(d);
         if (!subs.empty()) {
@@ -6149,22 +5979,21 @@ static void ScanOutfitsFromDisk(CharDef& d) {
     }
     ScanFacesFromDisk(d);
 }
-
 // ---------------------------------------------------------------- 表情扫描
 //
 // ★ 表情也扫目录，不写死四档（平静/开心/疑惑/惊吓）：四档是当初为避免素材量
-//   爆炸定的上限，但作者实际画了什么表情，代码不该替他决定。
+// 爆炸定的上限，但作者实际画了什么表情，代码不该替他决定。
 //
 // 目录里存在"不带角色名前缀"的立绘吗？
-// 判据：png 文件名【既不】以 key_ 开头、【又不是】key 本身。
+// 判据：png 文件名既不以 key_ 开头、又不是key 本身。
 // 只统计图片，_放这里.txt 这类说明文件按扩展名就滤掉了。
 //
 // ★ 不能反过来用"存在带前缀的"来否决——同一个包里两种命名混用是完全可能的
-//   （先放了三张正式的，后来补图偷懒没写前缀），那就全都认，
-//   别让作者为了迁就程序去改名。
+// （先放了三张正式的，后来补图偷懒没写前缀），那就全都认，
+// 别让作者为了迁就程序去改名。
 //
 // 扫 sprite 目录里所有图片。
-// ★ 原来这三个扫描函数各抄了一份（共 3 处）。
+// ★
 // 大小写后缀都扫一遍，同一个文件会出现两次，但调用方都用 set 去重。
 static std::vector<std::wstring> ListSpriteFiles(const CharDef& d) {
     const wchar_t* exts[] = { L".png", L".jpg", L".jpeg", L".bmp",
@@ -6177,15 +6006,14 @@ static std::vector<std::wstring> ListSpriteFiles(const CharDef& d) {
     }
     return files;
 }
-
 // ---- 服装子目录：sprite\校服\害羞.png
 //
-// 【为什么还要支持这一种写法】
+// 为什么还要支持这一种写法
 // 一个角色四套衣服 × 十几张表情 = 几十个文件，全平铺在一个目录里，
 // 命名全靠 校服_害羞 这种前缀，作者自己都难核对哪一套缺了哪张脸。
 // 按服装分子目录是最自然的整理方式，而且一眼能看出哪套没画全。
 //
-// 只认【直接子目录】，不递归：再深一层就不是服装这层语义了。
+// 只认直接子目录，不递归：再深一层就不是服装这层语义了。
 // 下划线开头的目录是内部用的（_模板 之类），不算服装。
 static std::vector<std::wstring> ListOutfitSubdirs(const CharDef& d) {
     std::vector<std::wstring> out;
@@ -6234,8 +6062,7 @@ static void ScanFacesFromDisk(CharDef& d) {
 
     const std::wstring prefix = key + L"_";
     std::set<std::wstring> found;
-
-    // 服装名按【长度降序】尝试匹配。
+    // 服装名按长度降序尝试匹配。
     //
     // 角色A_校服_冬_平静.png：服装可能是"校服"也可能是"校服_冬"。
     // 先试短的会得到表情"冬_平静"——错的。
@@ -6243,19 +6070,16 @@ static void ScanFacesFromDisk(CharDef& d) {
     std::vector<std::wstring> outfits(d.outfitOrder.begin(), d.outfitOrder.end());
     std::sort(outfits.begin(), outfits.end(),
               [](const std::wstring& a, const std::wstring& b) { return a.size() > b.size(); });
-
-    // 先探一次：这个角色包里有没有【不带角色名前缀】的立绘？
+    // 先探一次：这个角色包里有没有不带角色名前缀的立绘？
     //
     // 一个角色一个目录时，最自然的命名就是直接写表情名：
-    //   sprite/平静.png、sprite/生气.png
+    // sprite/平静.png、sprite/生气.png
     // 而不是 sprite/角色A_平静.png —— 目录已经说明是谁了，前缀是多余的。
-    // 原来的扫描只认 `key_` 开头的文件名，于是这种素材一张都扫不出来，
     // 表现是"选角界面没有表情预览、游戏里一直是同一张图"，
     // 而作者对着一堆命名正常的 png 完全想不通哪里错了。
     //
     // 两种命名都支持：带前缀的照旧，不带前缀的也收。
     const bool hasNoPrefix = HasBareSprite(files, key);
-
     // ---- 子目录形式的服装：目录里每个文件名就是一个表情
     //
     // sprite\校服\害羞.png → 服装「校服」有表情「害羞」。
@@ -6313,14 +6137,13 @@ static void ScanFacesFromDisk(CharDef& d) {
             break;
         }
         if (matched) continue;
-
-        // 没匹配上任何服装：rest 可能是【无服装分化的表情】
+        // 没匹配上任何服装：rest 可能是无服装分化的表情
         // （角色A_平静.png 这种，角色只有一套衣服因此文件名里没写服装）。
         //
-        // 【这个角色根本没有服装分化时，不要再拿下划线做判断】
+        // 这个角色根本没有服装分化时，不要再拿下划线做判断
         // 原写法要求 rest 不含下划线才敢收，理由是"含下划线又匹配不上
         // 服装，说明是没见过的组合，不敢猜"。
-        // 但 outfitOrder 为空意味着【没有服装这个维度】——
+        // 但 outfitOrder 为空意味着没有服装这个维度
         // 此时文件名里的下划线只是表情名的一部分（害羞_眼神躲闪），
         // 不是分隔符。再按"不敢猜"跳过，作者画的表情就凭空少了一个，
         // 表现是"清单里没有这张脸，她永远选不到"。
@@ -6338,15 +6161,13 @@ static void ScanFacesFromDisk(CharDef& d) {
             if (!isOutfit) found.insert(rest);
         }
     }
-
-    // ---- 【"伪服装清理"这一步已经删掉】
+    // ---- "伪服装清理"这一步已经删掉
     //
     // 它原来用来清理"校服_害羞"这种被表情误判出来的假衣服。
     // 服装改成只认子目录之后，服装名就是目录名，不存在误判，
-    // 这一步留着只会【误伤合法服装】：目录叫「制服_冬」而表情里有「冬」时，
+    // 这一步留着只会误伤合法服装：目录叫「制服_冬」而表情里有「冬」时，
     // 判据 EndsWith("制服_冬", "_冬") 成立 → 一套真衣服被当成假的删掉。
     // 表现是"这套衣服突然不见了"，而且不报错。
-
     std::vector<std::wstring> sorted(found.begin(), found.end());
     std::sort(sorted.begin(), sorted.end());
     d.faceOrder = sorted;
@@ -6357,19 +6178,18 @@ static void ScanFacesFromDisk(CharDef& d) {
     // 但放在这里能保证扫描顺序就是依赖顺序，以后加逻辑不容易搞反）。
     ScanPosesFromDisk(d);
 }
-
 // ---------------------------------------------------------------- 造型扫描
 //
-// 【为什么不再拆服装 / 表情两个维度】
+// 为什么不再拆服装 / 表情两个维度
 // 立绘是"一套衣服 × 一种表情"一张图画的。4 套 × 4 组 = 16 张。
 // 拆成两个独立维度去组合，会组合出没画的那张（校服 + 害羞 可能根本不存在），
-// 然后降级链悄悄退回平静脸——模型以为选对了，玩家看到的是错的，
-// 而且日志里一切正常，极难排查。
+// 然后降级链悄悄退回平静脸——模型以为选对了，
+// 而且运行时一切正常，极难排查。
 //
-// 所以不拆：文件名里 key_ 之后那一整段就是【造型名】，原样交给模型。
-//   角色A_校服_平静.png → 造型「校服_平静」
-//   角色B_私服_害羞.png → 造型「私服_害羞」
-//   遥_平静.png        → 造型「平静」（只有一套衣服时不写服装）
+// 所以不拆：文件名里 key_ 之后那一整段就是造型名，原样交给模型。
+// 角色A_校服_平静.png → 造型「校服_平静」
+// 角色B_私服_害羞.png → 造型「私服_害羞」
+// 遥_平静.png → 造型「平静」（只有一套衣服时不写服装）
 // 模型选到的必然是真实存在的那张图。
 static void ScanPosesFromDisk(CharDef& d) {
     const std::wstring key = d.SpriteKey();
@@ -6382,12 +6202,10 @@ static void ScanPosesFromDisk(CharDef& d) {
     // 有就两种命名都认，别让作者为了迁就程序去批量改名。
     const bool hasNoPrefix = HasBareSprite(files, key);
     std::set<std::wstring> found;
-
-    // ---- 子目录里的服装：造型名是【服装_表情】
+    // ---- 子目录里的服装：造型名是服装_表情
     //
-    // 【原来这一段完全没有，子目录服装因此是残的】
     // ScanOutfitsFromDisk 认得出 sprite\校服\ 是一套衣服，
-    // 但造型清单只扫平铺文件，于是「校服_平静」从来没进过 poseOrder——
+    // 但造型清单只扫平铺文件，于是「校服_平静」从来没进过 poseOrder
     // 结果是：选装界面能看到这套衣服，模型却永远选不到它，
     // 而 HasPose / DefaultPose / 白名单校验全都查 poseOrder，一路落空。
     // 不报错、界面也不空，就是"加了服装没反应"。
@@ -6434,7 +6252,6 @@ static void ScanPosesFromDisk(CharDef& d) {
     if (!sorted.empty())
         Dbg(L"角色 %s 自动发现 %d 个造型", d.id.c_str(), (int)sorted.size());
 }
-
 // 见 CharBank 里的声明。三个扫描函数都已经在上面定义完，这里能直接调。
 //
 // 顺序跟 LoadOne 里保持一致：先服装、再表情、最后造型。
@@ -6460,7 +6277,7 @@ CharDef MakeDefaultChar() {
     d.chKey = L"hime";
     d.desc = L"默认角色。放一个 ini 进 assets/char/ 就能换人。";
     //
-    // 【这里是人设标签，不是立绘名】
+    // 这里是人设标签，不是立绘名
     // 之前误写成从 AssetRole 读「默认表情」——那是立绘清单里的名字，
     // 会被当成"角色性格"显示在选角界面，还会写进 persona.trait。
     // 默认角色没有 ini 可读，直接给字面量。
@@ -6480,18 +6297,14 @@ CharDef MakeDefaultChar() {
         L"不要长篇大论，每次说话控制在三句以内。";
     return d;
 }
-
-// ============================================================================
-//  角色库
-// ============================================================================
-
-// 读 prompt.txt（【兼容路径，新包不要再用】）。
+// 角色库
+// 读 prompt.txt（兼容路径，新包不要再用）。
 //
-//  以前人设塞不进 ini（解析器不支持多行），只好单独成文件。现在 ini 支持
-//  续行了（见 IniLoad 里"行首一个空格"那条规则），人设统一写在 [Prompt] 段，
-//  角色卡能直接编辑，换包也只搬一个文件。
+// 早期版本人设塞不进 ini（解析器不支持多行），只好单独成文件。现在 ini 支持
+// 续行了（见 IniLoad 里"行首一个空格"那条规则），人设统一写在 [Prompt] 段，
+// 角色卡能直接编辑，换包也只搬一个文件。
 //
-//  这里只为了老角色包还能跑：包里只有 txt、没有 [Prompt] 时才用得上。
+// 这里只为了老角色包还能跑：包里只有 txt、没有 [Prompt] 时才用得上。
 static bool ReadPromptFile(const std::wstring& packDir, std::wstring& out) {
     if (packDir.empty()) return false;
     // 两种文件名都认：prompt.txt 是主推的，system.txt 是给习惯旧写法的人留的
@@ -6538,18 +6351,15 @@ static std::wstring FindNamedArt(const std::wstring& packDir, const std::wstring
     }
     return L"";
 }
-
 // 解析一个角色包（或一个散装 ini）。
 // packDir 非空表示"打包角色"：立绘路径会变成绝对路径，prompt 从 txt 读。
 // 返回 false 表示这个文件不是有效角色（跳过，不报错）。
-// ============================================================================
-//  服装自动发现
-// ============================================================================
-//  文件名是【角色_服装_表情】（角色A_校服_平静.png）。
-//  认服装的办法：把表情那一段认出来并剥掉，剩下的就是服装。
+// 服装自动发现
+// 文件名是角色_服装_表情（角色A_校服_平静.png）。
+// 认服装的办法：把表情那一段认出来并剥掉，剩下的就是服装。
 //
-//  之所以要"剥表情"而不是直接取中间段，是因为服装名本身可能带下划线
-//  （角色A_体操服_冬_平静.png），固定取第几段会错。从尾部匹配表情集合更稳。
+// 之所以要"剥表情"而不是直接取中间段，是因为服装名本身可能带下划线
+// （角色A_体操服_冬_平静.png），固定取第几段会错。从尾部匹配表情集合更稳。
 static void ScanOutfitsFromDisk(CharDef& d);
 
 bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir) {
@@ -6580,10 +6390,9 @@ bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir)
         unsigned r = (d.theme >> 16) & 0xFF, g = (d.theme >> 8) & 0xFF, b = d.theme & 0xFF;
         d.themeSoft = Gdiplus::Color::MakeARGB(90, r, g, b);
     }
-
     // ---- 玩家身份（续集设定，全部可选）
     //
-    // 没写就是"不限制"：沿用设置里那个旧名字，再没有就退回「你」。
+    // 没写就是"不限制"：沿用设置里那个旧名字，再没有就退回「
     // 绝不猜——换了个没配 [Player] 的角色包，不该凭空冒出一个男主名。
     d.playerName     = IniGetStr(iniPath, L"Player", L"Name", L"");
     d.playerRelation = IniGetStr(iniPath, L"Player", L"Relation", L"");
@@ -6619,7 +6428,7 @@ bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir)
     // ---- 选角卡面：卡片上显示的那张立绘
     //
     // Card 是新名字，Portrait 是旧名字，两个都认（老角色包不用改）。
-    // 留空 = 用该角色的【默认造型】（从立绘文件名扫出来的那张），
+    // 留空 = 用该角色的默认造型（从立绘文件名扫出来的那张），
     // 所以只画了 平静.png 的角色也能显示脸，不必专门为选角再画一张。
     d.portrait = IniGetStr(iniPath, L"Sprite", L"Card", L"");
     if (d.portrait.empty()) d.portrait = IniGetStr(iniPath, L"Sprite", L"Portrait", L"");
@@ -6652,15 +6461,13 @@ bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir)
         if (!d.portrait.empty() && d.portrait.find(L':') == std::wstring::npos)
             d.portrait = PathJoin(packDir, d.portrait);
     }
-
 // 在角色包里找标题插画：文件名含"标题"/"title"/"art"的那张。
 //
-// 找不到返回空（调用方会退回立绘）。刻意只认这三个词——
+// 找不到返回空（调用方会退回立绘）。刻意只认这三个词
 // 放宽到"任何一张大图"的话，很容易挑中立绘本体，标题页就变成半身像了。
-
     // ---- 标题插画（主页右侧大图）
     //
-    // 【Art 留空时自动找，不再必须写死一个文件名】
+    // Art 留空时自动找，不再必须写死一个文件名
     // 跟立绘 / 背景一样走扫描：包里如果有叫"标题"的图就用它。
     // 作者不用去猜配置文件里该填什么名字——画了、名叫标题，就能用。
     // 找不到才由 UI 层退回立绘（见 Renderer::TitleArt）。
@@ -6727,7 +6534,6 @@ bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir)
             if (!val.empty()) d.bgmMap[keys[k]] = val;
         }
     }
-
     // ---- 素材情绪标注（可选）
     //
     // 作者可以在这里写"这首曲子/这张图是什么感觉"，模型才有判断依据。
@@ -6739,12 +6545,11 @@ bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir)
             if (!val.empty()) d.assetMood[keys[k]] = val;
         }
     }
-
     // ---- 服装（已移除：字段保留只为兼容老存档）
     //
-    // 【这一段已停用】服装机制已移除，详见 ScanOutfitsFromDisk 的说明。
+    // 这一段已停用服装机制已移除，详见 ScanOutfitsFromDisk 的说明。
     //
-    // 这里【故意不读】ini 的 [Outfit] 段。不是"读了不用"，是根本不读——
+    // 这里故意不读ini 的 [Outfit] 段。不是"读了不用"，是根本不读
     // 一旦读进来，服装就又变成一个可切换的维度：清单会发给模型、
     // 模型要为"该穿哪套"分心，而它本来也做不到按场景灵活切换。
     //
@@ -6752,7 +6557,7 @@ bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir)
     // 不读就等于没写，不报错，也不影响同文件里的其他段。
     // 想彻底清理的话把那一段删掉即可，留着也行。
     //
-    // ScanOutfitsFromDisk 仍然要调用——它现在只负责扫【表情】，
+    // ScanOutfitsFromDisk 仍然要调用——它现在只负责扫表情，
     // 内部已经不再收集任何服装。
     ScanOutfitsFromDisk(d);
 
@@ -6762,14 +6567,13 @@ bool CharBank::LoadOne(const std::wstring& iniPath, const std::wstring& packDir)
         std::wstring val = IniGetStr(iniPath, L"Emote", emKeys[k].c_str(), L"");
         if (!val.empty()) d.emoteMap[emKeys[k]] = val;
     }
-
     // ---- 人设 prompt：ini 的 [Prompt] 段是唯一正源，prompt.txt 只作兼容
     //
-    // 【为什么合并】两份身份设定（txt + ini）功能高度雷同：
+    // 为什么合并两份身份设定（txt + ini）功能高度雷同：
     // 代码上要维护两条读取路径，模型上要同时读两份互相打架的性格描述。
     // 合并后人设全在 char.ini，角色卡能直接编辑，换包也只搬一个文件。
     //
-    // txt 那条路留着是为了老角色包还能跑，不是推荐写法——
+    // txt 那条路留着是为了老角色包还能跑，不是推荐写法
     // 新包请写在 [Prompt] 里。
     d.systemTpl   = IniGetStr(iniPath, L"Prompt", L"System", L"");
     d.sampleLines = IniGetStr(iniPath, L"Prompt", L"Sample", L"");
@@ -6889,10 +6693,10 @@ bool CharBank::Unhide(const std::wstring& id) {
 std::vector<const CharDef*> CharBank::Selectable() const {
     std::vector<const CharDef*> out;
     //
-    // ---- 【角色特化剧本锁死角色】
-    //  选了「角色B特化」的剧情剧本，可选角色就只剩角色B一个。
-    //  放在这一处过滤，13 个调用点（选角页、角色卡、读档兜底、统计……）
-    //  全部一致，不会出现"列表里没了但还能点中"。
+    // ---- 角色特化剧本锁死角色
+    // 选了「角色B特化」的剧情剧本，可选角色就只剩角色B一个。
+    // 放在这一处过滤，13 个调用点（选角页、角色卡、读档兜底、统计……）
+    // 全部一致，不会出现"列表里没了但还能点中"。
     const std::wstring& lock = g_app.storyLockedChar;
     for (size_t i = 0; i < list_.size(); ++i) {
         if (!list_[i].selectable) continue;
@@ -6902,15 +6706,14 @@ std::vector<const CharDef*> CharBank::Selectable() const {
     }
     return out;
 }
-
 //
 // 已解绑的角色。用于在角色卡页把它们列出来——文件还在，点一下就能绑回来。
 //
-// 【为什么必须用 list_ 而不是 hidden_ 直接显示】
-//  hidden_ 只是 id 名单。包可能已经被手动从 assets 里删了，
-//  那时 id 还在名单里，而对应的目录早没了——照着名单显示一个不存在的角色，
-//  点"重新绑定"就会得到一个空的角色卡，而且不报错。
-//  所以只列【扫得到、且被解绑】的那些；扫不到的（真删了）顺手从名单里清掉。
+// 为什么必须用 list_ 而不是 hidden_ 直接显示
+// hidden_ 只是 id 名单。包可能已经被手动从 assets 里删了，
+// 那时 id 还在名单里，而对应的目录早没了——照着名单显示一个不存在的角色，
+// 点"重新绑定"就会得到一个空的角色卡，而且不报错。
+// 所以只列扫得到、且被解绑的那些；扫不到的（真删了）顺手从名单里清掉。
 std::vector<const CharDef*> CharBank::Unbound() const {
     std::vector<const CharDef*> out;
     for (size_t i = 0; i < list_.size(); ++i)
@@ -7031,9 +6834,9 @@ bool CharDef::OutfitHasDir(const std::wstring& outfit) const {
 std::wstring CharDef::OutfitForBg(const std::wstring& bg) const {
     if (bg.empty() || bgOutfit.empty()) return L"";
     //
-    // 【最长片段优先，不是"先配先赢"】
+    // 最长片段优先，不是"先配先赢"
     // 同时配了「咖啡馆」和「咖啡馆_夜晚」时，后者更长更具体，必须赢。
-    // 按 ini 的书写顺序取的话，结果取决于作者先写哪一行——
+    // 按 ini 的书写顺序取的话，结果取决于作者先写哪一行
     // 那不是规则，是巧合，改一次配置行为就变了。
     std::wstring best;
     size_t bestLen = 0;
@@ -7113,21 +6916,18 @@ std::wstring ApplyTone(const std::wstring& text, const CharDef& def, const std::
     (void)emote;
     return s;
 }
-
-// ============================================================================
-//  人设 prompt
-// ============================================================================
+// 人设 prompt
 // 读 char.ini 的 [Memory] 段。
 //
-// 序号键（在意.N / 记得.N / 雷区.N）【按 1,2,3… 循环读，读空就停】，
+// 序号键（在意.N / 记得.N / 雷区.N）按 1,2,3… 循环读，读空就停，
 // 不用 IniEnumKeys——那个不保证顺序，而"记得的小事"是有先后讲究的
-//（第一条最容易被她拿来用）。条数不限，作者删一条加一条都行。
+// （第一条最容易被她拿来用）。条数不限，作者删一条加一条都行。
 // 一条记忆是不是空的：全空白也算空。
 //
-// 【为什么改成"跳过空值继续读"，而不是沿用"遇空即停"】
+// 为什么改成"跳过空值继续读"，而不是沿用"遇空即停"
 // char.ini 里现在预置了一整排空槽（在意.4 ~ 在意.32 全是空的），
 // 作者的用法是"想往哪一条填就往哪一条填"。遇空即停的话，
-// 只要中间漏了一条，后面填了内容的那些会【一条都读不到】——
+// 只要中间漏了一条，后面填了内容的那些会一条都读不到
 // 不报错、不提示，就是这段记忆凭空少了几条，最难查的那类问题。
 // 跳过空值继续扫是原行为的严格超集：只会比原来多读到，不会少读。
 static bool MemValEmpty(const std::wstring& v) {
@@ -7170,12 +6970,10 @@ static CharMemory ParseCharMemory(const std::wstring& iniPath) {
     }
     return m;
 }
-
-// 玩家到底叫什么：角色包说了算，包没说就沿用旧配置，再没有退回「你」。
 //
-// 【为什么要留旧配置这一档】
-// 内置默认角色和老角色包都没写 [Player]。那种情况下不该让名字变成空——
-// 空名字会让她不知道该叫他什么。退回「你」比空着安全。
+// 为什么要留旧配置这一档
+// 内置默认角色和老角色包都没写 [Player]。那种情况下不该让名字变成空
+// 空名字会让她不知道该叫他什么。退回「
 std::wstring PlayerNameFor(const CharDef* cd, const std::wstring& fallback) {
     if (cd && !cd->playerName.empty()) return cd->playerName;
     if (!fallback.empty()) return fallback;
@@ -7192,13 +6990,13 @@ std::wstring BuildCharSystem(const CharDef& def, const std::wstring& playerName,
     if (!def.systemTpl.empty()) {
         s += def.systemTpl;
     } else {
-        // 【不要写死科目】这门课可以是编程，也可以是日语、高数、线代——
+        // 不要写死科目这门课可以是编程，也可以是日语、高数、线代
         // 写死「学编程」的话，换成别的课时她会莫名其妙地说自己在教编程。
         //
-        // 【不要写死句数】主请求要求 3~8 句、讲透；这里写「不超过三句」会
+        // 不要写死句数主请求要求 3~8 句、讲透；这里写「不超过三句」会
         // 跟它对着干，system 优先级更高，结果每一章都讲得像蜻蜓点水。
         //
-        // 这一步是【静默回退】：包没写 [Prompt] 时她会用这段通用人设开讲，
+        // 这一步是静默回退：包没写 [Prompt] 时她会用这段通用人设开讲，
         // 不报错、界面上也看不出来，只会觉得"她不像她"。所以要留一条日志。
         s += L"你是「" + def.DisplayName() + L"」，视觉小说里的一个角色，正在陪玩家一起上这门课。";
         if (!def.tag.empty()) s += L"你的性格标签是：" + def.tag + L"。";
@@ -7220,15 +7018,14 @@ std::wstring BuildCharSystem(const CharDef& def, const std::wstring& playerName,
     // 示例台词。给模型看三句"她会怎么说"，比写五百字性格描述有效得多——
     // 这是 prompt 工程里性价比最高的一个技巧。
     if (!def.sampleLines.empty()) s += L"\n\n你说的话应该像这些例子：\n" + def.sampleLines;
-
     // ---- 前世记忆
     //
-    // 【放在人设之后、玩家信息之前】它是"她是谁"的一部分，
-    // 排在【她对玩家的记忆】前面——先有自己的过去，才有跟他的关系。
+    // 放在人设之后、玩家信息之前它是"她是谁"的一部分，
+    // 排在她对玩家的记忆前面——先有自己的过去，才有跟他的关系。
     //
-    // 【为什么它能改善日常段】
+    // 为什么它能改善日常段
     // 抽象标签（小恶魔、爱开玩笑）只能生成类型化反应：被撩→脸红→嘴硬→否认。
-    // 具体记忆能生成【行为】：聊到吃的能接"我从小吃到大"，
+    // 具体记忆能生成行为：聊到吃的能接"
     // 被问起童年能讲一段自己的事——主动性是从"有东西可讲"长出来的，
     // 不是靠"每轮必须主动"这种禁令逼出来的。
     if (!def.memory.empty()) s += L"\n\n" + def.memory.ToPrompt();
@@ -7241,12 +7038,11 @@ std::wstring BuildCharSystem(const CharDef& def, const std::wstring& playerName,
     if (!recentPrompt.empty()) s += recentPrompt;
     if (!profilePrompt.empty()) s += L"\n\n玩家对各知识点的掌握情况：\n" + profilePrompt;
     if (!sceneHint.empty()) s += L"\n\n【当前情境】" + sceneHint;
-
-    // ---- 关系写在【最后】
+    // ---- 关系写在最后
     //
-    // 【原来它排在记忆/进度/情境之前，被好几段内容挡在后面】
-    // 模型对 system prompt 里【靠后】的指令服从度更高，
-    // 而这一段恰恰是最容易被"刚认识"这个通用套路挤掉的一条——
+    // 原来它排在记忆/进度/情境
+    // 模型对 system prompt 里靠后的指令服从度更高，
+    // 而这一段恰恰是最容易被"刚认识"这个通用套路挤掉的一条
     // 开场那句"聊聊为什么选这门课"本身就很像初次见面，
     // 关系声明离输出越远，她越容易顺着最熟的模板走。
     //
@@ -7254,23 +7050,21 @@ std::wstring BuildCharSystem(const CharDef& def, const std::wstring& playerName,
     // 包没写就不加这一句（留空 = 不声明，绝不猜）。
     if (!def.playerRelation.empty())
         s += L"\n\n【你们现在的关系】\n" + def.playerRelation;
-
     // ---- 关系状态：比"关系声明"还要靠后
     //
-    // 关系声明是包里写死的（"你们是恋人"），这一条是【她自己写下的内心状态】。
-    // 后者才是让五章下来有曲线的东西：角色A那条"别人都平等看我、
-    // 是我自己放不下"的自卑弧线，需要有地方能一笔一笔往前走。
+    // 关系声明是包里写死的（"
+    // 后者才是让五章下来有曲线的东西：角色A那条"别人都平等看
+    // 是
     //
     // 包里没写、或她还没写过（第一个章末之前），就不加这一段——绝不代她编。
     if (!bondPrompt.empty()) s += bondPrompt;
-
     //
-    // ---- 【强调不要用星号】
+    // ---- 强调不要用星号
     //
-    // 【这是"讲指针那一章满屏 ** 看得头晕"的根因】
+    // 这是"讲指针那一章满屏 ** 看得头晕"的根因
     // 模型习惯拿 Markdown 的 **…** 当强调。可星号在这几门课里本身是语法：
     // C 的 int *p 和 *p、Python 的 *args / **kwargs、乘方 2 ** 3。
-    // 台词里冷不丁冒出一对 **，玩家分不清那是强调还是代码——
+    // 台词里冷不丁冒出一对 **，玩家分不清那是强调还是代码
     // 正好在讲 * 的那一章尤其添堵。
     // 换成中文引号：它本来就是中文里的强调写法，也不跟任何语法撞车。
     s += L"\n\n【强调不要用星号】\n"
@@ -7308,16 +7102,15 @@ static bool BgFileExists(const std::wstring& pathNoExt) {
 //  可见资源扫描
 // ============================================================================
 namespace {
-
 // 从一批文件里剥出"资源名"。去重，输出稳定。
 //
-// ListFiles 返回的是【完整路径 + 扩展名】，比如
-//   C:\...\assets\bg\教室_黄昏.png
+// ListFiles 返回的是完整路径 + 扩展名，比如
+// C:\...\assets\bg\教室_黄昏.png
 // 而模型要的是"资源名"——就是剧本里 @bg 后面写的那种：教室_黄昏。
 // 所以目录前缀和扩展名都要剥掉。
 //
-// 只剥【最后一个】路径分隔符之后的部分，再用 rfind('.') 剥扩展名；
-// 顺序反了的话，"我的.照片.png" 这种带点的文件名会被切坏。
+// 只剥最后一个路径分隔符之后的部分，再用 rfind('.') 剥扩展名；
+// 顺序反了的话，"
 void CollectNames(const std::wstring& dir, const wchar_t* const* exts,
                   std::vector<std::wstring>& out) {
     for (int i = 0; exts[i]; ++i) {
@@ -7450,11 +7243,10 @@ std::wstring VisibleAssets::PoseListExcluding(const std::vector<std::wstring>& b
     if (o.empty()) return PoseList();
     return o;
 }
-
 //
 // 背景 / 音乐的"带禁用"清单。
 //
-// 【为什么背景和音乐也需要禁用】
+// 为什么背景和音乐也需要禁用
 // 实测日志：整局 8 轮 bg 全程「上课期间的课室」、bgm 全程同一首。
 // 跟表情锁死是同一个成因——prompt 里给了"想保持不变就照抄"的出口，
 // 照抄最省 token，她永远抄。
@@ -7499,10 +7291,9 @@ std::wstring NormalizeAssetName(const std::wstring& n) {
     // 2. 剥目录前缀（两种分隔符都认）
     size_t slash = s.find_last_of(L"\\/");
     if (slash != std::wstring::npos) s = s.substr(slash + 1);
-
     // 3. 剥掉括号里的说明。
     //
-    // 【这是给清单加氛围标注之后必然出现的新情况】
+    // 这是给清单加氛围标注之后必然出现的新情况
     // 清单写成 "神社（户外黄昏，安静）"，模型很自然会把整串抄回来当值。
     // 拿去比对清单里的 "神社" 必然落空 → 当成瞎编拒绝 → 画面不变。
     // 加了标注反而让她"更不会换场景"，这比不加还糟。
@@ -7535,7 +7326,6 @@ VisibleAssets ScanVisibleAssets(const CharDef* def, const std::wstring& assetDir
     static const wchar_t* const kWavExts[] = { L".wav", nullptr };
 
     const bool isPack = (def != nullptr && !def->packDir.empty());
-
     // ---- 背景
     //
     // 顺序是"角色包自己的优先，通用的兜底"，跟 ResolveBgFor 的解析顺序一致。
@@ -7546,13 +7336,12 @@ VisibleAssets ScanVisibleAssets(const CharDef* def, const std::wstring& assetDir
         CollectNames(abs, kImgExts, v.bg);
     }
     CollectNames(PathJoin(assetDir, L"bg"), kImgExts, v.bg);
-
     // ---- BGM
     //
-    // 【主页曲必须从清单里剔除】
-    // 主页曲是写死的（[Bgm] Title），不该被大模型换掉——
+    // 主页曲必须从清单里剔除
+    // 主页曲是写死的（[Bgm] Title），不该被大模型换掉
     // 它是"标题画面"的声音，出现在剧情里会非常出戏。
-    // 剔除的方式是【从扫描结果里删掉它】，而不是"告诉模型别选"：
+    // 剔除的方式是从扫描结果里删掉它，而不是"告诉模型别选"：
     // 光靠 prompt 约束，模型偶尔还是会填，而校验层不知情就放行了。
     // 不在清单里 → HasBgm 返回 false → 就算它填了也被忽略。
     if (def) {
@@ -7562,15 +7351,15 @@ VisibleAssets ScanVisibleAssets(const CharDef* def, const std::wstring& assetDir
     }
     CollectNames(PathJoin(assetDir, L"bgm"), kWavExts, v.bgm);
     {
-        // 【只剔除 [Bgm] Title 本身，不剔除 Default】
+        // 只剔除 [Bgm] Title 本身，不剔除 Default
         //
         // 容易写成"Title 留空就剔除 Default"，理由是主页曲确实
-        // 会退回 Default。但那是错的理解：Default 的身份是【游戏内主题曲】，
+        // 会退回 Default。但那是错的理解：Default 的身份是游戏内主题曲，
         // Title 留空只意味着"标题页借用了它"，不代表它变成主页曲。
-        // 按那种写法，只配了一首曲子的角色会被剔成空清单——
+        // 按那种写法，只配了一首曲子的角色会被剔成空清单
         // 模型一首都选不到，等于把刚放开的功能又关掉了。
         //
-        // 所以只有【明确配了 Title】才剔除它。Title 留空时清单完整。
+        // 所以只有明确配了 Title才剔除它。Title 留空时清单完整。
         std::wstring tn = def ? def->bgmTitle : std::wstring();
         // 通用的"主页"兜底曲同样排除（ResolveTitleBgmFor 也认这个名字）。
         std::vector<std::wstring> keep;
@@ -7581,11 +7370,10 @@ VisibleAssets ScanVisibleAssets(const CharDef* def, const std::wstring& assetDir
         }
         v.bgm = keep;
     }
-
     // ---- 服装 / 表情：复用已有的自动发现结果
     //
     // 都是从立绘文件名里剥出来的（<角色>_<服装>_<表情>.png），
-    // 扫目录不如直接用 CharacterBank 已经算好的那份——
+    // 扫目录不如直接用 CharacterBank 已经算好的那份
     // 那份还处理了"表情后缀"和"口型 _o 后缀"的剥离，自己再扫一遍容易出错。
     //
     // 表情也一并交给模型：作者画了"害羞""得意"就都能用，
@@ -7598,17 +7386,17 @@ VisibleAssets ScanVisibleAssets(const CharDef* def, const std::wstring& assetDir
                 v.outfit.push_back(it->first);
         v.emote = def->faceOrder;
         //
-        // ---- 【造型名就是文件名，不再拆成"服装 × 表情"两个维度】
+        // ---- 造型名就是文件名，不再拆成"服装 × 表情"两个维度
         //
         // ★ 把整段名字（服装_表情）全塞进一个清单的后果有两个：
-        //   ① 清单长到模型根本读不完，它干脆一直挑最眼熟的那个；
-        //   ② "两轮必换脸"会连衣服一起换——她讲着讲着突然换了套衣服，
-        //      比"一直同一张脸"更出戏。
+        // ① 清单长到模型根本读不完，它干脆一直挑最眼熟的那个；
+        // ② "两轮必换脸"会连衣服一起换——她讲着讲着突然换了套衣服，
+        // 比"一直同一张脸"更出戏。
         // ★ 拆成 outfit + pose 由程序合成也不行：合成出「某服装 + 某表情」而这
-        //   张没画时，降级链会悄悄换成别的脸——模型以为选对了，玩家看到的是错的，
-        //   而且日志里一切正常。现在造型名本身就是整段，选到就有图，不再合成。
+        // 张没画时，降级链会悄悄换成别的脸——模型以为选对了，
+        // 而且运行时一切正常。现在造型名本身就是整段，选到就有图，不再合成。
         // ★ 服装这一维已经移除（见 ScanOutfitsFromDisk）：outfitOrder 恒空，
-        //   造型名直接等于表情名，[Outfit] 段代码不读。
+        // 造型名直接等于表情名，[Outfit] 段代码不读。
         v.pose = def->poseOrder;
     }
 
@@ -7629,18 +7417,15 @@ VisibleAssets ScanVisibleAssets(const CharDef* def, const std::wstring& assetDir
         (int)v.bg.size(), (int)v.bgm.size(), (int)v.outfit.size(), (int)v.se.size());
     return v;
 }
-
-// ---------------------------------------------------------------------------
-//  从"扫出来的真实素材名"里挑一个
-// ---------------------------------------------------------------------------
+// 从"扫出来的真实素材名"里挑一个
 //
-// 【为什么必须有这个函数】
+// 为什么必须有这个函数
 // 原来代码里散落着一批写死的槽位名："开场" / "课" / "题" / "卡住"，
 // char.ini 里再把这些槽位映射成具体文件名（题 = 和室_夜）。
-// 于是素材叫什么名字得【照着配置去画】——作者画了"教室_黄昏"，
+// 于是素材叫什么名字得照着配置去画——作者画了"教室_黄昏"，
 // 配置里没这个词，那张图就永远用不上。
 //
-// 现在反过来：先扫目录拿到真实名字，再按【意境关键词】在清单里挑。
+// 现在反过来：先扫目录拿到真实名字，再按意境关键词在清单里挑。
 // 关键词只是偏好，不是要求——匹配不上就按 allowFallback 决定是"随便挑一张"
 // 还是"不动画面"。作者有几张图、叫什么名字，程序就认什么。
 static std::wstring PickFromPool(const std::vector<std::wstring>& pool,
@@ -7655,11 +7440,10 @@ static std::wstring PickFromPool(const std::vector<std::wstring>& pool,
     // 背景允许兜底（总得有点画面），BGM/换装不允许（乱放一首比静音更糟）。
     return allowFallback ? pool.front() : L"";
 }
-
 // 按意境挑一张背景。挑不到就返回空 = 保持当前画面。
 // 两个名字的字符重合度（Jaccard，按字符集合算）。
 //
-// 【为什么用字符集合而不是编辑距离】
+// 为什么用字符集合而不是编辑距离
 // 中文没有空格分词，"上课的教室" 和 "上课期间的课室" 编辑距离不算小，
 // 但它们共享 上/课/的/室 四个字——人一眼就看得出是同一个地方。
 // 字符集合的重合度对中文短名最贴合直觉。
@@ -7691,12 +7475,7 @@ static double NameOverlap(const std::wstring& a, const std::wstring& b) {
     if (uni == 0) return 0.0;
     return (double)inter / (double)uni;
 }
-
-// ============================================================================
-//  白名单：扫描 + 逐个预校验
-// ============================================================================
-
-// 名字列表拼成一行，给"被剔除"那节看。
+// 白名单：扫描 + 逐个预校验 名字列表拼成一行，给"被剔除"那节看。
 std::wstring MatchAssetName(const std::vector<std::wstring>& pool,
                             const std::wstring& want) {
     if (want.empty() || pool.empty()) return L"";
@@ -7712,13 +7491,12 @@ std::wstring MatchAssetName(const std::vector<std::wstring>& pool,
         for (size_t i = 0; i < pool.size(); ++i)
             if (pool[i].size() >= 2 && want.find(pool[i]) != std::wstring::npos) return pool[i];
     }
-
     // 3. 字符重合度。取最高的那个，且必须过阈值。
     //
     // 阈值 0.5 + 交集至少 2 个字符：
-    //   「上课的教室」->「上课期间的课室」= 4/7 ≈ 0.57  ✓ 命中
-    //   「神社」    ->「乡村的小道」    = 0/9  = 0      ✗ 不误判
-    //   「角色A的卧室」->「玩家的卧室」  = 3/7 ≈ 0.43    ✗ 不误判
+    // 「上课的教室」->「上课期间的课室」= 4/7 ≈ 0.57 ✓ 命中
+    // 「神社」 ->「乡村的小道」 = 0/9 = 0 ✗ 不误判
+    // 「角色A的卧室」->「玩家的卧室」 = 3/7 ≈ 0.43 ✗ 不误判
     // 单靠一个字重合（比如都带「的」）不会命中，交集门槛挡住了。
     static const double kMinOverlap = 0.5;
     std::wstring best;
@@ -7756,12 +7534,10 @@ std::wstring MatchEmotionAlias(const std::vector<std::wstring>& pool,
     // 先精确/模糊试一遍：清单里可能本来就有这个名字，或能用字符重合度接住
     std::wstring direct = MatchAssetName(pool, want);
     if (!direct.empty()) return direct;
-
     //
     // ---- 中文也要查表，不能只放行英文
     //
-    // 【原来这里 `if (!IsAsciiName(want)) return L""` 是错的】
-    // 字符重合度算法对「微笑」vs「平静」这种【同义但零共享字符】的名字无效，
+    // 字符重合度算法对「微笑」vs「平静」这种同义但零共享字符的名字无效，
     // 中文近义名比英文名更常见——模型写中文表情名时会自由发挥。
     // 那段早退让整张中文表形同虚设。
     std::wstring low;
@@ -7770,9 +7546,8 @@ std::wstring MatchEmotionAlias(const std::vector<std::wstring>& pool,
         if (c >= L'A' && c <= L'Z') c = (wchar_t)(c - L'A' + L'a');
         low += c;
     }
-
-    // 【别名表全部来自 char.ini [AssetRole] 的 别名.<词>】
-    // 代码不认识任何素材名：候选逐个在【当前清单】里校验，
+    // 别名表全部来自 char.ini [AssetRole] 的 别名.<词>
+    // 代码不认识任何素材名：候选逐个在当前清单里校验，
     // 第一个存在的就用；都不在就落空（保持上一张脸），不会换错。
     // low 已转小写（英文用得到）；中文不受大小写影响。
     for (size_t i = 0; i < gRole.alias.size(); ++i) {
@@ -7785,16 +7560,15 @@ std::wstring MatchEmotionAlias(const std::vector<std::wstring>& pool,
     }
     return L"";
 }
-
 //
-// 按【台词】挑一张表情——引擎替她换脸时用，不是随机挑。
+// 按台词挑一张表情——引擎替她换脸时用，不是随机挑。
 //
-// 【为什么需要它】这里要做的是"连用两轮就必须换一张"。
-// 可她的办法是【填同一个名字】，被挡下之后画面就沿用了——
+// 为什么需要它这里要做的是"连用两轮就必须换一张"。
+// 可她的办法是填同一个名字，被挡下之后画面就沿用了
 // 于是"换脸机制触发了，画面却还是那张脸"，看到的就是机制没生效。
 //
 // 光挡下不够，必须真的换成另一张。而直接随机挑正是最早就被反对的
-// （"引擎换脸可能换得很奇怪"）。所以这里【照着台词挑】：
+// （"引擎换脸可能换得很奇怪"）。所以这里照着台词挑：
 // 她的台词里出现"脸红/才没有"就挑害羞，"诶？！/居然"就挑惊讶，
 // "听好了/认真"就挑认真……换出来的脸跟她说的话对得上，不是乱换。
 //
@@ -7804,19 +7578,17 @@ std::wstring PickPoseForLine(const std::vector<std::wstring>& pool,
                              const std::vector<std::wstring>& banned,
                              const std::wstring& say, int seed) {
     if (pool.empty()) return L"";
-
     // 情绪关键词 ——> 期望的表情名片段。顺序即优先级（同分时靠前的赢）。
-    // 【情绪规则全部来自 char.ini [AssetRole] 的 情绪.<台词词> = <期望片段>|<权重>】
-    // 代码不认识任何素材名。每条的"期望片段"都会在【当前清单】里校验，
+    // 情绪规则全部来自 char.ini [AssetRole] 的 情绪.<台词词> = <期望片段>|<权重>
+    // 代码不认识任何素材名。每条的"期望片段"都会在当前清单里校验，
     // 清单里没有就自动失效——删掉素材不会留下腐烂的规则。
     const std::vector<std::pair<std::wstring, std::pair<std::wstring,int>>>& kRule = gRole.mood;
-
-    // 兜底轮换时的【安全池】：这些是强负面表情。
+    // 兜底轮换时的安全池：这些是强负面表情。
     //
-    // 【没有它，轮换会撞上失望/生气】
+    // 没有它，轮换会撞上失望/生气
     // 9 张脸里随便挑，挑到强负面的概率接近一半。讲课途中挂着一张
     // 失望脸，比不换还怪——截图抱怨的正是这类。
-    // 【强负面名单来自 char.ini [AssetRole] 的 避开】
+    // 强负面名单来自 char.ini [AssetRole] 的 避开
     // 留空 = 不避开，按清单顺序轮换（绝不猜素材名）。
     const std::vector<std::wstring>& kStrongNeg = gRole.avoidPose;
     const size_t kStrongNegN = kStrongNeg.size();
@@ -7829,20 +7601,19 @@ std::wstring PickPoseForLine(const std::vector<std::wstring>& pool,
         if (!isB) avail.push_back(pool[i]);
     }
     if (avail.empty()) return L"";
-
     //
-    // ---- 【规则表按当前清单动态过滤】——"素材随意改"的命门
+    // ---- 规则表按当前清单动态过滤——"素材随意改"的命门
     //
     // 上面 kRule 里写死了一堆期望的表情名片段（失望/呆滞/不满/生气/无语…）。
-    // 作者删掉某张立绘后，指向它的规则【不会消失，只会腐烂】：
+    // 作者删掉某张立绘后，指向它的规则不会消失，只会腐烂：
     // 清单里没有这个名字，规则永远命中不了，于是那句台词
     // 走不到任何规则 → 掉进轮换兜底 → 挑出一张完全不搭的脸。
-    // 而且【不报错】，日志上看不出来，只能靠玩家发现"怎么老换错脸"。
+    // 而且不报错，日志上看不出来，只能靠玩家发现"怎么老换错脸"。
     //
     // 这类"硬编码素材名"正是"随意增删素材"的死敌：
     // 清单一变它就烂，且没有自检。
     //
-    // 现在：只保留 want 名字【在本次候选池里真实存在】的规则。
+    // 现在：只保留 want 名字在本次候选池里真实存在的规则。
     // 删素材 → 相关规则自动失效；加素材 → 名字对得上就自动生效。
     // 清单是唯一真相源，规则表不再有自己的生命周期。
     const size_t kRuleN = kRule.size();
@@ -7868,8 +7639,8 @@ std::wstring PickPoseForLine(const std::vector<std::wstring>& pool,
     }
     // 台词里没任何情绪线索：轮换兜底，保证一定换掉（不沿用）
     //
-    // 【先从安全池里挑】剔除失望/生气/不满/无语/呆滞这些强负面。
-    // 全都是强负面时（角色包本来就这么几张）才退回完整池——
+    // 先从安全池里挑剔除失望/生气/不满/无语/呆滞这些强负面。
+    // 全都是强负面时（角色包本来就这么几张）才退回完整池
     // 那种情况下"换掉"比"换得对"更重要。
     if (best.empty()) {
         std::vector<std::wstring> safe;
@@ -7894,11 +7665,10 @@ std::wstring PickDifferentFrom(const std::vector<std::wstring>& pool,
     // 只有一张图、当前不在它上面 -> 它正是唯一可换的目标，应该返回。
     // 早期版本用 size<=1 直接 return，把第二种情况也堵死了。
     //
-    // 【先把要避开的那个剔除，再按 seed 取模——不要用"跳着扫"】
+    // 先把要避开的那个剔除，再按 seed 取模——不要用"跳着扫"
     //
-    // 原来的写法是 start = (seed*7+3) % n，然后线性扫到第一个 != avoid 的。
-    // 当池子大小恰好是 7 时：7*seed % 7 == 0，于是 start 恒等于 3。
-    // 【不管 seed 是多少都落在同一个位置】——每次强制换脸都换到同一张。
+    // 当池子大小恰好是 7 时：7*seed % 7 == 0，
+    // 不管 seed 是多少都落在同一个位置——每次强制换脸都换到同一张。
     //
     // 表现：从"一直惊讶"变成"一直叹气"，问题原封不动，
     // 而日志每轮都打 [换脸] 换了，看起来是在工作的。
@@ -7942,10 +7712,9 @@ std::wstring ResolveBgFor(const CharDef* def, const std::wstring& assetDir,
                 def->id.c_str(), slot.c_str(), it->second.c_str());
         }
     }
-
-    // ---- 2. 角色包自己的 bg/ 目录里有没有【同名文件】
+    // ---- 2. 角色包自己的 bg/ 目录里有没有同名文件
     //
-    // 【这条是为了配合"扫目录给模型清单"】
+    // 这条是为了配合"扫目录给模型清单"
     // 清单里既有槽位名也有真实文件名，模型很可能直接回一个文件名
     // （比如"和室"），而不是槽位名（"课"）。
     // 没有这一步的话，这种名字会一路掉到通用目录去找，找不到 → 背景空白。
@@ -7959,22 +7728,21 @@ std::wstring ResolveBgFor(const CharDef* def, const std::wstring& assetDir,
             return prefix;
         }
     }
-
     // ---- 3. 通用：assets/bg/<名字>
     //
-    // 【这里原来不检查文件是否存在，直接返回拼好的路径】
+    // 这里原来不检查文件是否存在，直接返回拼好的路径
     // 于是"名字解析不出图"这件事被包装成了一个看起来正常的路径，
     // 一路传到渲染层才暴露——而暴露的方式是"背景先黑 0.8 秒"。
     //
     // 有四条路径会走到这里，只有一条经过清单校验：
-    //   ① 模型从 ScanVisibleAssets 的清单里挑 —— 有校验，必然存在
-    //   ② 大纲 ini 的 Bg 字段 —— 人工写的，写错没人管
-    //   ③ 硬编码槽位：题 / 卡住 / 开场 / 课 —— 角色包没配就落到这里
-    //   ④ 剧本 @bg —— 同上
+    // ① 模型从 ScanVisibleAssets 的清单里挑 —— 有校验，必然存在
+    // ② 大纲 ini 的 Bg 字段 —— 人工写的，写错没人管
+    // ③ 硬编码槽位：题 / 卡住 / 开场 / 课 —— 角色包没配就落到这里
+    // ④ 剧本 @bg —— 同上
     // ②③④都可能拿到一个不存在的名字。返回非空路径等于
     // "假装找到了"，调用方据此切换 bgCur，画面就黑了。
     //
-    // 返回空串才是对的：ApplyStageChange 里 `!path.empty()` 会挡住它，
+    // 返回空串才是对的：ApplyStageChange 里 `!path.empty` 会挡住它，
     // 背景保持原样——没配就是没配，不该把画面搞没。
     std::wstring generic = PathJoin(PathJoin(assetDir, L"bg"), slot);
     if (!BgFileExists(generic)) {
@@ -7989,22 +7757,20 @@ std::wstring ResolveBgFor(const CharDef* def, const std::wstring& assetDir,
 //  BGM 解析
 // ============================================================================
 static const wchar_t* const kBgmExt[] = { L".wav", nullptr };
-
-// 游戏内 BGM：【固定一首主题曲】
+// 游戏内 BGM：固定一首主题曲
 //
-// 游戏内的【开场曲】，只在刚进故事时用一次。
+// 游戏内的开场曲，只在刚进故事时用一次。
 //
-// 【它不再是"游戏内唯一的一首"】
-// 这里原来写着"不再让大模型挑、游戏里固定放 [Bgm] Default"。
+// 它不再是"游戏内唯一的一首"
+// 这里
 // 现在放开了：进故事之后曲子由大模型按情绪换，
 // 它的清单来自扫目录（主页曲已剔除），见 ScanVisibleAssets。
 //
 // 这个函数只剩下"开局第一首该放什么"的职责：
-//   [Bgm] Default 配了且文件在 → 用它；
-//   没配 / 文件不在 → 从扫到的曲子里挑第一首（不会是主页曲）；
-//   连曲子都没有 → 退回通用的 bgm\主题（多半也不存在，就是静音）。
+// [Bgm] Default 配了且文件在 → 用它；
+// 没配 / 文件不在 → 从扫到的曲子里挑第一首（不会是主页曲）；
+// 连曲子都没有 → 退回通用的 bgm\主题（多半也不存在，就是静音）。
 // 资源目录：角色包用相对路径，散装角色挂在 assets 下。
-// 原来这行在 5 个解析函数里各写一遍，写漏一个 isPack 判断
 // 就导致散装角色的素材永远找不到。
 static std::wstring AssetSubDir(const CharDef* def, const std::wstring& assetDir,
                                 const std::wstring& configured) {
@@ -8038,10 +7804,9 @@ static std::wstring JoinNames(const std::vector<std::wstring>& v) {
     }
     return o;
 }
-
 // 造型名能不能真的取到图。
 //
-// 【必须跟扫描时的两种命名都对齐】
+// 必须跟扫描时的两种命名都对齐
 // 扫描支持"带前缀"（角色A_平静）和"无前缀"（平静）两种，
 // 校验只要认其中一种就会误剔 —— 而误剔的表现是"这个表情模型永远选不到"，
 // 比报错还难发现，所以这里两种都试。
@@ -8053,15 +7818,15 @@ bool PoseFileExists(const CharDef* def, const std::wstring& assetDir,
 std::wstring ResolvePoseFile(const CharDef* def, const std::wstring& assetDir,
                              const std::wstring& pose) {
     //
-    // 【把造型名解析成【唯一确定的文件】，不做任何降级】
+    // 把造型名解析成【唯一确定的文件，不做任何降级】
     //
     // 这是"立绘必须跟模型给的名字对齐"的关键：
     // 渲染层原来走的是一条 6 段以上的降级链（当前服装+当前表情 →
     // 默认服装+当前表情 → 当前服装+平静 → … → 本体图）。
-    // 只要第一段落空，画面画出来的就是【另一张图】，
+    // 只要第一段落空，画面画出来的就是另一张图，
     // 而调试行写的还是模型给的那个名字——两边各说各话。
     //
-    // BGM 从来不出这个问题，就是因为 ResolveBgmFor 只返回【一个】确定文件，
+    // BGM 从来不出这个问题，就是因为 ResolveBgmFor 只返回一个确定文件，
     // 找不到就返回空、由调用方决定怎么办，绝不会偷偷换成别的曲子。
     // 立绘和背景现在照抄这套。
     if (pose.empty()) return L"";
@@ -8070,14 +7835,13 @@ std::wstring ResolvePoseFile(const CharDef* def, const std::wstring& assetDir,
     std::wstring cfg = def ? def->spriteDir : std::wstring();
     // spriteDir 空时默认 ch（跟渲染层的老规则一致）
     std::wstring dir = AssetSubDir(def, assetDir, cfg.empty() ? L"ch" : cfg);
-
     // ---- 子目录服装：sprite\校服\平静.png
     //
     // 造型名「校服_平静」要拆成服装 + 表情再去对应目录里找。
-    // 【最长服装名优先】跟 ScanFacesFromDisk 一个道理：
+    // 最长服装名优先跟 ScanFacesFromDisk 一个道理：
     // 服装「制服_冬」和「制服」同时存在时，先试短的会把「冬_平静」当表情。
     //
-    // 这一段必须在平铺两种写法【之前】：子目录是服装的唯一存放方式，
+    // 这一段必须在平铺两种写法之前：子目录是服装的唯一存放方式，
     // 命中就结束，绝不再去平铺里碰运气（那正是"悄悄换成另一张图"）。
     if (def && !def->outfitOrder.empty()) {
         std::vector<std::wstring> os(def->outfitOrder.begin(), def->outfitOrder.end());
@@ -8117,10 +7881,9 @@ std::wstring ResolvePoseFile(const CharDef* def, const std::wstring& assetDir,
 VisibleAssets BuildWhitelist(const CharDef* def, const std::wstring& assetDir,
                              WhitelistReport* rep) {
     VisibleAssets v = ScanVisibleAssets(def, assetDir);
-
     // ---- 逐个过一遍真正的解析函数
     //
-    // 【用解析函数校验，而不是"文件存在吗"】
+    // 用解析函数校验，而不是"文件存在吗"
     // 解析函数里有一整套降级链（角色包 -> 通用、带前缀 -> 无前缀…）。
     // 自己另写一套 FileExists 判断，规则迟早跟解析函数对不上，
     // 于是"白名单说能选、渲染层说找不到"又回来了。
@@ -8177,10 +7940,9 @@ bool DumpWhitelist(const VisibleAssets& v, const WhitelistReport& rep,
     t += L"\n【背景 bg】共 " + WFromInt((long long)v.bg.size()) + L" 个\n" + list(v.bg);
     t += L"\n【音乐 bgm】共 " + WFromInt((long long)v.bgm.size()) + L" 个\n" + list(v.bgm);
     t += L"\n【音效 se】共 " + WFromInt((long long)v.se.size()) + L" 个\n" + list(v.se);
-
     // ---- 被剔除的必须写出来
     //
-    // 【这是预校验最容易出事的地方】
+    // 这是预校验最容易出事的地方
     // 校验逻辑跟真实解析一旦不一致，就会把本来能用的素材剔掉，
     // 表现是"这个表情/这张图模型永远选不到"，而且没有任何报错。
     // 写进文件里，扫一眼就知道有没有误剔。
@@ -8192,10 +7954,10 @@ bool DumpWhitelist(const VisibleAssets& v, const WhitelistReport& rep,
         if (!rep.droppedBgm.empty())  t += L"  bgm:  " + JoinNames(rep.droppedBgm)  + L"\n";
         t += L"  如果出现在这里却确实是有效素材，说明校验和解析的规则不一致，是 bug。\n";
         //
-        // ---- 【最常见的原因摆出来，别让人去猜】
+        // ---- 最常见的原因摆出来，别让人去猜
         //
-        // 【运行日志里出现过 "pose: 思考"】
-        // 扫到了这个文件名，可解析函数按「思考」去找文件却找不到——
+        // ★ 症状：清单里出现过 "pose: 思考"。
+        // 扫到了这个文件名，可解析函数按「思考」去找文件却找不到
         // 因为磁盘上的真名是「思考 .png」（重命名时留了个尾随空格）。
         // 素材名在进白名单前会清掉首尾空白，于是变成「思考」，
         // 再去拼「思考.png」自然对不上。
@@ -8219,8 +7981,8 @@ std::wstring ResolveGameBgmFor(const CharDef* def, const std::wstring& assetDir)
     }
     // ---- 没配 Default：从扫到的曲子里挑一首当开场
     //
-    // 【为什么不能只退回通用的 主题.wav】
-    // 那个文件多半不存在，于是开局就是哑的，而日志里没有任何线索。
+    // 为什么不能只退回通用的 主题.wav
+    // 那个文件多半不存在，于是开局就是哑的，而运行时没有任何线索。
     // 角色包里明明放着曲子（只是没在 ini 里写 Default），
     // 那就直接用扫出来的——跟背景 / 立绘一样，有啥用啥。
     //
@@ -8228,12 +7990,12 @@ std::wstring ResolveGameBgmFor(const CharDef* def, const std::wstring& assetDir)
     {
         VisibleAssets v = ScanVisibleAssets(def, assetDir);
         if (!v.bgm.empty()) {
-            // 【这里原来是 v.bgm.front()，也就是"目录里排第一的那首"】
+            // 这里
             // 清单是排序过的，所以玩家听到的永远是同一首、且是排序最靠前的
             // 那首 —— 看不出任何"她选的"痕迹，自然怀疑是程序在按目录顺序放。
             // 现在按意境关键词挑一首像主题曲的（主题 / 平静 / main / theme），
             // 挑不到才用第一首。至少开局这首听起来是"配这个角色的"。
-            // 【偏好片段来自 char.ini [AssetRole] 的 主题】留空 = 用第一首
+            // 偏好片段来自 char.ini [AssetRole] 的 主题留空 = 用第一首
             const std::vector<std::wstring>& kPrefs = gRole.themeBgm;
             std::wstring pick;
             for (size_t i = 0; i < kPrefs.size() && pick.empty(); ++i)
@@ -8256,14 +8018,14 @@ std::wstring ResolveBgmFor(const CharDef* def, const std::wstring& assetDir,
     (void)isPack;
 
     if (def) {
-        // ---- 0. 先当【真实文件名】在角色包里找
+        // ---- 0. 先当真实文件名在角色包里找
         //
-        // 【顺序很重要，这里踩过一次】
+        // 顺序很重要，这里踩过一次
         // 原来把 bgmDefault 放在最前面，结果模型点名要"她_主页"，
         // 解析出来却是"她_主题"——因为"她_主页"不是槽位名，
         // 于是掉进了 bgmDefault 分支，把默认曲当成了它的答案。
-        // 玩家听到的是错的音乐，而日志里一切正常。
-        // 真实文件名是【明确指定】，优先级必须高于"没配就用默认"。
+        // 玩家听到的是错的音乐，而运行时一切正常。
+        // 真实文件名是明确指定，优先级必须高于"没配就用默认"。
         {
             std::wstring p = FindAssetWithExt(AssetSubDir(def, assetDir, def->bgmDir),
                                               slot, kBgmExt);
@@ -8286,11 +8048,9 @@ std::wstring ResolveBgmFor(const CharDef* def, const std::wstring& assetDir,
     }
     return PathJoin(PathJoin(assetDir, L"bgm"), slot);
 }
-
 // 独立于角色包的主页曲：assets\title\主页曲.wav
 //
 // 找不到就退回旧位置 assets\bgm\主页.wav（kLegacyTitleBgm，
-// 之前 ResolveTitleBgmFor 的兜底就是它）。
 // 两个都没有 → 返回空，由调用方决定是静音还是别的处理。
 std::wstring GenericTitleBgm(const std::wstring& assetDir) {
     std::wstring p = PathJoin(PathJoin(assetDir, kTitleSubDir), kGenericTitleBgm);
@@ -8304,12 +8064,11 @@ std::wstring ResolveTitleBgmFor(const CharDef* def, const std::wstring& assetDir
     // 通用兜底：assets/title/主页曲.wav
     const std::wstring fallback = GenericTitleBgm(assetDir);
     if (!def) return fallback;
-
     // 主页曲 = [Bgm] Title，没配就退回 Default（主题曲）。
     //
-    // 【顺序不能反】
+    // 顺序不能反
     // Title 是"主页专用曲"，Default 是"游戏主题曲"。
-    // 只配了一首曲子的角色，标题页总不能是哑的，所以退回 Default——
+    // 只配了一首曲子的角色，标题页总不能是哑的，所以退回 Default
     // 但绝不能因为 Default 存在就不看 Title。
     std::wstring name = !def->bgmTitle.empty() ? def->bgmTitle : def->bgmDefault;
     if (name.empty()) return fallback;
@@ -8330,10 +8089,9 @@ bool CharDef::HasPose(const std::wstring& n) const {
     for (size_t i = 0; i < poseOrder.size(); ++i) if (poseOrder[i] == n) return true;
     return false;
 }
-
 // 默认造型：优先挑带"平静"的，其次带 calm，再不行就用第一个。
 //
-// 【为什么不能用 poseOrder[0]】
+// 为什么不能用 poseOrder[0]
 // 排序是字典序，"校服_得意"会排在"校服_平静"前面。
 // 开局顶着一张得意脸说话很怪。要挑最中性的那张。
 std::wstring CharDef::DefaultPose() const {
@@ -8349,10 +8107,9 @@ std::wstring CharDef::DefaultPose() const {
     }
     return poseOrder[0];
 }
-
 // ---- 服装 × 表情 真值表的三个查询
 //
-// outfitExpr 是【扫描时按真实文件填的】，不是猜的。
+// outfitExpr 是扫描时按真实文件填的，不是猜的。
 // 空 outfit 那一条表示"没有服装分化"（文件名里不写服装）。
 bool CharDef::HasFace(const std::wstring& n) const {
     if (n.empty()) return false;
@@ -8367,10 +8124,9 @@ bool CharDef::HasCombo(const std::wstring& outfit, const std::wstring& face) con
     if (it == outfitExpr.end()) return false;
     return it->second.count(face) > 0;
 }
-
 // 这一套衣服实际画了哪些表情。
 //
-// 查不到（这套衣服的信息还没扫到）时退回【全部表情】而不是空表：
+// 查不到（这套衣服的信息还没扫到）时退回全部表情而不是空表：
 // 空表会让模型一个表情都选不到，那是把刚放开的功能又关掉了。
 // 素材没画全这件事在渲染层有降级兜底，不该在清单层直接判死刑。
 std::vector<std::wstring> CharDef::FacesOf(const std::wstring& outfit) const {
@@ -8381,14 +8137,10 @@ std::vector<std::wstring> CharDef::FacesOf(const std::wstring& outfit) const {
     std::sort(out.begin(), out.end());
     return out;
 }
-
-// ============================================================================
-//  模块：教学大纲 —— 课程（章）与剧情（幕）的加载
+// 模块：教学大纲 —— 课程（章）与剧情（幕）的加载
 //
-//  格式故意做得跟 ini 一样朴素，因为大纲是给【人】写的，不是给程序写的：
-//  作者要能一眼看清"这一章教什么、考什么"，而不是在 JSON 的括号里找。
-// ============================================================================
-
+// 格式故意做得跟 ini 一样朴素，因为大纲是给人写的，不是给程序写的：
+// 作者要能一眼看清"这一章教什么、考什么"，而不是在 JSON 的括号里找。
 // ---------------------------------------------------------------- ini 读取
 // 直接用 util 的 IniGetStr：它内部带缓存和 UTF-8/GBK 编码探测，
 // 不要再自己开文件——自己开会在中文路径或 GBK 文件上解出乱码。
@@ -8415,13 +8167,12 @@ static bool ParseTest(const std::wstring& line, std::pair<std::wstring, std::wst
     out.first = in; out.second = exp;
     return true;
 }
-
 //
-//  ini 的【多行值】切成一张词表：一行一个词。
+// ini 的多行值切成一张词表：一行一个词。
 //
-//  为什么不用逗号分隔：选项和代码里到处都是逗号（for(;;)、swap(a, b)），
-//  拿它当分隔符迟早把词切碎。一行一个词没有歧义，
-//  也跟 char.ini 里 [Memory] 那种续行写法一致（解析层本来就认）。
+// 为什么不用逗号分隔：选项和代码里到处都是逗号（for(;;)、swap(a, b)），
+// 拿它当分隔符迟早把词切碎。一行一个词没有歧义，
+// 也跟 char.ini 里 [Memory] 那种续行写法一致（解析层本来就认）。
 static std::vector<std::wstring> WordLines(const std::wstring& v) {
     std::vector<std::wstring> out;
     std::wstring cur;
@@ -8447,12 +8198,11 @@ static std::wstring JoinLines(const std::vector<std::wstring>& v) {
     }
     return o;
 }
-
-// ---- 内置兜底：剧本没写 Subject / CodeWords / TeachWords 时用这份 ----
+// ---- 内置兜底：剧本没写 Subject / CodeWords / TeachWords 时用这份
 //
-//  【这是 C 语言那一套，留着只为兼容老剧本】
-//  新剧本（比如 Python）只要在 [Course] 里写上自己的三样，
-//  这份就完全不参与——内置默认绝不能盖住作者写的东西。
+// 这是 C 语言那一套，留着只为兼容老剧本
+// 新剧本（比如 Python）只要在 [Course] 里写上自己的三样，
+// 这份就完全不参与——内置默认绝不能盖住作者写的东西。
 static const wchar_t* const kDefSubject = L"C 语言";
 static const wchar_t* const kDefCodeWords[] = {
     L"#include", L"scanf", L"printf", L"int ", L"void ", L"char ",
@@ -8493,35 +8243,34 @@ bool Syllabus::Load(const std::wstring& path) {
     subject.clear(); codeWords.clear(); teachWords.clear();
 
     if (!FileExists(path)) { err = L"找不到大纲文件：" + path; return false; }
-
     //
-    // ---- 【两种大纲】课程用 [Course]，剧情用 [Story]
+    // ---- 两种大纲课程用 [Course]，剧情用 [Story]
     //
-    //  剧情大纲住在角色包里（story.ini），因为剧情必然是角色专属的；
-    //  课程大纲在 assets\syllabus 下，可以独立于角色切换。
-    //  两者都是导演模式，解析走同一套代码，只有段名和"章叫什么"不同。
+    // 剧情大纲住在角色包里（story.ini），因为剧情必然是角色专属的；
+    // 课程大纲在 assets\syllabus 下，可以独立于角色切换。
+    // 两者都是导演模式，解析走同一套代码，只有段名和"章叫什么"不同。
     const bool storyMode = !Sec(path, L"Story", L"Acts").empty();
     isStory = storyMode;
 
     title = storyMode ? Sec(path, L"Story", L"Title", title)
                       : Sec(path, L"Course", L"Title", title);
     //
-    // ---- 【[Story] Note 现在真的会被读进来】
+    // ---- [Story] Note 现在真的会被读进来
     //
-    //  作者写在 [Story] 里的整条线总纲（"两个人都在等对方先开口"这种），
-    //  原来读都不读就丢了。剧情大纲的灵魂全在这一句里，丢掉太可惜。
-    //  课程大纲不用这一栏（[Course] 没有 Note）。
+    // 作者写在 [Story] 里的整条线总纲（"两个人都在等对方先开口"这种），
+    // 原来读都不读就丢了。剧情大纲的灵魂全在这一句里，丢掉太可惜。
+    // 课程大纲不用这一栏（[Course] 没有 Note）。
     note = storyMode ? Sec(path, L"Story", L"Note", L"") : L"";
     //
     // ---- 课程名与讲课词表（可空：空就退回内置那份 C 语言的）
     //
-    //  Subject 单独留空不影响加载——它是写进提示词的一个词，
-    //  缺了大不了用内置的；而章节是内容，缺了必须让作者看见。
+    // Subject 单独留空不影响加载——它是写进提示词的一个词，
+    // 缺了大不了用内置的；而章节是内容，缺了必须让作者看见。
     subject    = Sec(path, L"Course", L"Subject", L"");
     //
     // Unescape 是为了让两种写法都成立：
-    //   · 作者手写 ini 用真续行（一行一个词，跟 [Memory] 那种写法一样）
-    //   · 编辑页保存时写的是转义后的 \n（跟 Goal / Stmt 一个规矩）
+    // · 作者手写 ini 用真续行（一行一个词，跟 [Memory] 那种写法一样）
+    // · 编辑页保存时写的是转义后的 \n（跟 Goal / Stmt 一个规矩）
     // 两种都能读回来，作者不用记哪边该转义。
     codeWords  = WordLines(Unescape(Sec(path, L"Course", L"CodeWords",  L"")));
     teachWords = WordLines(Unescape(Sec(path, L"Course", L"TeachWords", L"")));
@@ -8533,21 +8282,20 @@ bool Syllabus::Load(const std::wstring& path) {
                         : L"大纲里没写章节数（[Course] Chapters=）";
         return false;
     }
-
     //
-    // ---- 【声明的章数只是"下限"，实际以文件里的段为准】
+    // ---- 声明的章数只是"下限"，实际以文件里的段为准
     //
-    // 【这是"作者加了新章却永远演不到"的根因】
+    // 这是"作者加了新章却永远演不到"的根因
     // 循环上限原本直接取 [Course] Chapters=N。作者在文件里加了第 6 章、
-    // 忘了把 N 改成 6，那第 6 章【整章消失】——不报错、不警告，
+    // 忘了把 N 改成 6，那第 6 章整章消失——不报错、不警告，
     // 只是"后面几章莫名不见了"，长得跟"结局提前到来"一模一样
     // （最后一章的按钮会自动变成「今天就到这里」）。
     //
-    // 这正是本项目反复在清的病：同一件事写两遍（章节段 + 计数），
-    // 改一处忘一处。所以跑完声明的 N 章之后【继续往后探测】：
+    // ★ 同一件事不要写两遍（章节段 + 计数），
+    // 改一处忘一处。所以跑完声明的 N 章之后继续往后探测：
     // 第 N+1 段只要写得完整就一并加载，并记一行日志提醒作者改 Chapters。
     //
-    // 【反过来（Chapters 写大了）仍然报错】
+    // 反过来（Chapters 写大了）仍然报错
     // 声明 5 章、文件只有 3 段，那是真的缺内容，必须让作者看见。
     int extra = 0;
     for (int i = 1; ; ++i) {
@@ -8592,7 +8340,7 @@ bool Syllabus::Load(const std::wstring& path) {
             }
             ++extra;
         }
-        // 【这里原来的默认值让"留空"失效】
+        // 这里
         // Bg 默认 "课"、Bgm 默认 "平静"，于是作者把这一行删掉或留空时，
         // 拿到的不是"不动"，而是硬塞回来的默认值 —— 跟 README 里写的
         // "留空 = 沿用模型的选择"完全相反，配了半天没效果。
@@ -8611,8 +8359,7 @@ bool Syllabus::Load(const std::wstring& path) {
         ch.task.tpl    = Unescape(Sec(path, sec, L"Tpl"));
         ch.task.hint   = Unescape(Sec(path, sec, L"Hint"));
         //
-        // 【Tries 的含义变了】
-        // 原来是"允许失败几次"，答错就扣、扣完算没过。
+        // Tries 的含义变了
         // 选择题不该有"失败"——答错只是还没想通，她讲完再选就是了。
         // 现在它是"答错几次之后把 Hint 交给她、让她主动提示"，
         // 0 或留空 = 永远不主动提示（她仍会讲错在哪）。
@@ -8627,11 +8374,10 @@ bool Syllabus::Load(const std::wstring& path) {
             std::pair<std::wstring, std::wstring> tc;
             if (ParseTest(line, tc)) ch.task.tests.push_back(tc);
         }
-
         // ---- 选择题的选项：Opt1 / Opt2 / ... 支持到 6 条
         //
         // 中间断号（写了 Opt1、Opt3 却没有 Opt2）会让后面几条静默消失，
-        // 因为读取是"读空即停"。所以这里【不许断号】，断了就报错。
+        // 因为读取是"读空即停"。所以这里不许断号，断了就报错。
         for (int o = 1; o <= 6; ++o) {
             wchar_t ob[32];
             std::swprintf(ob, 32, L"Opt%d", o);
@@ -8640,10 +8386,9 @@ bool Syllabus::Load(const std::wstring& path) {
             ch.task.opts.push_back(Unescape(v));
         }
         ch.task.answer = SecInt(path, sec, L"Answer", 0);
-
         // 题目不是必须的（有些章节可以只聊不考），但配了就必须完整
         //
-        // 【这里原来是"有代码模板必须有测试用例"】
+        // 这里
         // 导演模式已经不写代码了，那条校验对选择题毫无意义，
         // 而真正该拦的（有题干却没选项 / 答案越界）原来一条都没拦。
         if (!ch.task.stmt.empty()) {
@@ -8660,13 +8405,13 @@ bool Syllabus::Load(const std::wstring& path) {
             }
         }
         //
-        // ---- 【剧情大纲里写了考题：那些题永远不会考，要说一句】
+        // ---- 剧情大纲里写了考题：那些题永远不会考，要说一句
         //
-        //  剧情大纲（story.ini）没有"验收题"这一环——进幕直接进日常段，
-        //  教学段根本不走。作者从课程大纲复制过来改、忘了删 Stmt / Opt，
-        //  表现是"我明明写了题怎么不考"，而且【不报任何错】。
+        // 剧情大纲（story.ini）没有"验收题"这一环——进幕直接进日常段，
+        // 教学段根本不走。作者从课程大纲复制过来改、忘了删 Stmt / Opt，
+        // 表现是"
         //
-        //  这里不能算失败（题不影响剧情跑起来），只记一行让作者知道。
+        // 这里不能算失败（题不影响剧情跑起来），只记一行让作者知道。
         if (storyMode && (!ch.task.stmt.empty() || !ch.task.opts.empty())) {
             AppLog(L"[剧本] 剧情大纲第 %d 幕里写了考题（Stmt/Opt），"
                    L"但剧情模式不考——这些题永远不会出现，建议删掉", i);
@@ -8674,7 +8419,7 @@ bool Syllabus::Load(const std::wstring& path) {
         chapters.push_back(ch);
     }
     //
-    // ---- 【多出来的这几章要提醒作者改 Chapters】
+    // ---- 多出来的这几章要提醒作者改 Chapters
     //
     // 不提醒的话，剧本列表里显示的还是旧的 N 章（那份数字读的是 Chapters），
     // 而游戏里实际演的是 N+extra 章——两处对不上，下次排查又要绕一圈。
@@ -8690,11 +8435,10 @@ const SyllabusChapter* Syllabus::At(int i) const {
     if (i < 1 || i > (int)chapters.size()) return nullptr;
     return &chapters[(size_t)(i - 1)];
 }
-
 // ---------------------------------------------------------------- prompt
 // ---------------------------------------------------------------- 剧本包扫描
 //
-// 【先后次序就是优先级】目录式包 -> 单文件包 -> 旧的 syllabus.ini。
+// 先后次序就是优先级目录式包 -> 单文件包 -> 旧的 syllabus.ini。
 // 旧的只在前面一个都没有时才出场，所以老工程不用改目录，
 // 而往 syllabus 里放了任何一个新剧本，旧的那份就自动让位。
 std::vector<SyllabusPack> ScanSyllabusPacks(const std::wstring& assetDir) {
@@ -8750,52 +8494,51 @@ std::vector<SyllabusPack> ScanSyllabusPacks(const std::wstring& assetDir) {
             out.push_back(p);
         }
     }
-
     //
     // ---- 角色特化：assets\char\<角色>\story.ini
     //
-    //  剧本页里这些条目标着「角色B特化」，选了它开始游戏时就只能选角色B。
+    // 剧本页里这些条目标着「角色B特化」，选了它开始游戏时就只能选角色B。
     //
-    //  【为什么 id 要加前缀】
-    //  角色包目录名可能跟课程剧本目录撞（比如都叫"角色B"），
-    //  而 id 是存进 config 的键、也是 ApplySyllabus 的比较依据——
-    //  撞了就会出现"选的是课程、加载出来的却是剧情"。
-    //  加一层前缀让两类剧本的 id 永远不可能相等。
+    // 为什么 id 要加前缀
+    // 角色包目录名可能跟课程剧本目录撞（比如都叫"角色B"），
+    // 而 id 是存进 config 的键、也是 ApplySyllabus 的比较依据
+    // 撞了就会出现"选的是课程、加载出来的却是剧情"。
+    // 加一层前缀让两类剧本的 id 永远不可能相等。
     std::vector<std::wstring> cdirs = ListDirs(PathJoin(assetDir, L"char"));
     for (size_t i = 0; i < cdirs.size(); ++i) {
         std::wstring ini = PathJoin(cdirs[i], L"story.ini");
         if (!FileExists(ini)) continue;
         const std::wstring cid = PathStem(cdirs[i]);
         //
-        // ---- 【角色不可用时，这份剧情剧本必须从列表里消失】
+        // ---- 角色不可用时，这份剧情剧本必须从列表里消失
         //
-        //  剧情剧本锁死角色，而"锁"的实现是 Selectable() 里那句
-        //  `id != lock 就跳过`。于是 lock 指向一个【选不到】的角色时，
-        //  可选列表是空的：
-        //    · 角色被解绑（IsHidden）——文件都还在，只是作者不想用它
-        //    · 角色包坏了——有 story.ini 但没有能用的 char.ini
-        //  两种情况的后果一样：点「开始游戏」【毫无反应】（StartNewGame
-        //  里 sel.empty() 直接 return）。界面上不说原因，玩家只会以为卡死了。
+        // 剧情剧本锁死角色，而"锁"的实现是 Selectable 里那句
+        // `id != lock 就跳过`。
+        // 可选列表是空的：
+        // · 角色被解绑（IsHidden）——文件都还在，只是作者不想用它
+        // · 角色包坏了——有 story.ini 但没有能用的 char.ini
+        // 两种情况的后果一样：点「开始游戏」毫无反应（StartNewGame
+        // 里 sel.empty 直接 return）。界面上不说原因，玩家只会以为卡死了。
         //
-        //  更糟的是启动那一下：config 里的剧本 id 若已不存在，
-        //  LoadSyllabus 会退回"第一份"——万一第一份正是这种锁死又选不到的，
-        //  游戏一开机就进不去。
+        // 更糟的是启动那一下：config 里的剧本 id 若已不存在，
+        // LoadSyllabus 会退回"第一份"——万一第一份正是这种锁死又选不到的，
+        // 游戏一开机就进不去。
         //
-        //  所以源头就别列出来：角色不可用 = 这份剧本不存在。
+        // 所以源头就别列出来：角色不可用 = 这份剧本不存在。
         if (g_app.chars.Find(cid) == nullptr) continue;
         if (g_app.chars.IsHidden(cid)) continue;
         //
-        // ---- 【没写 Acts（或写 0）的剧情大纲不列出来】
+        // ---- 没写 Acts（或写 0）的剧情大纲不列出来
         //
-        //  角色包里现在都会带一份 story.ini（「＋ 新建角色」会建），
-        //  但那份只有注释、没有幕——它是"想做剧情时照着抄的骨架"，
-        //  不是一本能玩的剧本。
-        //  列进去的话，剧本页会出现一本 0 幕的「XX特化」：
-        //  选了它开始游戏，Cur() 是空、Guide() 是空、右上角没有章幕号，
-        //  界面一片空白还不报错——正是最难自查的那种失效。
+        // 角色包里现在都会带一份 story.ini（「＋ 新建角色」会建），
+        // 但那份只有注释、没有幕——它是"想做剧情时照着抄的骨架"，
+        // 不是一本能玩的剧本。
+        // 列进去的话，剧本页会出现一本 0 幕的「XX特化」：
+        // 选了它开始游戏，Cur 是空、Guide 是空、右上角没有章幕号，
+        // 界面一片空白还不报错——正是最难自查的那种失效。
         //
-        //  所以这里按 Acts 判：没幕 = 这本还不存在。
-        //  （作者填了 Acts 就会立刻出现，不用重启。）
+        // 所以这里按 Acts 判：没幕 = 这本还不存在。
+        // （作者填了 Acts 就会立刻出现，不用重启。）
         const int acts = IniGetInt(ini, L"Story", L"Acts", 0);
         if (acts <= 0) continue;
         SyllabusPack p;
@@ -8816,21 +8559,21 @@ std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter) {
     std::wstring o;
     const bool story = s.isStory;
     //
-    // ---- 【课程大纲和剧情大纲给模型看的东西不一样】
+    // ---- 课程大纲和剧情大纲给模型看的东西不一样
     //
-    //  课程：讲清哪几件事 + 考什么题。模型要盯的是"讲明白了没有"。
-    //  剧情：这一幕结束时你们之间该到什么位置。模型要盯的是"感情走到哪了"。
+    // 课程：讲清哪几件事 + 考什么题。模型要盯的是"讲明白了没有"。
+    // 剧情：这一幕结束时
     //
-    //  【不能只换标题、里面还是那一套】
-    //  剧情幕里写"把知识点讲清楚，讲完再考他"，她会当场开始上课——
-    //  而剧情大纲里根本没有 Task，于是她讲完想考却没题可考，
-    //  表现是"演着演着突然变成上课，然后卡住"。
+    // 不能只换标题、里面还是那一套
+    // 剧情幕里写"把知识点讲清楚，讲完再考他"，她会当场开始上课
+    // 而剧情大纲里根本没有 Task，于是她讲完想考却没题可考，
+    // 表现是"演着演着突然变成上课，然后卡住"。
     o += story ? L"【剧情大纲】\n" : L"【教学大纲】\n";
     //
-    // ---- 整条线的总纲：放在幕列表【之前】，她先知道全剧在讲什么
+    // ---- 整条线的总纲：放在幕列表
     //
-    //  只给当前幕的 Goal，她会把每一幕都演成独立的一出戏；
-    //  先给总纲，她才知道第三幕的"绕"是为第四幕的"说出口"蓄的力。
+    // 只给当前幕的 Goal，她会把每一幕都演成独立的一出戏；
+    // 先给总纲，她才知道第三幕的"绕"是为第四幕的"说出口"蓄的力。
     if (story && !s.note.empty())
         o += L"【这条线在讲什么】" + s.note + L"\n";
     for (size_t i = 0; i < s.chapters.size(); ++i) {
@@ -8849,20 +8592,20 @@ std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter) {
         //
         // ---- 感情曲线的三栏，只在剧情幕里给
         //
-        //  这是整个剧情大纲真正起作用的地方：
-        //    Mood 告诉她这一幕是什么味道
-        //    Must 是"演完了没有"的判据（她自己就是靠它决定能不能进下一幕）
-        //    Ban  是护栏——不写，她大概率第一幕就把底牌掀了
+        // 这是整个剧情大纲真正起作用的地方：
+        // Mood 告诉她这一幕是什么味道
+        // Must 是"演完了没有"的判据（她自己就是靠它决定能不能进下一幕）
+        // Ban 是护栏——不写，她大概率第一幕就把底牌掀了
         if (story) {
             if (!c.mood.empty()) o += L"    情绪基调：" + c.mood + L"\n";
             if (!c.must.empty()) o += L"    这一幕结束前必须发生：" + c.must + L"\n";
             if (!c.ban.empty())  o += L"    【绝对不能】" + c.ban + L"\n";
             //
-            // ---- Ask 只给【当前幕】：给她一个递给他的球
+            // ---- Ask 只给当前幕：给她一个递给他的球
             //
-            //  Must 是"这一幕要发生什么"，是她的剧本任务；
-            //  Ask 是"这一句该问他什么"，是对话的引擎。
-            //  没有 Ask 她就只能一个人在那儿情绪流转，玩家全程是观众。
+            // Must 是"这一幕要发生什么"，是她的剧本任务；
+            // Ask 是"这一句该问他什么"，是对话的引擎。
+            // 没有 Ask 她就只能一个人在那儿情绪流转，玩家全程是观众。
             if (no == curChapter && !c.ask.empty())
                 o += L"    【这一幕你要问他的是】" + c.ask + L"\n";
         }
@@ -8874,17 +8617,17 @@ std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter) {
              L"【不要上课、不要出题、不要讲知识点】——这里没有要教的东西，"
              L"只有你们两个人之间的事。\n";
         //
-        // ---- 【剧情模式的引擎姿态：她问，他答】
+        // ---- 剧情模式的引擎姿态：她问，他答
         //
-        //  这一段是整个剧情模式能不能玩下去的关键，不能只靠 Ask 那一句。
-        //  课程模式是「她讲他答」，因为知识天然由她输出；
-        //  剧情模式没有知识，还沿用同一个姿态就成了她的独角戏——
-        //  她一个人在那儿情绪流转，玩家只能看着，那是观看不是互动。
+        // 这一段是整个剧情模式能不能玩下去的关键，不能只靠 Ask 那一句。
+        // 课程模式是「她讲他答」，因为知识天然由她输出；
+        // 剧情模式没有知识，还沿用同一个姿态就成了她的独角戏
+        // 她一个人在那儿情绪流转，玩家只能看着，那是观看不是互动。
         //
-        //  所以把"提问"写成硬性节奏，而不是可选项：
-        //    · 每一轮都要有一个【留给他的口子】（一句问话 / 一个要他选的事）
-        //    · 一轮只推进一件事，别一口气把整幕演完
-        //    · 他答了之后先接住他的话，再往下走
+        // 所以把"提问"写成硬性节奏，而不是可选项：
+        // · 每一轮都要有一个留给他的口子（一句问话 / 一个要他选的事）
+        // · 一轮只推进一件事，别一口气把整幕演完
+        // · 他答了之后先接住他的话，再往下走
         o += L"【怎么把这一幕演下去】\n"
              L"· 这一幕是【你们两个人的对话】，不是你一个人的独白。"
              L"你的每一句都要留一个口子给他：问他一个问题，或者请他做一件小事"
@@ -8901,7 +8644,7 @@ std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter) {
                  L"顺着它自然地开口，等他回答。\n";
         }
         //
-        // ---- 【"这一幕什么时候算演完"必须讲成一件能核对的事】
+        // ---- "这一幕什么时候算演完"必须讲成一件能核对的事
         //
         // 课程章有"题答对"当终点，剧情幕没有。原来只写"觉得演到位了就填 2"，
         // 而模型沉浸式演戏时倾向于一直演下去——她不填，玩家就走不了，
@@ -8915,12 +8658,12 @@ std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter) {
                  L"填了你们还在这里，他点了才真的走）。\n";
         } else {
             //
-            // ---- 【这一幕没写 Must 时的兜底，也要避免纯感觉】
+            // ---- 这一幕没写 Must 时的兜底，也要避免纯感觉
             //
-            // 没有 Must 就没有可核对的终点，但仍要给她一个【能看的东西】：
+            // 没有 Must 就没有可核对的终点，但仍要给她一个能看的东西：
             // 退到 Goal（那一幕要到的位置）。它比"演到位了"具体，
             // 至少她知道要拿什么去比。
-            // 写 story.ini 时【务必写 Must】，那才是可靠的判据。
+            // 写 story.ini 时务必写 Must，那才是可靠的判据。
             o += L"【这一幕什么时候算演完】：上面那个 Goal 走到了、"
                  L"情绪也到上面那个基调上了，就把 advance 填 2"
                  L"（这只是让他能点「下一幕」，填了你们还在这里）。\n";
@@ -8931,14 +8674,10 @@ std::wstring SyllabusToPrompt(const Syllabus& s, int curChapter) {
     }
     return o;
 }
-
-// ============================================================================
-//  模块：导演状态机 —— 一局对话推进到哪一步，由它说了算
+// 模块：导演状态机 —— 一局对话推进到哪一步，由它说了算
 //
-//  这个文件是整个"剧情由大模型驱动"改造的中枢。它自己一句台词都不说，
-//  只做三件事：记住进度、判断门槛、校验模型给的舞台指令。
-// ============================================================================
-
+// 这个文件是整个"剧情由大模型驱动"改造的中枢。它自己一句台词都不说，
+// 只做三件事：记住进度、判断门槛、校验模型给的舞台指令。
 // 路径的编解码（定义在后面，Director::Restore 要用，所以先声明）
 static std::wstring EncodeChapterPath(const std::vector<int>& p);
 static std::vector<int> DecodeChapterPath(const std::wstring& s);
@@ -8958,10 +8697,10 @@ DirStage Director::StageForNewChapter(bool isStory) {
 
 bool Director::Load(const std::wstring& syllabusPath) {
     //
-    // ---- 【必须先 Load，再定 stage】
+    // ---- 必须先 Load，再定 stage
     //
-    // 原来 syllabus_.Load 写在最后，而 stage_ 在它之前就被设成 Intro——
-    // 那一刻 syllabus_.isStory 还是【上一份剧本】的值。
+    // 原来 syllabus_.Load 写在最后，而 stage_ 在它之前就被设成 Intro
+    // 那一刻 syllabus_.isStory 还是上一份剧本的值。
     // 于是剧情模式开局（以及切剧本之后）拿到的阶段是上一份剧本的阶段：
     // 从课程切到剧情，第一幕照样进开场寒暄。
     // 顺序反了，而且它不报错——只是剧情第一幕莫名在聊"为什么选这门课"。
@@ -8987,14 +8726,14 @@ bool Director::Load(const std::wstring& syllabusPath) {
 
 void Director::Restore(const Snapshot& s) {
     //
-    // 【上界必须夹住，这是读旧存档时的真 bug】
+    // 上界必须夹住，这是读旧存档时的真 bug
     // 原来只夹了下界（<1 → 1），上界没管。
     // 于是：作者把大纲从 5 章改成 3 章，玩家读回存着 chapter=5 的旧档，
-    // chapter_ 就一直是 5 —— 越界。此时 Cur() 返回 nullptr，
+    // chapter_ 就一直是 5 —— 越界。此时 Cur 返回 nullptr，
     // 而所有调用点都是 `if (!c) return;` 直接返回：
     // 出不了题、进不了下一章、判不了题，游戏静默卡死，界面上毫无提示。
     //
-    // 夹到 [1, ChapterCount()]：宁可让他重玩第一章，也不能卡死。
+    // 夹到 [1, ChapterCount]：宁可让他重玩第一章，也不能卡死。
     const int maxCh = syllabus_.Count();
     chapter_ = s.chapter < 1 ? 1 : (maxCh > 0 && s.chapter > maxCh ? maxCh : s.chapter);
     SetPath(DecodeChapterPath(s.path));
@@ -9002,13 +8741,12 @@ void Director::Restore(const Snapshot& s) {
     // 会画在没有走过的章上，读旧档（还没有路径字段）时正是这种情况。
     NoteChapter();
     //
-    // ---- 【轮数要放回【对应阶段】的计数器，不能一律塞进 turn_】
+    // ---- 轮数要放回【对应阶段的计数器，不能一律塞进 turn_】
     //
-    // Snap 存的是 StageTurn()（当前阶段的轮数），这里必须按阶段还原。
-    // 否则读档回到章间日常时 dailyTurn_ 还是 0：
-    //   按钮要重新等 kNextDayAfter 轮才露面，
-    //   enough（dailyTurn_ >= DailyTarget()）也一直是 false，
-    //   于是"她已经说了明天见、出口却迟迟不开"——界面上还没有任何解释。
+    // ★ Snap 存的是 StageTurn（当前阶段的轮数），这里必须按阶段还原。
+    // 否则读档回到章间日常时 dailyTurn_ 归零，出口要重新等
+    // advance::kMinTurnsBeforeExit 轮才出现——明明已经聊到一半，
+    // 玩家却像从头开始，而且界面上没有任何解释。
     // 编码跟下面 stage 解码是同一套：1=开场 / 2=章间日常(含告别) / 0=其余。
     const int tn = s.turn < 0 ? 0 : s.turn;
     turn_      = 0;
@@ -9019,31 +8757,26 @@ void Director::Restore(const Snapshot& s) {
     else if (s.stage == 2) dailyTurn_ = tn;
     else                   turn_      = tn;
     //
-    // ---- 【lastLessonTurns_ 必须一起清，否则会串局】
+    // ---- lastLessonTurns_ 必须一起清，否则会串局
     //
-    // 快照里没有它（那是"上一章教了几轮"，属于过程量），
-    // 可 Director 对象是在【整个进程里复用】的：
-    // 玩了一局（某章教了 8 轮）-> 回标题 -> 读一个第 1 章的旧档，
-    // 这时 lastLessonTurns_ 还是上一局的 8。
-    // 后果是这段章间日常被上一局的教学长度拖着——玩家只会觉得"卡住了"，
-    // 界面上没有任何提示说明还差几轮。
-    //
-    // 保守值 0：不再拿它当门槛（DailyTarget 现在与教学长度无关，
-    // 见 DailyTarget 的注释），但这仍要清——它是过程量，不该串局。
+    // ★ 快照里没有它（"上一章教了几轮"属于过程量），而 Director 对象
+    // 在整个进程里复用：玩过一局再读旧档，它仍带着上局的值。
+    // 清成 0 即可。出口门槛只由 advance::kMinTurnsBeforeExit 决定，
+    // 与教学长度无关；这里清的是状态，不是门槛。
     lastLessonTurns_ = 0;
     // ---- 阶段：只恢复 Intro / Daily，其余一律回落 Lesson
     //
     // Quiz / Judge / Review 是"做题做到一半"的临时状态，
     // 存下来读回去并没有那份代码可判，回落成 Lesson 让她重新开口最干净。
-    // 而 Intro / Daily 是【剧情位置】，丢掉就等于跳过自我介绍或整段日常。
+    // 而 Intro / Daily 是剧情位置，丢掉就等于跳过自
     if      (s.stage == 1) stage_ = DirStage::Intro;
     else if (s.stage == 2) stage_ = DirStage::Daily;
     //
-    // ---- 【其余的（老存档 stage=0）不能一律回落 Lesson】
+    // ---- 其余的（老存档 stage=0）不能一律回落 Lesson
     //
-    // Lesson 是【教学】阶段，剧情大纲里没有这个概念：
+    // Lesson 是教学阶段，剧情大纲里没有这个概念：
     // 剧情模式读到一份没有 stage 字段的老档，会掉进教学阶段，
-    // 而剧情幕没有 Task，ShouldQuiz() 恒 false、出不了题，
+    // 而剧情幕没有 Task，ShouldQuiz 恒 false、出不了题，
     // 她只能在"教学"里干聊，出口按钮也不亮——界面上没有任何解释。
     // 跟开新章走同一个判据：课程回开场，剧情回这一幕的相处。
     else                   stage_ = StageForNewChapter(syllabus_.isStory);
@@ -9071,13 +8804,13 @@ void Director::Restore(const Snapshot& s) {
     // 也就是走"留在原地"那条提示，而不是一读档就催她换地方。
     dailyFresh_ = false;
     //
-    // ---- 【读到"第二天见面"这个位置，也要当成第二天】
+    // ---- 读到"第二天见面"这个位置，也要当成第二天
     //
     // 原来一律 false，理由是"读档走的是 BuildResumeKick，不是第二天见面"。
-    // 但 BuildResumeKick 只管【接话那一句】，而 meetAgain_ 还管系统提示里
-    // 那条"【新的一天】上一章已经上完了，这是第二天"。
+    // 但 BuildResumeKick 只管接话那一句，而 meetAgain_ 还管系统提示里
+    // 那条"新的一天上一章已经上完了，这是第二天"。
     // 读到第 2 章开场却不置位，系统提示就不会提"昨天上完了"，
-    // 她于是以为还在第 1 章——配上接话那句，就演成重新自我介绍。
+    // 她于是以为还在第 1 章——配上接话那句，就演成重新自
     //
     // 判据跟推进路径一致：章号 >= 2、处在开场段（人刚碰头、课还没开始）。
     // 剧情大纲一幕接一幕，没有"隔夜"这回事，所以剧情模式一律 false。
@@ -9092,7 +8825,7 @@ void Director::NoteTurn() {
     case DirStage::Daily:
         ++dailyTurn_;
         //
-        // ---- 【考完那第一轮说完了，现在才松开场景锁】
+        // ---- 考完那第一轮说完了，现在才松开场景锁
         //
         // 见 dailyBgHeld_ 的说明：进日常时先沿用考场，
         // 等她把"今天的课就到这里"这句说完，下一轮才让她挑新地方。
@@ -9106,7 +8839,7 @@ void Director::NoteTurn() {
     default:
         ++turn_;
         //
-        // ---- 【"第二天见面"只在进章那一句有效】
+        // ---- "第二天见面"只在进章那一句有效
         //
         // 不请的话她后面每一句都还带着"第二天好啊"的语境，
         // 讲着讲着又见面一次，很怪。
@@ -9115,45 +8848,22 @@ void Director::NoteTurn() {
     }
 }
 
-int Director::DailyTarget() const {
-    //
-    // ---- 【不再拿"上一章教学轮次"当门槛】
-    //
-    // 原来是 max(上一章教学轮次, 3)：教学聊了 15 轮，这段相处也要满 15 轮
-    // 她填的 advance 才作数。本意是"日常的分量不该比上课轻"，
-    // 可实际效果是"她明明说可以走了，按钮就是不亮"——
-    // 玩家看到的就是"下一幕卡得很严"，而且看不出卡在哪。
-    //
-    // 这一段什么时候收，判断权在【她】：她填 advance / 说出告别话。
-    // 引擎只该管一件事——按钮别太早就摆出来催人走（kNextDayAfter，
-    // 见 CanShowNextDay）。两处用同一个数，才不会出现
-    // "按钮明明画着、却怎么也点不亮"这种说不通的状态。
-    //
-    // 剧情幕的 Turns 不是门槛，只用来决定【什么时候提醒她可以收了】
-    // （见 ActNudge）—— 拿它当门槛会让"难演的幕"更难走出去。
-    return kNextDayAfter;
-}
-
+// 第几轮提醒她"可以收了"。只是提醒，不是上限也不是下限。
+// 剧情幕可用 story.ini 的 Turns 覆盖；没写用默认。
 int Director::ActNudge() const {
-    //
-    // ---- 这一幕/这一段 聊到第几轮时提醒她一句"可以收了"
-    //
-    // 课程：固定 kDailyNudge。
-    // 剧情：用这一幕自己写的 Turns（重的幕可以写大一点），没写用 kStoryActTurns。
-    // 只是提醒，不是上限也不是下限——她觉得没到就继续演。
     if (syllabus_.isStory) {
         int t = 0;
         if (const SyllabusChapter* c = Cur()) t = c->turns;
-        if (t <= 0) t = kStoryActTurns;
+        if (t <= 0) t = advance::kStoryActTurns;
         return t;
     }
-    return kDailyNudge;
+    return advance::kDailyNudge;
 }
 
+// 开场转教学的下限。出口是否出现由 advance::Evaluate() 判定，
+// 这里不参与——两处各判一次就会出现"按钮画着却点不动"。
 bool Director::ShouldStartLesson() const {
-    if (stage_ == DirStage::Intro) return introTurn_ >= kIntroMinTurns;
-    if (stage_ == DirStage::Daily) return dailyTurn_ >= DailyTarget();
-    return false;
+    return stage_ == DirStage::Intro && introTurn_ >= advance::kIntroMinTurns;
 }
 
 bool Director::IntroSaidLesson(const std::wstring& say) const {
@@ -9184,7 +8894,7 @@ void Director::EnterLesson() {
     if (stage_ == DirStage::Daily) {
         ++chapter_;
         //
-        // ---- 【从日常进的下一章 = 第二天二人再次见面】
+        // ---- 从日常进的下一章 = 第二天二人再次见面
         //
         // 点「明天见」进来的一定是从日常进的，所以这里设就行，
         // 不用再单独记"是按钮点的还是她说要走的"——两条路是同一件事。
@@ -9193,9 +8903,8 @@ void Director::EnterLesson() {
     } else {
         meetAgain_ = false;
     }
-
     //
-    // ---- 【每进一章，场景锁清零，让她重新定一个地方】
+    // ---- 每进一章，场景锁清零，让她重新定一个地方
     //
     // 不清的话第 2 章会沿用第 1 章那间教室——那不是"稳定"，是素材浪费：
     // 作者配了 10 张背景，结果从头到尾只出现一张。
@@ -9208,14 +8917,14 @@ void Director::EnterLesson() {
         stage_ = DirStage::Graduate;
     } else if (syllabus_.isStory) {
         //
-        // ---- 【剧情幕没有"讲课"这一环】
+        // ---- 剧情幕没有"讲课"这一环
         //
-        //  课程章：开场寒暄 -> 讲课 -> 出题 -> 章间日常 -> 下一章
-        //  剧情幕：开场      ->           这一幕的相处 -> 下一幕
+        // 课程章：开场寒暄 -> 讲课 -> 出题 -> 章间日常 -> 下一章
+        // 剧情幕：开场 -> 这一幕的相处 -> 下一幕
         //
-        //  剧情大纲里没有 Task（不考试），所以进幕直接进 Daily——
-        //  那段"章间日常"就是剧情本身，不是上课之余的调剂。
-        //  推进沿用刚做好的双钥匙：她填 advance=2 点亮「下一幕」，玩家点才走。
+        // 剧情大纲里没有 Task（不考试），所以进幕直接进 Daily
+        // 那段"章间日常"就是剧情本身，不是上课之余的调剂。
+        // 推进规则见上方 advance 契约区：出口由 Evaluate 判定，玩家点才走。
         stage_ = DirStage::Daily;
         turn_  = 0;
         fails_ = 0;
@@ -9228,66 +8937,65 @@ void Director::EnterLesson() {
     dailyTurn_ = 0;
     // 【"可以走了"也要一起清】它是【记一次不收回】的（见推进分支），
     // 不清的话下一段日常一进来就带着上一段的表态，提示会说错。
-    dailyReady_ = false;
+    actDone_ = false;
     MarkSwitchAll(stageChanged_, stageSwitches_, needBg_, needBgm_, needPose_);
 }
 
 void Director::EnterFarewell() {
     //
-    // ---- 【点「明天见」的第一步：进【告别】，章号不动】
+    // ---- 点「明天见」的第一步：进【告别，章号不动】
     //
-    // 【为什么章号不在这里推进】
-    // 告别发生在【今天】——人还站在刚才那个地方说"明天见"。
+    // 为什么章号不在这里推进
+    // 告别发生在今天——人还站在刚才那个地方说"明天见"。
     // 章号一推进，右上角立刻变成第 2 章，而她嘴里说的还是今天的事：
     // 章号跟内容对不上，跟 AfterJudge 里修掉的同一个毛病
     // （右上角写第 2 章、人还在第 1 章的休息段）。
     //
-    // 章号推进放在 EnterNextDayIntro()：玩家点完画面之后才调它。
+    // 章号推进放在 EnterNextDayIntro：玩家点完画面之后才调它。
     stage_ = DirStage::Farewell;
     //
-    // ---- 【这里【不】 MarkSwitchAll：告别不换地方】
+    // ---- 这里【不 MarkSwitchAll：告别不换地方】
     //
     // Mark 了就会触发 StageChangeOrder 的"pose、bg、bgm 三个都要换"。
-    // 而告别这一句只有"那就明天见"——她没写"走吧""我送你到车站"，
-    // 画面却从甜品店跳到了街道：这正是要防的【画面先于叙事跳】。
+    // 而告别这一句只有"那就明天见"——她没写"走吧""
+    // 画面却从甜品店跳到了街道：这正是要防的画面先于叙事跳。
     // 场景沿用（人就站在刚才那个地方说再见），
     // 表情和音乐她照常每轮自己挑，想收一下自然会收。
     //
-    // 【脸和曲子会不会因此不动？不会】
+    // 脸和曲子会不会因此不动？不会
     // 挑素材请求照常发起，她那一句的情绪变了，pose / bgm 跟着变是自然的事。
 }
 
 void Director::EnterNextDayIntro() {
     //
-    // ---- 【点「明天见」= 第二天二人再次见面：先寒暄，再上课】
+    // ---- 点「明天见」= 第二天二人再次见面：先寒暄，再上课
     //
-    // 【原来这里直接调 EnterLesson()：章号++完当场开讲】
-    // 玩家点了「明天见」，下一幕却是她站在教室里直接念知识点——
+    // 玩家点了「明天见」，下一幕却是她站在教室里直接念知识点
     // 中间隔了一夜这件事在画面上完全看不出来，观感就是"连着上两节课"。
     // 同学第二天见面，正常都会先问候两句才上课，直接讲不符合常识。
     //
-    // 改成：先进【开场】阶段（跟第一章开场同一套），让她写怎么碰上的、
+    // 改成：先进开场阶段（跟第一章开场同一套），让她写怎么碰上的、
     // 问候两句；聊够了她自己说"开始吧"再进教学。
     //
-    // 【为什么不另写一个"第二天寒暄"阶段】
+    // 为什么不另写一个"第二天寒暄"阶段
     // 另写就会出现"第一章这样转教学、第二章那样转教学"的分叉，
-    // 改一处忘一处——这正是这个项目反复出问题的模式。
+    // ★ 两处都要同步。
     // 复用 Intro：advance=2 / 她开口讲本章内容 / 兜底接管，全部照旧生效。
     //
-    // 【告别也算"第二天见面"】
+    // 告别也算"第二天见面"
     // 只有玩家点了「明天见」才会走到这里：要么从日常直接点（老路径），
     // 要么先经过告别再点（新路径）。两条都是"又见面了"。
     if (stage_ == DirStage::Daily || stage_ == DirStage::Farewell) {
         ++chapter_;
         //
-        // ---- 【从日常进的下一章 = 第二天二人再次见面】
+        // ---- 从日常进的下一章 = 第二天二人再次见面
         // 点「明天见」进来的一定是从日常进的，跟 EnterLesson 同理。
         //
-        // ---- 【"第二天"是课程的概念，剧情幕之间没有隔夜这回事】
+        // ---- "第二天"是课程的概念，剧情幕之间没有隔夜这回事
         //
         // 剧情大纲一幕接一幕，下一幕可能就是同一天的下一件事。
-        // 沿用 true 的话，Intro / Lesson 那条"【新的一天】你们各自回过家"
-        // 的提示会灌进剧情里，她于是凭空演了一夜过去——
+        // 沿用 true 的话，Intro / Lesson 那条"新的一天
+        // 的提示会灌进剧情里，她于是凭空演了一夜过去
         // 而大纲里这一幕写的可能是"从教室走到中庭"。
         meetAgain_ = !syllabus_.isStory;
     } else {
@@ -9305,21 +9013,20 @@ void Director::EnterNextDayIntro() {
         stage_ = DirStage::Graduate;
     } else {
         //
-        // 进【开场】而不是【教学】——这一句的区别就是"先寒暄"。
-        // introTurn_ 归零，于是第二天的问候照样至少聊 kIntroMinTurns 轮，
+        // 进开场而不是教学
+        // introTurn_ 归零，于是第二天的问候照样至少聊 advance::kIntroMinTurns 轮，
         // 跟第一章开场一样的分量。
         //
-        // ---- 【剧情模式这里【原来】一律进 Intro，是个真 bug】
+        // ---- 剧情模式这里【原来一律进 Intro，是个真 bug】
         //
         // 课程：点「明天见」-> 第二天先寒暄 -> 上课。这条链是对的。
         // 剧情：点「下一幕」-> 却也掉进同一个 Intro，于是她收到的是
-        //   "这门课还没开始上、聊聊为什么选这门课、打算怎么学"——
-        //   而剧情大纲里【根本没有课】。
+        // "这门课还没开始上、聊聊为什么选这门课、打算怎么学"
+        // 而剧情大纲里根本没有课。
         //
         // 更麻烦的是出口：Intro 的退出条件之一是 sheStarted
         // （她说起本章内容就算开场结束），剧情不讲知识点，那条永不命中；
         // 于是只能等她填 advance=2，或者 introTurn_ 攒到 7 轮走引擎兜底。
-        // 玩家看到的就是"点了下一幕，她却开始问我为什么选这门课"。
         //
         // 走 StageForNewChapter：课程回开场，剧情直接进这一幕的相处。
         stage_     = StageForNewChapter(syllabus_.isStory);
@@ -9329,13 +9036,12 @@ void Director::EnterNextDayIntro() {
     }
     MarkSwitchAll(stageChanged_, stageSwitches_, needBg_, needBgm_, needPose_);
 }
-
 // ---- 路径的编解码
 //
 // 存档里存成 "1,2,3" 这样的字符串，而不是 JSON 数组：
 // 存档格式本来就是扁平的 k=v，为一个整数列表引入数组解析不值得。
 // 更重要的是——它读不出来时必须能安全退化（见 Restore），
-// 退化成空路径会走 NoteChapter() 补上当前章，不会画不出图。
+// 退化成空路径会走 NoteChapter 补上当前章，不会画不出图。
 static std::wstring EncodeChapterPath(const std::vector<int>& p) {
     std::wstring s;
     for (size_t i = 0; i < p.size(); ++i) {
@@ -9381,29 +9087,26 @@ int Director::MaxReached() const {
     for (size_t i = 0; i < path_.size(); ++i) if (path_[i] > m) m = path_[i];
     return m;
 }
-
 //
 // ---- 记下"当前这一章走过了"
 //
-// 【必须是一个函数，不能在各处手写 push_back】
+// 必须是一个函数，不能在各处手写 push_back
 // 章号推进的地方有三处（EnterLesson / EnterNextDayIntro / SkipToNextChapter），
-// 加上读档和跳章一共五处。去重和越界判断写散了就是"改一处忘一处"——
-// 这正是本项目反复出问题的模式，路径这种"看着不重要"的字段最容易漏。
+// 加上读档和跳章一共五处。去重和越界判断写散了就是"改一处忘一处"
+// ★ 路径这类字段最容易漏。
 void Director::NoteChapter() {
     if (chapter_ < 1) return;
     if (!HasVisited(chapter_)) path_.push_back(chapter_);
 }
-
 //
 // ---- 跳章：流程图点某个节点
 //
-// 【进【开场】而不是【教学】】
+// 进【开场而不是教学】
 // 跟"明天见"进下一章是同一套：先寒暄再上课。跳章过去直接念知识点，
-// 玩家会觉得是被瞬移进教室的——画面和叙事都没过渡。
 //
-// 【不推进 path_ 之外的任何状态】
+// 不推进 path_ 之外的任何状态
         // 记忆、bond 都保持读档后的原样。往回跳时它们是真实经历过的，
-// 往前跳时它们是"没发生过"——这个差异由调用方补前情提要来兜，
+// 往前跳时它们是"没发生过"
 // 引擎不替玩家伪造进度。
 void Director::JumpToChapter(int n) {
     const int maxCh = syllabus_.Count();
@@ -9412,7 +9115,7 @@ void Director::JumpToChapter(int n) {
     turn_      = 0;
     introTurn_ = 0;
     dailyTurn_ = 0;
-    dailyReady_ = false;   // 同上：跳章之后不能带着上一段的"可以走了"
+    actDone_ = false;   // 同上：跳章之后不能带着上一段的"可以走了"
     fails_     = 0;
     lastLessonTurns_ = 0;
     chapterBg_.clear();
@@ -9420,7 +9123,7 @@ void Director::JumpToChapter(int n) {
     dailyFresh_  = false;
     meetAgain_   = false;
     //
-    // ---- 【跳章也要按剧本类型定阶段】
+    // ---- 跳章也要按剧本类型定阶段
     //
     // 原来一律 Intro：流程图里点第 3 幕，跳过去之后她先来一段
     // "这门课还没开始上"的开场寒暄——同样是课程文案灌进剧情里。
@@ -9451,7 +9154,7 @@ bool Director::SkipToNextChapter() {
 std::wstring Director::StageName() const {
     switch (stage_) {
     // 「开场」不写「自我介绍」：续集设定下他们早就认识，
-    // HUD 和日志里挂着"自我介绍"会跟剧情拧着。
+    // HUD 和运行时挂着"自我介绍"会跟剧情拧着。
     case DirStage::Intro:    return L"开场";
     case DirStage::Lesson:   return L"教学";
     case DirStage::Quiz:     return L"做题";
@@ -9477,7 +9180,7 @@ std::wstring Director::LessonBgmLine(const std::vector<std::wstring>& bgmList) c
         for (size_t i = 0; i < bgmList.size(); ++i) {
             if (bgmList[i].find(gRole.lessonBgm[k]) != std::wstring::npos)
                 //
-                // ---- 【措辞：给一个默认答案，而不是下禁令】
+                // ---- 措辞：给一个默认答案，而不是下禁令
                 //
                 // 写"不要换音乐会"她容易理解成这一项随便填；
                 // 写"上课就用这首"，她有了一个不用犹豫的答案，
@@ -9493,23 +9196,17 @@ Director::Snapshot Director::Snap() const {
     Snapshot s;
     s.chapter = chapter_;
     //
-    // ---- 【存的必须是【当前阶段】的轮数，不是本章教学轮数】
+    // ---- 存的必须是【当前阶段的轮数，不是本章教学轮数】
     //
-    // 【这是"读档回到章间日常，她明明已经说了明天见，按钮却迟迟不出现"的根因】
-    // turn_ 是【本章教学】的轮数，而进章间日常时它被清零（EnterDaily 里
-    //   turn_ = 0; dailyTurn_ = 0;），之后 NoteTurn() 加的是 dailyTurn_。
-    // 于是整个日常阶段 turn_ 恒为 0 —— 存档写进去的就是 0。
-    // 读回来 dailyTurn_ 也是 0，于是：
-    //   · CanShowNextDay()：dailyTurn_(0) < kNextDayAfter(3) -> 按钮【根本不画】
-    //   · enough = ShouldStartLesson()：dailyTurn_ >= DailyTarget() -> false
-    //     而 readyNow = inDaily && enough && sheWantsNext，
-    //     所以【就算她这一轮填了 advance=2，按钮也亮不起来】。
-    // 玩家看到的就是：历史里两个人已经互道再见，可出口迟迟不开——
-    // 而且界面上没有任何说明，只会以为程序坏了。
+    // ★ turn_ 只记教学段。进章间日常时它被清零，之后 NoteTurn 加的是
+    // dailyTurn_；若存 turn_，整段日常写进存档的都是 0。
+    // 读回来出口要重新等 advance::kMinTurnsBeforeExit 轮，
+    // 而历史里两个人可能已经聊到该走了——玩家只会以为程序坏了。
+    // 出口原因由 Progress.reason 显示，轮数错了那份说明也是错的。
     s.turn    = StageTurn();
     //
-    // 【告别段存成 2（日常）】
-    // 读档时章号还没推进，回到那段日常最合理——
+    // 告别段存成 2（日常）
+    // 读档时章号还没推进，回到那段日常最合理
     // 玩家还能再点一次「明天见」，不会卡在一个没有出口的阶段里。
     // （告别是一次性的过场，不值得为它单独占一个存档编码。）
     if      (stage_ == DirStage::Intro) s.stage = 1;
@@ -9524,28 +9221,26 @@ Director::Snapshot Director::Snap() const {
     s.path = EncodeChapterPath(path_);
     return s;
 }
-
 //
-// 【段内场景锁定：一段之内只用一个背景】
+// 段内场景锁定：一段之内只用一个背景
 //
 // 锁：所有段（开场 / 教学 / 做题 / 批改 / 章间日常 / 毕业）
-// 解锁的时机只有一个：【跨段的时候】在转场处把锁定值清掉，让她重新定。
+// 解锁的时机只有一个：跨段的时候在转场处把锁定值清掉，让她重新定。
 //
-// 【为什么章间日常也要锁】
-// 这里要做的是"进入恋爱以后才可以换场景"——是【换一次】去别处走走，
-// 不是在那一段里想换就换。回放里试过把日常段整个放开，结果是
-//   山中参道 → 田心屋 → 上课期间的课室 → 山中参道 → 玩家的卧室
+// 为什么章间日常也要锁
+// 这里要做的是"进入恋爱以后才可以换场景"——是换一次去别处走走，
+// 不是在那一段里想换就换。★ 若把日常段整个放开，结果是
+// 某条路 → 那家店 → 上课期间的课室 → 某条路 → 玩家的卧室
 // 五轮换了五个地方。这正是被抱怨的"场景切换太频繁"，
 // 只是从教学段搬到了恋爱段。
 //
 // 现在一段只定一个地方：
-//   开场(1 个) → 教学+做题+批改(1 个) → 日常(换 1 个新的) → 下一章教学(再换)
+// 开场(1 个) → 教学+做题+批改(1 个) → 日常(换 1 个新的) → 下一章教学(再换)
 // 换场景的次数正好等于段的数量，跟"同一章内只用一个场景"是一个意思。
 //
-// 【开场也要锁】
-// 日志里开场三轮换了三个地方：
-//   课间的课室 → 空无一人的课室 → 角色A的卧室
-// 你们刚认识、还坐在同一张桌子旁边，场景却跳了三次。
+// 开场也要锁
+// 运行时开场三轮换了三个地方：
+// 课间的课室 → 空无一人的课室 → 角色A的卧室
 // 开场锁一个地方就行——进第一章教学时 EnterLesson 会清空重定，不影响后面。
 bool Director::IsRomanceStage() const {
     // 章间日常 = 考完试之后那段相处；毕业 = 全部章节讲完之后的收尾。
@@ -9557,32 +9252,31 @@ bool Director::IsRomanceStage() const {
 
 bool Director::BgLockedNow() const {
     //
-    // 【恋爱段解锁，其余段锁定】
+    // 恋爱段解锁，其余段锁定
     //
-    // 【上一版是"所有段都锁"，日志证明它砍掉了恋爱段最重要的东西】
-    //   阶段=日常，她写「走在穗织的石板路上…到了田心屋，推开店门」，
-    //   画面却锁在「玩家的卧室」——台词在甜品店、背景在卧室，穿帮。
-    // 而这次转场本身是【合理的】：考完试一起去吃荞麦面，
-    //   正是玩家想看到的约会。错的不是"换了地方"，是"换了却没生效"。
+    // ★ 早期写法把所有段都锁死，会砍掉恋爱段最重要的东西：
+    // 阶段=日常，她写「走在镇上的石板路上…到了那家店，推开店门」，
+    // 画面却锁在「玩家的卧室」——台词在甜品店、背景在卧室，穿帮。
+    // 而转场本身是合理的：考完试一起去吃面，
+    // 正是玩家想看到的约会。错的不是"换了地方"，是"换了却没生效"。
     //
-    // 现在恋爱段给她完整清单、每轮自由选，而且【不禁用】——
-    //   不限总次数、不限重复次数，她想一直在神社夜晚聊下去也行。
+    // 现在恋爱段给她完整清单、每轮自由选，而且不禁用
+    // 不限总次数、不限重复次数，她想一直在神社夜晚聊下去也行。
     // 教学段（Intro / Lesson / Quiz / Judge / Review）照旧锁死：
-    //   讲知识点时换教室没有意义，而且必然穿帮。
+    // 讲知识点时换教室没有意义，而且必然穿帮。
     return !IsRomanceStage();
 }
-
 //
-// ---- 【教学段定场景时，只给她"能上课的地方"】
+// ---- 教学段定场景时，只给她"能上课的地方"
 //
-// ★ 对抗回放时发现：教学段第一次定场景时清单是全量 10 张，
+// ★ 风险：教学段第一次定场景时清单是全量 10 张，
 // 她完全可以挑「神社夜晚」——挑中就直接锁成整章的场景。
 // 这正是"考试开始之前背景突然切到夜晚神社"的另一条路径：
 // 之前修的是"引擎兜底挑"（kQuizBgPrefs 命中「夜」），
 // 这条是"她自己挑的"，防不住。
 //
-// 【为什么不是硬编码一张清单】作者会增删素材，写死名字必然腐烂。
-// 这里按名字判断，并且【一个都认不出就整体不限制】——
+// 为什么不是硬编码一张清单作者会增删素材，写死名字必然腐烂。
+// 这里按名字判断，并且一个都认不出就整体不限制
 // 素材全改名了也只是退化成"不限"，不会给她一张空清单。
 bool Director::BgSuitsTeaching(const std::wstring& name) const {
     // 【"能上课的地方"由 char.ini [AssetRole] 的 教室 决定】
@@ -9590,25 +9284,24 @@ bool Director::BgSuitsTeaching(const std::wstring& name) const {
     if (gRole.classBg.empty()) return true;
     return gRole.Has(gRole.classBg, name);
 }
-
 //
-// ---- 【这一轮真正接受哪些背景】
+// ---- 这一轮真正接受哪些背景
 //
-// 【运行日志里"开考前跳到神社夜晚"的最后一条路径】
-// 之前只做了【提示词层】的过滤：给她的清单里只有 3 个教室。
-// 但那拦不住她——她填「神社夜晚」时，校验走的是【全量清单】：
-//   精确匹配命中 -> okBg = true -> 直接锁成整章场景。
+// ★ 症状："开考前跳到神社夜晚"的最后一条路径。
+// 之前只做了提示词层的过滤：给她的清单里只有 3 个教室。
+// 但那拦不住她——她填「神社夜晚」时，校验走的是全量清单：
+// 精确匹配命中 -> okBg = true -> 直接锁成整章场景。
 // 也就是说清单里没列，不代表不接受。她只要想起来这个名字就能选，
 // 而且选完立刻锁死一整章。
 //
 // 更糟的是打回清单也是全量：打回说"这个不行"，列出的清单里却有神社夜晚，
 // 她照抄回来又被接受——打回白跑一趟，问题还在。
 //
-// 【所以过滤必须在校验层，而且三处共用同一份集合】：
-//   挑素材清单 / 校验接受 / 打回清单。
+// 所以过滤必须在校验层，而且三处共用同一份集合：
+// 挑素材清单 / 校验接受 / 打回清单。
 // 各写一份的话，她照着其中一份选中的名字会被另一份拒绝。
 //
-// 【认不出任何教室类就退回全量】换角色包没配教室关键词时，
+// 认不出任何教室类就退回全量换角色包没配教室关键词时，
 // 宁可少一层约束，也绝不给她空清单、绝不乱猜。
 std::vector<std::wstring> Director::BgAcceptNow() const {
     std::vector<std::wstring> all = visible_.bg;
@@ -9620,23 +9313,22 @@ std::vector<std::wstring> Director::BgAcceptNow() const {
     if (cls.empty()) return all;
     return cls;
 }
-
 //
-// 【她在【章间日常】里开讲下一章了】
+// 她在【章间日常里开讲下一章了】
 //
-// 【实测复现如下】
-//   阶段=日常，章号 1/5，她说的却是
-//   「那我们来聊聊下一章的内容。今天要讲的是「数组」…… int score[50] 就是……」
-// 内容已经是第 2 章，右上角还写着第 1 章——玩家看到的是"章号跟内容对不上"。
+// ★ 症状：
+// 阶段=日常，章号 1/5，她说的却是
+// 「那
+// 内容已经是第 2 章，右上角还写着第 1 章
 //
 // 提示词要求她别这么干，但拦不住（她刚答应过玩家"继续学"，
 // 那个承诺比系统提示更像"自己要说的话"）。
-// 既然她已经开讲，就【承认这个事实】转进教学：
+// 既然她已经开讲，就承认这个事实转进教学：
 // 章号前进、阶段改成教学，三者重新对上。
 // 硬留在"日常"标签下讲教学内容，只会让右上角一直显示错的章号。
 //
 // 判据要严，否则她顺口预告一句"下一章讲数组"就转了，日常照样被跳过：
-//   说出下一章的名字 且 （给了代码块 或 用了开讲的措辞）
+// 说出下一章的名字 且 （给了代码块 或 用了开讲的措辞）
 bool Director::DailyStartedNextChapter(const std::wstring& say) const {
     if (stage_ != DirStage::Daily) return false;
     if (say.empty()) return false;
@@ -9661,11 +9353,11 @@ bool Director::LessonStartedNextChapter(const std::wstring& say) const {
     if (!nx || nx->name.empty()) return false;
     if (say.find(nx->name) == std::wstring::npos) return false;
     //
-    // 【判据比日常段严一格】
+    // 判据比日常段严一格
     //
-    // 教学段她讲的就是【本章】，提到下一章的名字多半只是预告
-    // （"下一章我们会讲数组"）——那是正常的收尾，不能当成已经开讲。
-    // 只有真的摆出讲课内容才算：代码块、或者"我们来学 X""这一章讲 X"
+    // 教学段她讲的就是本章，提到下一章的名字多半只是预告
+    // （"下一章
+    // 只有真的摆出讲课内容才算：代码块、或者"
     // 这种开讲的措辞。
     if (say.find(L"```") != std::wstring::npos) return true;
     static const wchar_t* kOpen[] = {
@@ -9680,95 +9372,31 @@ bool Director::LessonStartedNextChapter(const std::wstring& say) const {
     return false;
 }
 
-bool Director::CanShowNextDay() const {
-    if (stage_ != DirStage::Daily) return false;
-    // 先让她把这段相处演几轮，别一进日常就摆个按钮催人走。
-    if (dailyTurn_ < kNextDayAfter) return false;
-    return true;
-}
-
-bool Director::CanShowEndLesson() const {
-    if (stage_ != DirStage::Lesson) return false;
-    // 至少讲过 kMinLessonTurns 轮：她刚开口就摆个"上完了"的按钮太催。
-    if (turn_ < kMinLessonTurns) return false;
-    return true;
-}
-
-bool Director::CanGoNextDay() const {
-    //
-    // ---- 【最后一章也要有出口】
-    //
-    // 这里【不能】加 `chapter_ >= Count() 就返回 false`：
-    // 加了的话最后一章的日常就是【一个没有出口的房间】——
-    // 学完了、聊够了，玩家想走却没有任何按钮可点，
-    // 只能一直聊下去或者强退。那不是"故事一直写下去"，
-    // 那是"想走都走不了"——走得掉，选择权才是真的在玩家手里。
-    //
-    // 最后一章这个按钮的【语义变了】：不是「明天见」（没有明天了），
-    // 而是「今天就到这里」。判据见 NextDayEndsCourse()。
-    //
-    // ---- 【画出来就能点：不再要求她额外表态】
-    //
-    // ★ 原来这里要过两道才走得掉：
-    //    ① 她填 advance=2 / 说出告别话（dailyReady_）
-    //    ② 熬到 DailyTarget()+kDailyGrace = 第 7 轮，引擎兜底
-    //   两道合起来 = 进了章间日常【最少还要再聊满 7 轮】。
-    //   模型并不稳定地产出 advance=2（它常常只顾说话忘了填字段），
-    //   于是实际总是走第 ② 条——这就是"迟迟进不了明天见"。
-    //
-    // ★ 更糟的是"能不能点"在两处各算了一遍，而且算法不同：
-    //     渲染：a.rs.nextDayReady = DailyReady()   —— 只认她的表态
-    //     点击：DirGoNextDay 里的 CanGoNextDay()   —— 含第 7 轮兜底
-    //   于是第 7 轮之后按钮【其实点得动】，可它【一直画成灰的】：
-    //   玩家得不到任何"现在能走了"的信号，只能一遍遍去试。
-    //   同一个判据写两遍必然对不上——本项目已经栽过好几次了。
-    //
-    // 现在合一：能画出来的时候就能点，判据只有这一处。
-    // 她想不想走不再当门槛，只决定右上角那句提示（"她也该回去了"）：
-    // 走不走始终由玩家点按钮决定，点了之后还有【告别】那一幕，
-    // 她会把"明天见"说出口，不会突兀。
-    //
-    // ---- 【教学段也要有出口】
-    //
-    // ★ 原来这里只问 CanShowNextDay()，而它要求 stage_ == Daily：
-    //   教学段【永远】不画按钮。可教学段唯一的自动出口是她填 advance=1
-    //   或把题面说出来（"聊太久替她开考"那条兜底已去掉），
-    //   她忘了填字段时，玩家就卡在上课段：聊十几轮、她都说了"明天见"，
-    //   右上角却没有按钮——看得见的原因是"点不动"，
-    //   真正的原因是【按钮压根不存在】。
-    //   现在教学段聊够 kMinLessonTurns 轮也画一枚，点了就开考或进日常。
-    return CanShowNextDay() || CanShowEndLesson();
-}
-
-// ---- 按钮还要几轮才【能点】（给状态栏，让玩家看得到进度）
-//
-// 灰按钮只说"她还想再聊一会儿"，玩家不知道要等到什么时候，
-// 也分不清是"程序没画出来"还是"还没到时候"——那种不确定最磨人。
-// 给一个具体数字，等待就变成了可预期的事。
-int Director::NextDayWaitTurns() const {
-    // 教学段：告诉玩家还要讲几轮才能手动收尾（按钮已在画，只是还没到）。
-    if (stage_ == DirStage::Lesson) {
-        const int l = kMinLessonTurns - turn_;
-        return l > 0 ? l : 0;
+// 把 Director 的内部状态翻译成推进契约的输入。
+// ★ 只有这里做映射：判据本身在 advance 命名空间，改规则不必碰本文件。
+advance::Result Director::Progress() const {
+    advance::Input in;
+    switch (stage_) {
+        case DirStage::Intro:  in.stage = advance::Stage::Intro;  in.turns = introTurn_; break;
+        case DirStage::Lesson: in.stage = advance::Stage::Lesson; in.turns = turn_;      break;
+        case DirStage::Daily:  in.stage = advance::Stage::Daily;  in.turns = dailyTurn_;break;
+        default:               in.stage = advance::Stage::Other;                        break;
     }
-    if (stage_ != DirStage::Daily) return -1;
-    if (CanGoNextDay()) return 0;
-    // 判据跟 CanShowNextDay 同一个数：能画出来就能点，
-    // 不再有"画出来了还要再等 kDailyGrace 轮"那一层。
-    const int left = kNextDayAfter - dailyTurn_;
-    return left > 0 ? left : 0;
+    in.isStory = syllabus_.isStory;
+    in.done    = actDone_;
+    in.isLast  = NextDayEndsCourse();
+    const SyllabusChapter* c = Cur();
+    in.hasQuiz = (c != nullptr) && c->task.HasQuiz();
+    return advance::Evaluate(in);
 }
+
+bool Director::CanGoNextDay() const     { return Progress().ready; }
+int  Director::NextDayWaitTurns() const { return Progress().wait;  }
 
 bool Director::NextDayEndsCourse() const {
     //
-    // ---- 点了右上角那个按钮，这门课是不是就上完了
-    //
-    // 【为什么靠章数自动推，而不是在剧本里写 Ending = 是】
-    // 写标记就得维护"标记和章数一致"：作者加了第 6 章却忘了挪标记，
-    // 第 5 章判完就结束，第 6 章永远演不到——
-    // 这正是这个项目反复吃的亏（同一个事实两处描述，改一处忘一处）。
-    // 从章数推出来的是【事实】，不是另一份需要同步的声明：
-    // 加一章结局自动后移，删一章自动前移，写 1 章第一章节就是最后一章。
+    // ---- 是否最后一章：从章数推出来，不在剧本里另写 Ending 标记
+    // ★ 标记和章数是同一事实的两份声明，加一章忘挪标记就会提前结局。
     return chapter_ >= syllabus_.Count();
 }
 
@@ -9777,7 +9405,7 @@ bool Director::ShouldQuiz() const {
     if (!c) return false;
     if (!c->task.HasQuiz()) return false;       // 本章没题，不用考
     if (stage_ != DirStage::Lesson) return false;
-    return turn_ >= kMinLessonTurns;
+    return turn_ >= advance::kMinTurnsBeforeExit;
 }
 
 bool Director::EnterQuiz() {
@@ -9794,21 +9422,20 @@ bool Director::EnterQuiz() {
 
 bool Director::AfterJudge(bool passed) {
     if (passed) {
-        // ---- 先记下这一章教了几轮，【必须在 turn_ 清零之前】
+        // ---- 先记下这一章教了几轮，必须在 turn_ 清零之前
         //
-        // 【顺序写反过一次，测试才抓出来】
-        // 原来这句放在 `turn_ = 0` 之后，于是 lastLessonTurns_ 永远是 0，
-        // 下一段日常的目标就退化成保底的 3 轮——
-        // "日常不少于教学轮数"这条要求等于没实现，而且日志里毫无异常。
+        // 顺序写反过一次，测试才抓出来
+        // 下一段日常的目标就退化成保底的 3 轮
+        // "日常不少于教学轮数"这条要求等于没实现，而且运行时毫无异常。
         // 章间日常该聊多久，靠的就是这个数。
         lastLessonTurns_ = turn_;
         fails_ = 0;
         turn_  = 0;
         //
-        // ---- 【最后一章考完也不再自动毕业】
+        // ---- 最后一章考完也不再自动毕业
         //
         // 原来 chapter_ 追上章数就 stage_ = Graduate，于是"学完最后一章"这件事
-        // 由【代码】宣布结束——玩家刚看完最后一道题，画面定格在一句系统旁白上，
+        // 由代码宣布结束——玩家刚看完最后一道题，画面定格在一句系统旁白上，
         // 她一句话都没说，故事被代码收了尾。
         // 而"什么时候算结束"该归玩家管：最后一章的日常里，右上角按钮变成
         // 「今天就到这里」，他点了 -> 她说一句告别 -> 他再点一下 -> 才回主页。
@@ -9816,37 +9443,36 @@ bool Director::AfterJudge(bool passed) {
         // 顺带解决一处不一致：原来"最后一章是结局"写死，作者想做 3 章收尾的短篇做不到，
         // 想在最后一章之后再加戏也做不到。现在结束时机跟着按钮走，写几章都能演。
         //
-        // ---- 过关之后先进【章间日常】，不是立刻开下一章
+        // ---- 过关之后先进章间日常，不是立刻开下一章
         //
         // 连着上课中间没有任何相处，玩家记住的是一个老师，不是一个角色。
-        // ★ 推进写在进日常【之前】的话：右上角变成"第2章"，可人还在第1章的休息段；
-        //   而日常的 SceneHint 是按 chapter_ 取的，于是她拿到的是【第2章的教学目标】——
-        //   玩家看到"刚考完，她立刻开始讲下一章"，那段相处根本没发生，
-        //   而日志里 stage 明明写着 Daily。
-        //   章间日常属于【两章之间】，不该提前归属下一章。
-        //   推进挪到 EnterLesson()：从日常进教学时才 ++chapter_。
+        // ★ 推进写在进日常之前的话：右上角变成"第2章"，可人还在第1章的休息段；
+        // 而日常的 SceneHint 是按 chapter_ 取的，于是她拿到的是第2章的教学目标
+        // 而运行时 stage 明明写着 Daily。
+        // 章间日常属于两章之间，不该提前归属下一章。
+        // 推进挪到 EnterLesson：从日常进教学时才 ++chapter_。
         stage_  = DirStage::Daily;
         turn_   = 0;
         dailyTurn_ = 0;
         //
-        // ---- 【新的一段日常，她的"可以走了"要重新说一次】
+        // ---- 新的一段日常，她的"可以走了"要重新说一次
         //
-        // 不清的话，上一幕她填过 advance=2，这一幕一进来按钮就是亮的——
+        // 不清的话，上一幕她填过 advance=2，这一幕一进来按钮就是亮的
         // 而这一幕她根本还没进入状态，玩家一点就把刚开场的戏打断了。
-        dailyReady_ = false;
+        actDone_ = false;
         //
-        // ---- 【进章间日常必须清掉场景锁】
+        // ---- 进章间日常必须清掉场景锁
         //
-        // 这里要做的是"同一章内只用一个场景，【进入恋爱以后才可以换场景】"。
+        // 这里要做的是"同一章内只用一个场景，进入恋爱以后才可以换场景"。
         // 清掉之后她会在这一段重新定一个地方（街道、甜品店、参道……），
         // 然后这一段就锁在那个新地方。
         //
-        // 【不清的后果（回放实证）】
+        // 不清的后果
         // 只清在 EnterLesson 里，于是整局从头到尾只有一张背景：
-        //   上课期间的课室 —— 连"去旁边买瓶饮料"的恋爱段也还在教室里。
+        // 上课期间的课室 —— 连"去旁边买瓶饮料"的恋爱段也还在教室里。
         // 恋爱段本该是全剧唯一能换地方的地方，被这行漏掉后彻底没了。
         //
-        // 【但也不能"立刻"清：见 dailyBgHeld_ 的说明】
+        // 但也不能"立刻"清：见 dailyBgHeld_ 的说明
         // 立刻清 → 她第一轮就挑了个"气氛最软"的地方（神社夜晚之类），
         // 而那一轮的台词还写在教室里 —— 又是穿帮。
         // 改成：先沿用考场，这一轮说完（NoteTurn）再松。
@@ -9873,7 +9499,7 @@ std::wstring Director::Guide() const {
     const SyllabusChapter* c = Cur();
     if (!c) return L"";
     //
-    // ---- 【这几句话全是课程的说法，剧情里一句都不能用】
+    // ---- 这几句话全是课程的说法，剧情里一句都不能用
     //
     // 它们显示在输入框上方——玩家一点对话框就看见。
     // 课程里没问题；剧情里演到"那块碎片"那一幕，头顶却写着
@@ -9917,10 +9543,9 @@ std::wstring Director::Guide() const {
     }
     return L"";
 }
-
 // 阶段刚切换时，塞进 SceneHint 的强约束。
 //
-// 【光在 prompt 里写"你可以换"是不够的】
+// 光在 prompt 里写"
 // 实测她几乎总是沿用上一次的值——沿用最省 token，而且她没有"转场"的意识。
 // 必须写成"必须全部换掉，不许跟当前一样"，并且点名哪几个字段。
 static std::wstring StageChangeOrder(const Director* self) {
@@ -9928,9 +9553,9 @@ static std::wstring StageChangeOrder(const Director* self) {
     std::wstring o = L"\n【★转场·这一轮必须换舞台★】\n";
     o += L"你们的状态刚刚变了。这一轮的 pose、bg、bgm 【三个都要换】，\n";
     //
-    // ---- 【章内锁定时不许再叫她换背景】
+    // ---- 章内锁定时不许再叫她换背景
     //
-    // 这条转场令是【开考前背景跳到夜晚神社】的第二个来源：
+    // 这条转场令是开考前背景跳到夜晚神社的第二个来源：
     // 进入做题也算"状态变了"，于是她被要求换一个地方，
     // 而"神社夜晚"这类清单里的名字正好是她能想到的"另一个地方"。
     // 跟"同一章内只用一个场景"直接冲突，锁定期间必须把 bg 从要求里拿掉。
@@ -9940,20 +9565,20 @@ static std::wstring StageChangeOrder(const Director* self) {
     else
         o += L"bg 和 bgm 不能跟【当前画面】里的值相同——沿用等于没转场。\n";
     //
-    // ---- 【pose 不能再说"跟当前画面不同"】
+    // ---- pose 不能再说"跟当前画面不同"
     //
     // 【当前画面里的 pose 行被拿掉了（防她照抄锁死），
-    //   于是这条转场要求对 pose 就失去了参照】
+    // 于是这条转场要求对 pose 就失去了参照】
     // 她看不到当前是哪张脸，"不能跟当前相同"变成一句无法执行的话。
-    // 改成用【最近用过】做参照——那份列表一直都在。
+    // 改成用最近用过做参照——那份列表一直都在。
     o += L"pose 不能跟你【最近几轮用过的】最后一张相同（下面那节会列出）。\n";
     //
-    // ---- 【必须点明：不会再有人替你换】
+    // ---- 必须点明：不会再有人替
     //
-    // 【这是删掉引擎兜底之后必须补的一句，跟立绘那条同理】
+    // 这是删掉引擎兜底之后必须补的一句，跟立绘那条同理
     // 原来引擎会在她沿用时代为挑一个"不同的"（背景、音乐都挑）。
-    // 删掉之后，她沿用就等于画面停在原地，玩家会以为卡住了。
-    // 而且更糟的是：以前引擎挑出来的经常穿帮
+    // 删掉之后，她沿用就等于画面停在原地，
+    // 而且更糟的是：早期版本引擎挑出来的经常穿帮
     // （人还在教室里说话，背景却被换成神社）。
     // 讲清后果，她才会真的自己挑。
     o += L"【不会再有人替你换】系统已经不再代劳——你不换，画面就停在原地。\n";
@@ -9969,18 +9594,17 @@ static std::wstring StageChangeOrder(const Director* self) {
     o += L"【换之前先看一眼自己的台词】你人在哪儿、在说什么，舞台就得是哪儿。\n";
     return o;
 }
-
-// 某个地点的注解（地点特点 + 【上一世】在这里发生过什么）。
+// 某个地点的注解（地点特点 + 上一世在这里发生过什么）。
 //
-// 【为什么写台词的请求也要带它】
-// 注解原本只出现在【挑素材】那次请求里（AssetListBlock 拼的清单），
+// 为什么写台词的请求也要带它
+// 注解原本只出现在挑素材那次请求里（AssetListBlock 拼的清单），
 // 而一次对话的顺序是：先写台词 -> 再配画面。
-// 也就是说写台词那一刻她只知道「你们现在在田心屋」，看不到田心屋的注解，
-// 于是「到了这里、想起那件事」只能靠她自己把地点名和 [Memory] 连起来——
+// 也就是说写台词那一刻她只知道「
+// 于是「到了这里、想起那件事」只能靠她自己把地点名和 [Memory] 连起来
 // 连上了是运气，连不上这段注解就白写了。
 // 带上注解之后，「地点 -> 上一世的哪段记忆」才在两个方向上都说得通。
 //
-// 【代码不认识任何地点名】注解整体来自 char.ini，这里只做搬运。
+// 代码不认识任何地点名注解整体来自 char.ini，这里只做搬运。
 // 换角色包 / 换素材名都不用动代码。
 std::wstring Director::PlaceNoteOf(const std::wstring& place) const {
     if (place.empty()) return L"";
@@ -10002,22 +9626,19 @@ std::wstring Director::PlaceNoteOf(const std::wstring& place) const {
     }
     return o;
 }
-
-// ============================================================================
-//   可去的地方清单（给"她要挑一个地方"那几句提示）
-// ============================================================================
+// 可去的地方清单（给"她要挑一个地方"那几句提示）
 //
-//  【为什么需要单独一份，而不是复用挑素材那份】
-//   挑素材那份（AssetListBlock）是给【配画面】那次请求用的，
-//   那时台词已经写完、地点已经定了——它来得太晚，影响不了"去哪儿"。
-//   这一份要在【写台词】时就给到她，才能影响到她嘴里的那个地名。
+// 为什么需要单独一份，而不是复用挑素材那份
+// 挑素材那份（AssetListBlock）是给配画面那次请求用的，
+// 那时台词已经写完、地点已经定了——它来得太晚，影响不了"去哪儿"。
+// 这一份要在写台词时就给到她，才能影响到她嘴里的那个地名。
 //
-//  【剔除当前所在地】
-//   她正站在教室里，清单里再列一次教室没有意义；
-//   而"最近去过"的排在后面并标注，是为了让她知道有别的选项——
-//   不标的话，凭记忆她仍然只会说那个记得最牢的地名。
+// 剔除当前所在地
+// 她正站在教室里，清单里再列一次教室没有意义；
+// 而"最近去过"的排在后面并标注，是为了让她知道有别的选项
+// 不标的话，凭记忆她仍然只会说那个记得最牢的地名。
 //
-//  【代码不认识任何地点名】名字和注解全来自目录扫描 + char.ini。
+// 代码不认识任何地点名名字和注解全来自目录扫描 + char.ini。
 void Director::NotePlaceVisited(const std::wstring& p) const {
     if (p.empty()) return;
     //
@@ -10059,29 +9680,27 @@ std::wstring Director::PlaceChoicesBlock() const {
 std::wstring Director::SceneHint() const {
     const SyllabusChapter* c = Cur();
     if (!c) return L"";
-
-    // ---- 告别：【今天最后一句，只说再见】
+    // ---- 告别：今天最后一句，只说再见
     //
-    // 【这一段为什么单独拎出来】
+    // 这一段为什么单独拎出来
     // 它跟章间日常只差一件事：日常是"继续相处"，告别是"收"。
     // 混进日常分支的话，她会照常抛新话题——于是"明天见"点下去
     // 得到的又是一段闲聊，今天永远不会结束。
     //
-    // 【不写死任何角色名 / 地点名】"再见""明天"是中性的，换包照样成立。
+    // 不写死任何角色名 / 地点名"再见""明天"是中性的，换包照样成立。
     if (stage_ == DirStage::Farewell) {
         //
-        // ---- 【告别不该只有一句】
+        // ---- 告别不该只有一句
         //
-        // 【这是"分别写得干巴巴、没有依依不舍"的根因】
-        // 原来这里写着「【短】一句告别就够了……但别展开」。
-        // 可她在别处被反复要求"把说到的事讲透"，只有这里被要求短——
+        // 这是"分别写得干巴巴、没有依依不舍"的根因
+        // 可她在别处被反复要求"把说到的事讲透"，只有这里被要求短
         // 两条反着来，她只能各让一步，于是告别只剩「……明天见。」四个字。
         // 而分别正是今天最后一句、也是「明天见」这四个字的兑现处，
         // 短了就完全没有舍不得可言，这一天的情绪没有落点。
         //
-        // 【怎么才算"慢"】
-        // 说完了又想起一件事、走两步又回头、最后那句越说越小声——
-        // 这些才是舍不得的样子。所以这里要求她【分成两段】写：
+        // 怎么才算"慢"
+        // 说完了又想起一件事、走两步又回头、最后那句越说越小声
+        // 这些才是舍不得的样子。所以这里要求她分成两段写：
         // 前面是"说明天见"，后面是没忍住又补的那一句。
         // 顺带把 pose2 也接住了：分段之后后半句能落到另一张脸上
         // （单页台词也能切，见 ApplyPose2ForTyping）。
@@ -10099,33 +9718,32 @@ std::wstring Director::SceneHint() const {
         o += L"【不讲编程】这一章已经考完了，今天没有课了。\n";
         return o;
     }
-
-    // ---- 自我介绍 / 章间日常：【别把教学材料塞给她】
+    // ---- 自
     //
     // 这两段是不讲课的。如果照旧把"本章教学目标 + 验收题整道"贴上去，
     // 她会本能地照着讲——玩家想闲聊，她却开始念题，日常段直接失效。
-    // 这两段只需要知道"我们现在没在上课"。
+    // 这两段只需要知道"
     if (stage_ == DirStage::Intro || stage_ == DirStage::Daily) {
         std::wstring o;
         if (stage_ == DirStage::Intro) {
             o += L"【开场】\n";
             //
-            // ---- 【第二天·二人再次见面】
+            // ---- 第二天·二人再次见面
             //
-            // 上一章考完、各自回家，这是【下一次课】前的碰面。
+            // 上一章考完、各自回家，这是下一次课前的碰面。
             // 课按次来，玩家自动就懂；先问候两句再上课才符合常识，
             // 一上来就念知识点就成了"连着上两节课"。
             //
-            // 【这里只写"这一幕该干什么"，不写死任何角色名 / 地点名】
+            // 这里只写"这一幕该干什么"，不写死任何角色名 / 地点名
             // "第二天""又见面"都是中性的，换角色包照样成立。
             if (meetAgain_) {
                 if (syllabus_.isStory) {
                     //
-                    // ---- 【剧情：下一幕不是"第二天"】
+                    // ---- 剧情：下一幕不是"第二天"
                     //
                     // 换了 stage 之后剧情模式正常不会走到这里（新的一幕直接进 Daily），
                     // 但读老档（stage=1）仍可能落进开场，那时绝不能再灌课程文案。
-                    // "上一章已经上完了"在剧情里是句没头没尾的话——
+                    // "上一章已经上完了"在剧情里是句没头没尾的话
                     // 剧情里没有"上完"这回事。
                     o += L"\n【新的一幕】上一段已经过去了，换了个地方继续。\n";
                     o += L"自然地接上，可以说点刚才发生的事、现在的状态。\n";
@@ -10142,10 +9760,10 @@ std::wstring Director::SceneHint() const {
                 }
             }
             //
-            // ---- 【这里不能写"你们刚认识"】
+            // ---- 这里不能写"
             //
             // 续集设定下他们早就认识（角色包 [Player].Relation 里写着关系）。
-            // 谁写在 system prompt 里由包决定，这一段只说"这一幕该干什么"——
+            // 谁写在 system prompt 里由包决定，这一段只说"这一幕该干什么"
             // 打个招呼、聊聊这门课。关系对不对，交给包里的设定，
             // 这里一旦写死"刚认识"，恋人设定就会演成初次见面。
             o += syllabus_.isStory
@@ -10153,21 +9771,21 @@ std::wstring Director::SceneHint() const {
                  : L"这门课还没开始上。自然地打个招呼，聊聊为什么选这门课、"
                    L"打算怎么学。\n";
             //
-            // ---- 【开场最容易犯的毛病：只打招呼，然后等他说话】
+            // ---- 开场最容易犯的毛病：只打招呼，然后等他说话
             //
-            // 日志里开场那一句常常只有"嗨，你也选了这门课啊"就停了，
+            // 运行时开场那一句常常只有"嗨，
             // 玩家不知道该接什么，只能回一个"嗯"，对话立刻冷掉，
             // 开场阶段于是变成互相"嗯""哦"的空转。
-            // 这里必须把【主动权】交给她：她开场，就得由她把话题抛出去。
+            // 这里必须把主动权交给她：她开场，就得由她把话题抛出去。
             o += L"【你来带节奏】：别只打招呼就停——主动抛一个话题、"
                  L"直接问他一个具体的问题，让他接得上话。\n";
             //
-            // ---- 【说透一点，同时给她一个换表情的节拍】
+            // ---- 说透一点，同时给她一个换表情的节拍
             //
             // 短台词一页就装完了，而第二个表情只在翻页时才切
             // （Pose2SwitchPage 在单页时返回 -1），于是开场那句的 pose2
             // 永远不显示——等于开场没有第二个表情。
-            // 要求【寒暄一段 + 抛话题一段】，中间用一行 --- 分开：
+            // 要求寒暄一段 + 抛话题一段，中间用一行 --- 分开：
             // 既让这一句有内容，也让后半段那张脸真的出现。
             o += L"【说透一点】：这一句分成两段——先寒暄/调侃，"
                  L"再抛出你的问题；两段之间写一行 --- 。\n";
@@ -10177,17 +9795,16 @@ std::wstring Director::SceneHint() const {
         } else {
             o += L"【章间·日常】\n";
             //
-            // ---- 【最要命的一条：她刚答应过"进下一章"，惯性极强】
+            // ---- 最要命的一条：她刚答应过"进下一章"，惯性极强
             //
-            // 【运行日志：这段一帧都没发生】
+            // ★ 症状：这段一帧都没发生。
             // 她在判完卷时说了"要不要直接进下一章？"，玩家答"好的"，
-            // 于是进到日常段。可她的上下文还停在"我刚答应讲下一章"，
+            // 于是进到日常段。可她的上下文还停在"
             // 第一轮开口就是"好吧，那就开始第二章——数组"，
             // 然后当场讲起数组的三条要点。整段相处被一句话跳过了。
             //
-            // 原来的禁止清单写得够细，但压不住这个惯性——
             // 她刚许下的承诺，比系统提示更"像自己要说的话"。
-            // 必须【点破这个具体场景】，让她意识到现在不是兑现承诺的时候。
+            // 必须点破这个具体场景，让她意识到现在不是兑现承诺的时候。
             o += L"【先停一下】你上一句很可能刚说了「要不要进下一章」，"
                  L"他也答应了。\n";
             o += L"他答应的是【先聊一会儿】，不是【立刻开讲】。\n";
@@ -10196,30 +9813,30 @@ std::wstring Director::SceneHint() const {
             o += L"先聊点别的：他刚才那道题写得怎么样、今天累不累、\n"
                  L"你自己想说的事。讲下一章是【之后】的事，不是现在。\n";
             //
-            // ---- 【禁止清单必须写死，"不要讲下一章"这一句太窄了】
+            // ---- 禁止清单必须写死，"不要讲下一章"这一句太窄了
             //
-            // 【这是"章节之间没有谈情说爱"的直接原因】
+            // 这是"章节之间没有谈情说爱"的直接原因
             // 原来只写了"不要开始讲下一章的内容"，而实测她照讲不误：
             // 判完卷、被夸了一句、害羞完，她立刻说
-            // "好，既然指针你已经会了，那我们进下一章——数组"，
+            // "好，既然指针
             // 然后当场讲起数组的三条要点。整段日常一帧都没有。
             //
             // 原因：她刚教完一章，教学惯性极强；而且上下文里
             // 上一轮全是题目和知识点，顺着就讲下去了。
             // 只禁"下一章"不够——她会改成复习本章、或者讲知识点。
             //
-            // 所以这里改成【整段禁止任何编程内容】，并把话题列具体。
+            // 所以这里改成整段禁止任何编程内容，并把话题列具体。
             o += L"上一章已经考完了，现在是你们两个人的时间，不是上课时间。\n";
             o += L"【这一段禁止讲任何编程内容】——不讲下一章、不复习上一章、\n";
             o += L"  不解释概念、不出题、不总结知识点、不列要点。\n";
             o += L"  【特别禁止】不要说\"那我们进下一章\"、不要预告下一章讲什么：\n";
             o += L"  那会把这段相处整个跳过去，而玩家等的就是这段。\n";
             //
-            // ---- 【她是被"半路"推进这段的：上一句还在讲代码】
+            // ---- 她是被"半路"推进这段的：上一句还在讲代码
             //
             // 例：她被推进日常段，可上一句正在问"x 和 y 各是多少"，
-            //   于是日常三轮全在讲「指针的指针」，一段相处都没发生。
-            //   ——她不是在违反指令，是顺着上下文就讲下去了。
+            // 于是日常三轮全在讲「指针的指针」，一段相处都没发生。
+            // ——她不是在违反指令，是顺着上下文就讲下去了。
             //
             // 所以这里点破"没讲完就算了"，否则她一定会把它讲完。
             o += L"【如果你上一句正在讲代码 / 出题 / 解释概念，这一轮立刻打住】\n";
@@ -10229,83 +9846,61 @@ std::wstring Director::SceneHint() const {
             o += L"  刚才那道题做得怎么样（一句就够，别展开）、顺口问问他的事。\n";
             o += L"他刚考完，正是最想跟你说说话的时候——这是相处，不是教学进度。\n";
             //
-            // ---- 【这一段【没有轮次上限】，什么时候收由她决定】
+            // ---- 这一段【没有轮次上限，什么时候收由她决定】
             //
             // 原来把目标轮数写出来（"要聊够大约 N 轮"），聊到那个数又补一句
-            // "已经聊得够了，把 advance 填 2"——上限由【程序定死】：
-            // 气氛正好时她被迫收尾，玩家看到的就是"刚暧昧起来就被拉回教室"。
-            // 现在只保留【下限】（保证这段相处真的发生），上限交给她。
+            // "已经聊得够了，把 advance 填 2"——上限由程序定死：
+            // 气氛正好时她被迫收尾，
+            // 现在只保留下限（保证这段相处真的发生），上限交给她。
             //
-            // ---- 【散场由玩家点按钮，不由她填 advance 决定】
+            // ---- 散场由玩家点按钮，不由她填 advance 决定
             //
             // ★ 让她"觉得气氛到了就把 advance 填 2 进下一章"是错的：
-            //   模型判断的"气氛到了"跟玩家感受根本不是一回事——
-            //   她人还在往店里走就顺手填了 2，引擎于是当场切进下一章。
-            //   而进下一章另有专门的路：玩家点右上角那个按钮，
-            //   先让她把"明天见"说出口，再点到第二天——那一幕是特意做的。
-            //   她填的 advance 一生效，那条路就被整个绕过去了。
-            //   所以这段什么时候结束【由他决定】，她不用替他安排散场：
-            //   上限不在程序里，也不在她嘴里，在玩家手上。
+            // 模型判断的"气氛到了"跟玩家感受根本不是一回事
+            // 她人还在往店里走就顺手填了 2，引擎于是当场切进下一章。
+            // 而进下一章另有专门的路：玩家点右上角那个按钮，
+            // 先让她把"明天见"说出口，再点到第二天——那一幕是特意做的。
+            // 她填的 advance 一生效，那条路就被整个绕过去了。
+            // 所以这段什么时候结束由他决定，她不用替他安排散场：
+            // 上限不在程序里，也不在她嘴里，在玩家手上。
             o += L"这一段【没有轮次限制】，聊多久你们自己定。\n";
             //
-            // ---- 【"演到位"必须写成【可核对的事】，不能写成感觉】
+            // ---- "可以收"必须写成可核对的事，不能写成感觉
             //
-            // ★ 原来写"觉得这一幕可以收了 / 演到位了"——这是感觉，不是判据。
-            //   模型没有"够了"的内在标准，只会一直觉得还没到，
-            //   于是 advance 永远停在 0，按钮永远不亮。
-            //   这是"课程模式迟迟进不去明天见"的【表层】原因：
-            //   剧情模式早就把模糊终点换成了"Must 那几步做完了"，
-            //   课程日常段从来没做过这个改造。
-            //
-            // 【真正的根因在引擎，不在这句话】
-            //   就算她乖乖填了 2、判据也照着改成了可核对的事，
-            //   能不能走还要过 CanGoNextDay 那一道——那里原来要求
-            //   dailyReady_（她【这一轮】正好表态）或者熬到第 7 轮兜底；
-            //   而"画不画"和"点不点"用的还是两个不同的函数，
-            //   于是按钮永远是灰的，玩家得不到"现在能走了"的任何信号。
-            //   详见 CanGoNextDay / a.rs.nextDayReady 两处。
-            //
-            // 可核对的写法：这一轮里到底【发生过什么】。
-            // 她能一眼看到"这件事发生了没有"，不需要判断气氛。
+            // ★ 模型没有"演够了"的内在标准，写"觉得可以收了"会让
+            // advance 永远停在 0。改成"这一轮里发生过什么"才能核对。
+            // 终点与出口判据见上方 advance 契约区（done || 轮数下限）。
             o += L"【什么时候算可以收——看这件事发生了没有，不用猜气氛】\n";
             o += L"  你主动问过他一件【关于他自己】的事，而他也答了\n";
             o += L"  （答得含糊、岔开、嘴硬都算答了）。\n";
             o += L"  做到这一件，就可以把 advance 填 2。\n";
             o += L"  一件都没发生就继续聊——别为了收而收。\n";
             //
-            // ---- 【按钮上写什么，提示词里就得写什么】
-            //
-            // 原来这里硬编码「明天见」。课程里按钮确实写着「明天见」，
-            // 可剧情里同一枚按钮写的是「下一幕」——而 SyllabusToPrompt 的
-            // 剧情分支【已经】写的是「下一幕」。
-            // 于是同一次请求里她收到两个互相矛盾的名字：
-            // 一边让她点「下一幕」，一边让她说"明天见"。
-            // 剧情幕之间并不隔夜，照着"明天见"演，等于凭空多出一夜。
-            // 判据只有 NextDayLabelOf 一处（按钮、日志、状态栏都读它）。
-            // 【不能再说"填了他那边按钮就亮"】
-            // 按钮是演够几轮自己出现的，跟她填不填无关（见 CanGoNextDay）。
-            // 说"填了才亮"等于骗她：她填了却看不到按钮亮，下一次就不填了。
-            // 她填的这一下只是【告诉他你也想走了】，走不走始终是他点按钮。
-            o += L"  就把 advance 填 2——他那边会看到【你也想走了】。\n";
+            // 按钮文案只有 advance::LabelOf 一个来源，提示词里不能另写一份：
+            // 课程说「明天见」、剧情说「下一幕」，同一次请求里出现两个名字
+            // 会让她照着错的那一个演。剧情幕之间不隔夜。
+            // ★ 填 2 会让出口立刻出现（done || turns），所以这里可以说亮；
+            // 出口出现不等于替他做决定，走不走仍由玩家点按钮。
+            o += L"  就把 advance 填 2——他那边会看到出口可以走了。\n";
             o += syllabus_.isStory
                  ? L"  他点了才会真的往下走（你会先收住这一段，然后才是下一幕）。\n"
                  : L"  他点了才会真的走（你会先说再见，然后才是第二天）。\n";
             o += L"  那件事还没发生就填 0，继续聊，不用急着收。\n";
             //
-            // ---- 【聊过提醒线之后：把"可以收了"说成一件她能核对的事】
+            // ---- 聊过提醒线之后：把"可以收了"说成一件她能核对的事
             //
-            // ★ 原来的提醒是「【觉得还没到就继续，没人赶你】只是提醒一下」——
-            //   前半句直接把后半句抵消了：它读完"没人赶我"，
-            //   就永远不会主动填 2。提醒戴着一顶免责帽，等于没提醒。
+            // ★
+            // 前半句直接把后半句抵消了：它读完"没人赶
+            // 就永远不会主动填 2。提醒戴着一顶免责帽，等于没提醒。
             //
             // 现在不提"没人赶"，改成复述那条可核对的判据：
             // 上面那件事发生过没有？发生了就填。它只需要核对，不需要判断气氛。
             //
             // 仍然不是上限——判据依旧是"那件事发生了没有"，
             // 只是提醒她回头看一眼，而不是替她决定该走了。
-            if (dailyTurn_ >= ActNudge() && !dailyReady_) {
+            if (dailyTurn_ >= ActNudge() && !actDone_) {
                 //
-                // ---- 【分模式】课程那句"明天见/想收的时候"，剧情里不成立
+                // ---- 分模式课程那句"明天见/想收的时候"，剧情里不成立
                 //
                 // 剧情幕不隔夜，提醒她"该回家了"会让她凭空演出一夜。
                 // 这里照着各自的终点说：课程是"问过他、他答了"，
@@ -10320,12 +9915,11 @@ std::wstring Director::SceneHint() const {
                          L"  你们还在原地，他点了才会真的走。）\n";
             }
             //
-            // ---- 【这段要"感情升温"，不是"随便闲聊"】
+            // ---- 这段要"感情升温"，不是"随便闲聊"
             //
-            // 设计上要求：考完一章之后是【谈情说爱】的环节，
-            // 而且【由她主动提问】，把关系往前推。
+            // 设计上要求：考完一章之后是谈情说爱的环节，
+            // 而且由她主动提问，把关系往前推。
             //
-            // 原来的提示只写"只聊生活：天气、午饭"——太散了。
             // 实测她照着聊天气和午饭，聊了三轮关系毫无进展，
             // 玩家的感觉是"考完了，然后尬聊了一会儿，又上课了"。
             //
@@ -10334,7 +9928,7 @@ std::wstring Director::SceneHint() const {
             // 等玩家自己找话题，这段基本就冷掉了。
             o += L"\n【这一段是你们升温的时间，不是随便寒暄】\n";
             //
-            // ---- 【这里原来写的是「你平时在神社做什么」】
+            // ---- 这里
             //
             // 神社是这个角色包的剧情地点，属于角色包，不该出现在引擎的提示里：
             // 换一个跟神社无关的角色包，她就被要求聊一个自己根本不去的地方。
@@ -10352,17 +9946,17 @@ std::wstring Director::SceneHint() const {
             o += L"  也不要问「要不要进下一章」「现在就开始吗」：\n";
             o += L"  他在等你开口，不是在等选项。直接把话题递给他。\n";
             //
-            // ---- 【他说「继续学吧」时，你要先聊，不是立刻开讲】
+            // ---- 他说「继续学吧」时，
             //
-            // 【运行日志里刚发生的原样】
-            //   她判完卷说「你想继续学，还是想再练练今天的知识点？」
-            //   他答「继续学吧」
-            //   她下一句就是「好哦～那我们来聊聊下一章的内容。今天要讲的是「数组」……」
-            //   ——然后当场讲起数组，整段相处一句话跳过。
+            // ★ 症状：一个典型现象。
+            // 她判完卷说「
+            // 他答「继续学吧」
+            // 她下一句就是「好哦～那
+            // ——然后当场讲起数组，整段相处一句话跳过。
             //
-            // 这句"继续学吧"是【她在上一句抛出选项之后】才有的，
+            // 这句"继续学吧"是她在上一句抛出选项之后才有的，
             // 所以根子在判卷那句（那边已单独禁掉）。但万一她还是抛了，
-            // 这里必须点破：他答应的是"跟你继续待着"，不是"现在开讲"。
+            // 这里必须点破：他答应的是"跟
             // 模型的默认行为是顺从玩家的直接请求，不点破它一定会开讲。
             o += L"【他说「继续」「继续学吧」「进入下一章吧」的时候】\n";
             o += L"  那是在回应你，不是让你现在开讲。\n";
@@ -10371,50 +9965,45 @@ std::wstring Director::SceneHint() const {
             o += L"  你现在开口讲下一章，就等于把这段相处取消了。\n";
         }
         //
-        // ---- 【两段对 advance 的用法不一样，措辞必须分开】
+        // ---- 两段对 advance 的用法不一样，措辞必须分开
         //
         // 开场：她填 2 才进教学，所以要说清楚 0 和 2 的区别。
-        // 日常：推进权归玩家按钮（见推进分支），她填什么都不生效——
-        //   这里再写"用 0 和 2"等于让她去填一个没用的字段，
-        //   她会反复试探，日志里就出现一串莫名其妙的 advance=2。
+        // 日常：推进权归玩家按钮（见推进分支），她填什么都不生效
+        // 这里再写"用 0 和 2"等于让她去填一个没用的字段，
+        // 她会反复试探，运行时就出现一串莫名其妙的 advance=2。
         if (stage_ == DirStage::Intro)
             o += L"\n这一段的进度不需要 advance=1（那是要出题），只用 0 和 2。\n";
         else
             //
-            // ---- 【章间日常的 advance = "可以走了"，是资格不是执行】
+            // ---- 章间日常的 advance = "可以走了"，是资格不是执行
             //
             // 若这里写"不用填 advance"（把她的判断权整个砍掉），
             // 她想走就没有任何办法表达，玩家只能凭感觉瞎点。
             // 现在恢复她的判断权，但说清楚填了不等于立刻走：
-            //   她填 2  -> 右上角那个按钮亮起来（他可以带她去明天了）
-            //   他点   -> 才真的走（先说再见，再到第二天）
+            // 她填 2 -> 右上角那个按钮亮起来（他可以带她去明天了）
+            // 他点 -> 才真的走（先说再见，再到第二天）
             //
-            // ---- 【★这里原来写「演到位了没有」，跟上面那条可核对判据打架】
+            // ---- ★这里
             //
-            // 上面刚说完"看那件事发生了没有"，这里又说"演到位了没有"——
+            // 上面刚说完"看那件事发生了没有"，这里又说"演到位了没有"
             // 同一份提示词里两个终点，一个可核对、一个靠感觉，
             // 模型会挑省事的那个（感觉），于是上面那条白写。
-            // 两边必须【复述同一个判据】。
+            // 两边必须复述同一个判据。
             o += L"\n这一段用 advance 告诉我【上面那件事发生了没有】：\n"
                  L"  0 = 那件事还没发生，还想再跟他待一会儿（默认）\n"
                  //
-                 // ---- 【同上：按钮文案只有 NextDayLabelOf 一个来源】
+                 // ---- 【同上：按钮文案只有契约里的 LabelOf 一个来源】
                  L"  2 = 那件事已经发生了，可以收了 —— 这只是让他能点「"
-               + NextDayLabelOf(syllabus_.isStory, false)
+               + advance::LabelOf(syllabus_.isStory, false, advance::Stage::Daily, false)
                + L"」，\n"
                  L"      【不是你替他走】：填了你们还在这里，他点了才会走。\n"
                  //
-                 // ---- 【说出再见 = 该填 2，别让台词和字段打架】
+                  // ---- 说出再见 = 该填 2，别让台词和字段打架
+                  //
+                  // ★ 台词已经演到告别、字段还停在"还想再聊"时，出口会缺信号。
+                  // 契约里另有散场词表补漏（advance::SaidFarewellIn）。
                  //
-                 // ★ 她最后一句已经说了
-                 //   「明天见哦，柊史……要是敢迟到的话，我就真的生气了」，
-                 //   他也回了「晚安」，可那一轮 advance 还是 0。
-                 // 模型把"我说再见了"和"advance=2"当成了两件事：
-                 // 台词已经演到告别，字段还停在"还想再聊"，于是按钮不亮——
-                 // 玩家看到的就是"她都说明天见了，出口却迟迟不开"。
-                 // 这里必须把两件事绑死：演到告别，字段就跟上。
-                 //
-                 // ---- 【收尾话的举例也要按剧本类型分开】
+                 // ---- 收尾话的举例也要按剧本类型分开
                  // 剧情幕之间不隔夜，举例里写「明天见」会把她往"告别一夜"
                  // 那边带——而下一幕可能只是换个地方接着聊。
                  L"  【你在台词里说出"
@@ -10424,25 +10013,24 @@ std::wstring Director::SceneHint() const {
                + L"这类收尾的话时，\n"
                  L"     同一轮就把 advance 填 2】——台词演到告别了，字段要跟上。\n"
                  //
-                 // ---- 【同上：别给免责声明】
+                 // ---- 同上：别给免责声明
                  //
-                 // 原来写"没到就填 0，没有人会赶你们"——"没人赶你"这四个字
                  // 会让她把"不填"当成默认值。改成不带评价的中性说法。
                  L"  没到就填 0，继续聊下去就好。\n"
                  //
-                 // ---- 【她随时可以收回】
+                 // ---- 表态在本段内保持
                  //
-                 // 不说这句的话，她会以为"给过一次 2 就一直是 2"，
-                 // 于是后面明明还想聊却不再表态，玩家点的是上一轮的意见。
-                 L"  这一条【每一轮都要重新说】：他没点按钮、而是接着聊下去的话，\n"
-                 L"  上一次那个 2 当场作废——你想收回，下一轮填 0 就是了。\n";
+                 // 那件事一旦发生就是发生了，玩家接着聊几句也不会把它抹掉。
+                 // 要求她每轮重复填 2 只会让出口忽明忽暗。
+                 L"  这一件事发生过就算数：他没点按钮而是接着聊，也不用每轮重填。\n"
+                 L"  想继续聊就继续，出口一直留着，什么时候走由他点。\n";
         // 到了该收尾的量就提醒她，别让她无限闲聊下去
         //
-        // ---- 【章间日常【不催】】
+        // ---- 章间日常【不催】
         //
         // 催她 = 变相的上限：她聊到那个数就被提醒"该走了"，
         // 正是"气氛正好却被拉回教室"的成因。那段收不收由她说了算。
-        // 自我介绍不是恋爱戏，照旧催（不催她能一直寒暄下去）。
+        // 自
         if (stage_ == DirStage::Intro && ShouldStartLesson()) {
             o += L"【已经聊得够了】下一次回话请把 advance 填 2，开始正式的内容。\n";
         }
@@ -10454,21 +10042,21 @@ std::wstring Director::SceneHint() const {
     o += L"第 " + WFromInt(chapter_) + L" / " + WFromInt(syllabus_.Count()) + L" 章："
        + c->name + L"\n";
     //
-    // ---- 【第二天·二人再次见面】
+    // ---- 第二天·二人再次见面
     //
-    // 上一章考完、各自回家，这是【下一次课】。课按次来，
+    // 上一章考完、各自回家，这是下一次课。课按次来，
     // 玩家自动就懂，不需要任何解释——反而"考完立刻接着上第二章"才需要解释。
     //
     // 更重要的是它给了她写转场的余地：她开口写"第二天在教室又碰面"，
     // 画面跟着她的台词走。直接切的话，场景还停在刚才闲聊的地方，
     // 她却开始讲课了——观感就是瞬移，即"画面先于叙事跳"。
     //
-    // 【只在进章那一句注入】之后的每一句都是正常上课，见 NoteTurn 里的清除。
+    // 只在进章那一句注入之后的每一句都是正常上课，见 NoteTurn 里的清除。
     //
-    // 【不写死任何角色名】"第二天""又见面"都是中性的，换角色包照样成立。
+    // 不写死任何角色名"第二天""又见面"都是中性的，换角色包照样成立。
     if (meetAgain_) {
         //
-        // ---- 【剧情里没有"第二天的课"这回事】
+        // ---- 剧情里没有"第二天的课"这回事
         //
         // 正常路径剧情不会走到这里（新的一幕直接进 Daily），
         // 但读老档（stage=Lesson）仍可能落进来，那时绝不能再灌课程文案：
@@ -10492,24 +10080,23 @@ std::wstring Director::SceneHint() const {
     }
     o += syllabus_.isStory ? L"【这一幕的情感目标】" + c->goal + L"\n"
                            : L"【本章教学目标】" + c->goal + L"\n";
-
-    // ---- 把验收题【整道】交给她
+    // ---- 把验收题整道交给她
     //
-    // 【之前她看不到题目，这是个硬伤】
+    // 之前她看不到题目，这是个硬伤
     // 玩家问"这道题怎么做"，她只能凭章节名猜——答非所问，或者干脆说
-    // "你自己想想"。出题之后她同样不知道题面是什么，讲不了题。
+    // "
     //
     // 题目本来就不是秘密：它是对玩家的考卷，不是对老师的考卷。
     // 老师当然要看到卷子才能讲评。
     //
-    // ---- 【标题只是名字，题面才是要做的那件事】
+    // ---- 标题只是名字，题面才是要做的那件事
     //
-    // 【这一轮日志的真凶】标题叫「交换两个整数」，题面却是
-    // 「读入两个整数 a 和 b，把它们的顺序倒过来输出」——
+    // 这一轮日志的真凶标题叫「交换两个整数」，题面却是
+    // 「读入两个整数 a 和 b，把它们的顺序倒过来输出」
     // 两件事并不一样：一个是写个 swap 函数，一个是读入两个数倒着打印。
     //
-    // 她照【标题】发挥，编了一道 swap2 函数填空题讲给他听；
-    // 而判卷标准和编辑器里的题面都是【题面】那一道。
+    // 她照标题发挥，编了一道 swap2 函数填空题讲给他听；
+    // 而判卷标准和编辑器里的题面都是题面那一道。
     // 于是他交的是 A 题、她讲的是 B 题、判的是 A 题——三处对不上，
     // 玩家根本不知道该照哪道写。
     //
@@ -10529,17 +10116,17 @@ std::wstring Director::SceneHint() const {
     }
     if (!c->task.hint.empty()) o += L"提示思路（他卡住时可以用自己的话讲给他）：" + c->task.hint + L"\n";
     //
-    // ---- 【选项也必须给她：她念的那句和按钮上写的必须是同一份】
+    // ---- 选项也必须给她：她念的那句和按钮上写的必须是同一份
     //
-    // 【这是"两套选项穿帮"的根】
+    // 这是"两套选项穿帮"的根
     // 题只给了题面（Stmt），选项（Opt1..N）没给她。
-    // 于是她出题时凭空自己编几个（日志里她编过 `##` 那道注释题），
-    // 而按钮上摆的是 syllabus.ini 里写的那几个——
+    // 于是她出题时凭空自己编几个（运行时她编过 `##` 那道注释题），
+    // 而按钮上摆的是 syllabus.ini 里写的那几个
     // 玩家同时看到两套选项：对话框里她念一套，屏幕上方按钮是另一套，
-    // 立刻就知道"这不是她在考我，是程序在考我"，沉浸感当场断掉。
+    // 立刻就知道"这不是她在考
     //
     // 她出题的方式无法预测（出题判定失效正源于此），
-    // 所以不去猜她怎么问，而是【把要问的东西交给她】——
+    // 所以不去猜她怎么问，而是把要问的东西交给她
     // 内容由包提供，她只负责用自己的口吻说出来。
     // 内容归包、表达归模型，跟当初把题面交给她是同一个分工。
     if (c->task.opts.size() >= 2) {
@@ -10554,28 +10141,28 @@ std::wstring Director::SceneHint() const {
         o += L"  选完由你来讲：选对了你夸他，选错了你讲那个选项错在哪。\n";
     }
     //
-    // ---- 【她在对话里出的题，必须就是这一道】
+    // ---- 她在对话里出的题，必须就是这一道
     //
-    // 【日志实况】验收题是「读入两个整数，倒过来输出」，
+    // 日志实况验收题是「读入两个整数，倒过来输出」，
     // 而她在对话里自己编了一道「把 swap2 函数体补完」。
     // 玩家于是不知道该照哪道写：对话框里是她那道，
     // 编辑器交上去的又是另一道，判卷的标准也跟着对不上。
     //
-    // 题目可以换讲法、可以打比方，但【不能换成另一道题】——
+    // 题目可以换讲法、可以打比方，但不能换成另一道题
     // 他交的就是这一道，她判的也是这一道，三处必须是同一道。
     o += L"你在对话里正式出题时，就出【这一道】：题面照原文说，\n";
     o += L"可以换个讲法、可以加比喻，但不要另编一道别的题。\n";
     o += L"（讲课时随口问的小练习不算，那种他开口答就行。）\n";
     //
-    // ---- 【讲课时举的例子，不要长得像考题】
+    // ---- 讲课时举的例子，不要长得像考题
     //
-    // 引擎靠"在这里写你的代码"这类填空占位判定【正式出题 → 开考】。
+    // 引擎靠"在这里写
     // 她讲指针时顺手写个 swap2 当例子，只要带上那个占位，
     // 就会被当成正式出题直接进考场——而考场里摆的是题面那一道。
     //
-    // 她讲的例子和要考的题于是成了两道题，玩家看着对话框里那道，
-    // 交上去的却是另一道。例子就该是【她写给他看的】，
-    // 不是【留给他填的】。
+    // 她讲的例子和要考的题于是成了两道题，
+    // 交上去的却是另一道。例子就该是她写给他看的，
+    // 不是留给他填的。
     o += L"【讲课举例不要写成要他填的空】：例子是你写给他看的，\n";
     o += L"不要留「在这里写你的代码」「请你补完」这类占位，\n";
     o += L"也不要说「这道题你来写」——那会被当成正式出题，直接进考场。\n";
@@ -10590,9 +10177,9 @@ std::wstring Director::SceneHint() const {
     case DirStage::Lesson:
         o += L"【现在】你在讲这一章。怎么讲、讲多久、讲多细，完全由你决定。\n";
         //
-        // 【教学不等于念讲义】
+        // 教学不等于念讲义
         // 只讲干货的话，这段就变成看文档了——他学得下去，但跟"谈恋爱"没关系。
-        // 每一拍都要有【她这个人】在：讲着讲着顺口吐槽一句、被他夸了嘴硬、
+        // 每一拍都要有她这个人在：讲着讲着顺口吐槽一句、被他夸了嘴硬、
         // 他卡住了先调戏再讲。知识点是载体，相处才是这一幕的内容。
         o += L"【这是你和他的相处时间，不是讲课时间】\n";
         o += L"· 知识点照讲，但别念讲义：讲两句就顺口吐槽他一句、问他一句，\n";
@@ -10623,35 +10210,35 @@ std::wstring Director::SceneHint() const {
         break;
     }
     //
-    // ---- 【章内场景锁定：写 scene 时也要跟着锁定走】
+    // ---- 章内场景锁定：写 scene 时也要跟着锁定走
     //
     // 素材是第二次请求挑的，但 scene 是她写台词时先定下来的。
-    // 她在那儿写"两人走到神社台阶上坐下"，画面却锁在教室里——
+    // 她在那儿写"两人走到神社台阶上坐下"，画面却锁在教室里
     // 台词和背景打架，比背景乱换更明显。
     if (IsRomanceStage()) {
         //
-        // ---- 【恋爱段：地点交给她，转场直接写进台词】
+        // ---- 恋爱段：地点交给她，转场直接写进台词
         //
-        // 【上一版这里有个反向暗示】
-        // 原文写的是"换地方是章间日常的事——那时候你们会离开这里"，
-        // 而她【此刻正在章间日常】，于是那句话对她等于
+        // 早期版本这里有个反向暗示
+        // 原文写的是"换地方是章间日常的事
+        // 而她此刻正在章间日常，于是那句话对她等于
         // "现在就是可以换地方的时候"。下一轮她立刻写了
-        // 「走在穗织的石板路上…到了田心屋，推开店门」——
+        // 「走在镇上的石板路上…到了那家店，推开店门」
         // 而背景还锁在卧室。穿帮正是这句话催出来的。
         //
         // 现在直接告诉她：想换就写转场，画面会跟着走。
         // 挑素材那次请求读得到这句台词，自然会把背景换成店里。
         //
-        // ---- 【"他已经在约你了"——原来只写"可以换地方"，太弱】
+        // ---- "他已经在约
         //
-        // 【实测她在做什么】
-        // 玩家：「我们一起去呗」→ 她：「先把今天的课上完再说啦」
-        // 玩家：「去田心屋？」　　→ 她：「因为你那道题还没答完呢」
-        // 她【一直在把约会推回课堂】——因为上一幕她还在判卷，
+        // 实测她在做什么
+        // 玩家：「
+        // 玩家：「去那家店？」 → 她：「因为
+        // 她一直在把约会推回课堂——因为上一幕她还在判卷，
         // 上下文里全是题目，她顺着就以为课还没上完。
         //
         // 光说"可以带他去别处"没用，那是许可不是邀请。
-        // 得把两件事说死：考试已经结束并且他过了；他现在的每一句都是在约你。
+        // 得把两件事说死：考试已经结束并且他过了；他现在的每一句都是在约
         if (dailyFresh_ && !dailyBgHeld_) {
             o += L"\n【上一幕结束了】考试已经考完、也判过卷了，他通过了。\n";
             o += L"现在不是上课时间，【课已经上完了】，不用再提作业、练习、"
@@ -10660,21 +10247,21 @@ std::wstring Director::SceneHint() const {
             o += L"答应他，带他去一个地方——说出那个地方的名字就行，"
                  L"场景会跟着换过去。\n";
             //
-            // ---- 【把可去的地方列给她，否则她只会说那一个】
+            // ---- 把可去的地方列给她，否则她只会说那一个
             //
-            // 这一句决定了"去哪儿"，可她此刻【看不见任何地点清单】
+            // 这一句决定了"去哪儿"，可她此刻看不见任何地点清单
             // （清单原本只在配画面那次请求里给，那时台词已经写完了）。
-            // 于是她只能凭 [Memory] 说一个地名，而那里田心屋被写了三遍、
-            // 别的地点一条都没有 —— 每局第一章都去田心屋就是这么来的。
+            // 于是她只能凭 [Memory] 说一个地名，而那里那家店被写了三遍、
+            // 别的地点一条都没有 —— 每局第一章都去那家店就是这么来的。
             o += PlaceChoicesBlock();
         }
         else if (!chapterBg_.empty()) {
             o += L"\n【你们现在在】「" + chapterBg_ + L"」。\n";
             //
-            // ---- 【把这个地方的注解一起给她】
+            // ---- 把这个地方的注解一起给她
             //
-            // 注解里除了"这儿是什么地方"，还写了【上一世】在这里发生过什么。
-            // 没有它，她只知道一个地点名，"到了这儿想起那件事"全靠自己连——
+            // 注解里除了"这儿是什么地方"，还写了上一世在这里发生过什么。
+            // 没有它，她只知道一个地点名，"到了这儿想起那件事"全靠自己连
             // 连得上就是运气，连不上 [Memory] 里那些共同经历大半辈子用不上。
             std::wstring pn = PlaceNoteOf(chapterBg_);
             if (!pn.empty()) {
@@ -10709,29 +10296,28 @@ std::wstring Director::SceneHint() const {
     o += StageChangeOrder(this);
     return o;
 }
-
 // ---------------------------------------------------------------- 白名单校验
 //
-// 模型给的槽位名必须是我们认识的。它不知道角色包里有哪些场景，
+// 模型给的槽位名必须是引擎认识的。它不知道角色包里有哪些场景，
 // 让它自由填写会得到 "bg":"教室的黄昏" 这种东西，然后画面直接变空白。
 //
 // 校验通过才应用，不通过就保持现状——宁可场景不变，也不能变没。
 // ---------------------------------------------------------------- 素材打回重填
 //
-// 【为什么做这个，而不是继续加匹配算法】
+// 为什么做这个，而不是继续加匹配算法
 //
 // 之前为了让"她说害羞"能对应上"害羞.png"，一路加了：
-//   归一化（剥目录/扩展名/空格） -> 模糊匹配（字符重合度） -> 中英情绪词表
-//   -> 清单收窄 -> 引擎按台词挑一张
+// 归一化（剥目录/扩展名/空格） -> 模糊匹配（字符重合度） -> 中英情绪词表
+// -> 清单收窄 -> 引擎按台词挑一张
 // 每一层都治好一批、又留下新的例外：她写「微笑」中文词表里没有、
 // 写「tsundere」英文、写「上课的教室」跟清单里的「上课期间的课室」差俩字……
-// 这是在【猜她想把什么名字映射成什么】，猜不完。
+// 这是在猜她想把什么名字映射成什么，猜不完。
 //
-// 而她本人【知道】自己这句话是什么情绪。直接把错的部分摆给她、让她重填，
+// 而她本人知道自己这句话是什么情绪。直接把错的部分摆给她、让她重填，
 // 命中率比任何匹配规则都高，而且不用为每种写法补一条规则。
-// 带氛围说明的清单文本。skipBanned=true 时把【本轮禁用】的那些剔掉。
+// 带氛围说明的清单文本。skipBanned=true 时把本轮禁用的那些剔掉。
 //
-// 【剔除必须两边一起做】给模型看的清单剔了、校验层没剔，就会出现
+// 剔除必须两边一起做给模型看的清单剔了、校验层没剔，就会出现
 // "清单里明明有、填了却被拒"——她照抄回去还是被拒，等于白跑一趟请求。
 std::wstring Director::AssetListBlock(const std::vector<std::wstring>& names,
                                       bool skipBanned, int* outCount) const {
@@ -10768,14 +10354,14 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
                                       bool wantPose2, const std::wstring& badPose2) const {
     // 清单文本。带氛围说明——她就是靠这个判断"哪张适合现在"。
     //
-    // ---- 【bg / bgm 的禁用也必须从清单里剔掉】
+    // ---- bg / bgm 的禁用也必须从清单里剔掉
     //
     // ★ 这是"打回在自相矛盾"的根因
     // 她填「恋ひ恋う縁.Piano Version」，打回说"它不在下面的清单里"，
-    // 可紧接着列出的清单里【明明白白有这一首】。
+    // 可紧接着列出的清单里明明白白有这一首。
     // 她照抄回去又被拒，下一轮还是同一个错——打回白跑一趟。
     //
-    // 真实原因是它被【禁用名单】挡了（连用多轮），不是不存在。
+    // 真实原因是它被禁用名单挡了（连用多轮），不是不存在。
     // 原来只有 pose 走过滤（skipBanned=true），bg/bgm 传 false 不过滤，
     // 于是"说它不在、又把它列出来"同时发生。
     // 三类名字不会重名，统一过滤是安全的。
@@ -10800,7 +10386,7 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
         any = true;
         t += L"【pose 无效】你填的是「" + v.gavePoseName + L"」。\n";
         //
-        // 【禁用要单独说清楚】
+        // 禁用要单独说清楚
         // 她填的名字本身是有效的、只是这两轮刚用过。
         // 不说清楚的话她会以为"这名字根本不存在"，
         // 然后换一个同样不存在的名字，第二轮还是错。
@@ -10808,29 +10394,29 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
             t += L"  原因：这个名字没问题，但【你已经连续两轮用它了】，这一轮不能再选。\n";
         else if (v.poseViaAlias)
             //
-            // 【"猜中了"也要打回，但原因必须说准】
-            // 她写的 smile 被翻成了「平静」，从程序看是接住了——
+            // "猜中了"也要打回，但原因必须说准
+            // 她写的 smile 被翻成了「平静」，从程序看是接住了
             // 可她想表达的是开心，画面却是面无表情的。
             // 只说"不在清单里"她会莫名其妙（她觉得程序接住了啊），
-            // 必须点破：程序是【猜】的，猜得未必是你要的。
+            // 必须点破：程序是猜的，猜得未必是
             t += L"  原因：这不是清单里的名字，程序只能【猜】你想说哪个（"
                  L"比如 smile 会被猜成「平静」，可你要的明明是开心的脸）。\n"
                  L"  猜的未必对——请从下面清单里选一个你真正想要的。\n";
         else
             t += L"  原因：它不在下面的清单里（名单外的名字画面不会变，等于你白填了）。\n";
         //
-        // ---- 【打回也要人称化】
+        // ---- 打回也要人称化
         //
-        // 平时问"你此刻的状态"，打回时却说"另选一个"——两种语气混着用，
+        // 平时问"
         // 等于人称化只做了一半。打回是最需要她重新进入角色的时刻。
         t += L"  再挑一个能代表你此刻状态的词（从下面清单里照抄）。\n\n";
     }
     //
-    // ---- 【第二个表情（恋爱段、教学段都会出现）】
+    // ---- 第二个表情（恋爱段、教学段都会出现）
     //
     // 两种错法都要点名说清，否则她会照着原样再填一次：
-    //   ① 不在清单里（她自己编了个名字，或者抄错了字）
-    //   ② 跟第一个表情一模一样（这是最常见的——沿用是成本最低的答案）
+    // ① 不在清单里（她自己编了个名字，或者抄错了字）
+    // ② 跟第一个表情一模一样（这是最常见的——沿用是成本最低的答案）
     if (wantPose2) {
         any = true;
         t += L"【pose2 无效】你填的第二个表情是「"
@@ -10839,7 +10425,7 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
         t += L"  这一句需要两个【不同】的词：pose 是你开口时的状态，\n"
              L"  pose2 是这句话说完时你变了的那个状态——状态在这一句里往前走一步。\n"
              //
-             // ---- 【教学段的转折要举例，否则她想不出来】
+             // ---- 教学段的转折要举例，否则她想不出来
              //
              // "讲课状态没变"是教学段最常见的回答——她会觉得整句都在讲同一个东西。
              // 给三个讲课里真实会发生的转折，让她知道这些也算"变了"。
@@ -10850,10 +10436,10 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
         any = true;
         t += L"【bg 无效】你填的是「" + v.gaveBgName + L"」。\n";
         //
-        // ---- 【原因必须说准】
+        // ---- 原因必须说准
         //
         // 一律说"不在清单里"会造成自相矛盾：清单里明明列着它。
-        // 她照抄回去又被拒，等于打回白跑一趟（日志里就是这么发生的）。
+        // 她照抄回去又被拒，等于打回白跑一趟（运行时就是这么发生的）。
         if (v.bgWasBanned)
             t += L"  原因：这个名字没问题，但【你已经连续好几轮去那儿了】，"
                  L"这回想去的地方换一个。\n  下面的清单里已经把它去掉了。\n\n";
@@ -10874,17 +10460,15 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
                  L"照抄清单里的名字。\n\n";
     }
     if (!any) return L"";
-
     // ---- 完整清单重新发一遍
     //
-    // 【这是最容易漏的一步】她给错往往不是故意的，是记不住清单。
-    // 只说"你填错了"而不给清单，她只会再猜一个——大概率还是错的，
+    // 这是最容易漏的一步她给错往往不是故意的，是记不住清单。
+    // 只说"
     // 于是打回变成白耽误几秒。
     t += L"【可用清单——只能从这里选，而且要照抄】\n";
     //
-    // ---- 【数量要跟实际列出的对上】
+    // ---- 数量要跟实际列出的对上
     //
-    // 原来写死 visible_.pose.size()（总数），而清单里剔掉了禁用项，
     // 于是出现"pose（10 个）"下面只列了 8 个。她会以为清单没显示全，
     // 于是去填一个没显示出来的名字——而那个正是被禁用的。
     int nPose = 0, nBg = 0, nBgm = 0;
@@ -10911,9 +10495,8 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
         t += L"bgm（" + WFromInt((long long)nBgm) + L" 个）——"
              L"表现当前氛围的音乐（照抄）：\n" + l;
     }
-
     //
-    // 【举例全部来自 char.ini】代码里不再写"脸红->害羞"这种东西——
+    // 举例全部来自 char.ini代码里不再写"脸红->害羞"这种东西
     // 换角色包后这些中文举例全是噪音，反而误导它去挑清单里没有的名字。
     // 没配就只讲原则（原则对任何角色都成立，举例只对这一个角色成立）。
     t += L"\n【怎么选】照着上面那句台词选：\n";
@@ -10925,15 +10508,12 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
     t += L"  · bgm 看【这一幕的氛围】，没有把握就选氛围说明里写「日常」「平时最稳」的那首\n";
     t += LessonBgmLine(visible_.bgm);
     //
-    // ---- 【逗号必须按"已经放了几个字段"来加】
+    // ---- 逗号必须按"已经放了几个字段"来加
     //
-    // 【这是日志里那个畸形模板的出处】
-    // 20:18:54 那次发出的模板是 `{,"bgm":"<照抄>"}` ——
-    // 开头就一个逗号，是段坏掉的 JSON。
-    // 因为 bgm 那行【无条件】加逗号，而 pose/bg 这轮都没进模板。
-    // 模型这次侥幸看懂了，换个模型就直接输出空。
+// ★ 无条件加逗号会拼出 `{,"bgm":...}` 这种坏 JSON：
+// pose/bg 这轮没进模板时，bgm 前面就不能有逗号。
     //
-    // 另外 pose 的条件原来写成 `!v.okPose`，漏了 poseViaAlias：
+    // 另外 pose 的条件
     // 上面诊断段明明说了 pose 无效，模板里却没有 pose 字段，
     // 她根本不知道要重填 pose。
     t += L"\n【只输出这一段 JSON，不要解释，不要重复台词】\n{";
@@ -10957,25 +10537,24 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
     t += L"}";
     return t;
 }
-
 //
 // ------------------------------------------------------- 素材独立请求（挑素材）
 //
-// 【为什么把画面单独拆成一次请求】
+// 为什么把画面单独拆成一次请求
 //
 // 一次请求里她的注意力全在台词上。输出顺序上 pose/bg/bgm 排在 say 前面
-// 也压不住——运行日志里"清了清嗓子，认真起来"却配「叹气」，
+// 也压不住——运行时"清了清嗓子，认真起来"却配「叹气」，
 // 就是她先写完一整段台词、再回头随手补的。
 //
-// 更麻烦的是【漏填】：素材字段空着时引擎只能沿用上一张脸，
+// 更麻烦的是漏填：素材字段空着时引擎只能沿用上一张脸，
 // 而漏填不会被打回（打回只管"填错了"）。
-// 运行日志里连续 4 轮 pose=(空)，画面一动不动，日志却一切正常——
+// 运行时连续 4 轮 pose=(空)，画面一动不动，日志却一切正常
 // 这才是"换脸不勤"最直接的来源。
 //
 // 拆开之后：第一次只写台词，第二次只输出三个名字。
 // 第二次请求里没有任何别的事要干，它有余量真的去判断这一拍的情绪。
 //
-// 【scene / beat 必须一起给她】
+// scene / beat 必须一起给她
 // 那是她写台词时刚想清楚的情境，比"让她重新读一遍自己的台词"准得多。
 // 主请求先定 scene/beat 再写 say，正是为了让后面这次请求有据可依。
 std::wstring Director::AssetPickPrompt(const std::wstring& say,
@@ -10986,45 +10565,44 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
     if (!scene.empty()) t += L"你刚定下的场景：" + scene + L"\n";
     if (!beat.empty())  t += L"这一拍发生的事：" + beat + L"\n";
     //
-    // ---- 【开头也人称化】
+    // ---- 开头也人称化
     //
-    // "为这句话挑画面"是导演在派活。改成"你现在的样子 / 你在哪儿 /
+    // "为这句话挑画面"是导演在派活。改成"
     // 什么样的音乐能表现此刻的氛围"——三个字段被翻译成她自己能感知的东西，
     // 同时把任务边界说清楚（只要这三样）。
     t += L"\n现在只做一件事：为你刚说的这句话挑画面——\n"
          L"你现在的样子、你在哪儿、什么样的音乐能表现此刻的氛围。\n";
     //
-    // ---- 【恋爱段一句台词给两个表情】
+    // ---- 恋爱段一句台词给两个表情
     //
-    // 【为什么是"同轮两个"而不是"跨轮必换"】
+    // 为什么是"同轮两个"而不是"跨轮必换"
     // 傲娇类角色的害羞就是默认表情。跨轮禁用等于逼她别害羞，
     // 逼出来的往往是一张不搭的脸（她讲着情话却挂着认真脸）。
-    // 实测日志里恋爱段四轮全是害羞，正是这条规则逼出来的空转：
-    //   填害羞 -> 被禁 -> 没接住 -> 画面还是害羞 -> 记害羞 -> 下轮继续禁。
+    // 实测运行时恋爱段四轮全是害羞，正是这条规则逼出来的空转：
+    // 填害羞 -> 被禁 -> 没接住 -> 画面还是害羞 -> 记害羞 -> 下轮继续禁。
     //
-    // 把约束从【跨轮】挪到【同轮】之后：
-    //   跨轮连用 -> 允许（人设保住了）
-    //   同轮两个必须不同 -> 强制这一拍有情绪变化
+    // 把约束从跨轮挪到同轮之后：
+    // 跨轮连用 -> 允许（人设保住了）
+    // 同轮两个必须不同 -> 强制这一拍有情绪变化
     // 效果是每句台词都有一条弧线：害羞 -> 心动、害羞 -> 微笑、害羞 -> 坏笑。
     // 观感上"她在害羞"，画面却不再是一张静图。
     //
-    // ---- 【bg 锁定与否决定这一轮要她给几个名字】
+    // ---- bg 锁定与否决定这一轮要她给几个名字
     //
     // 锁定时不给 bg 字段（下面也不列清单）
-    // 提到这里定义，是因为开头那句"只要下面 N 个名字"也依赖它——
-    // 原来那里写死"三个/四个"，跟实际字段数对不上会让她多填或少填。
+    // 提到这里定义，是因为开头那句"只要下面 N 个名字"也依赖它
     const bool lockBg = (BgLockedNow() && !chapterBg_.empty());
 
     const bool romance = IsRomanceStage();
     //
-    // ---- 【pose2 从恋爱段扩展到全段】
+    // ---- pose2 从恋爱段扩展到全段
     //
-    // 原来只有恋爱段带第二个表情，教学段整章都是一张静图——
+    // 原来只有恋爱段带第二个表情，教学段整章都是一张静图
     // 而教学占了全流程一大半，观感上的损失比恋爱段更大。
     // 教学段一句台词里状态同样会变：讲到一半停下来考他、讲完开了个玩笑、
-    // 发现他没跟上——这些都是换第二个状态的时机。
+    // 发现他没跟上
     //
-    // 【判定规则不变】两个不同、都从同一份清单照抄；她没填就降级成单表情，
+    // 判定规则不变两个不同、都从同一份清单照抄；她没填就降级成单表情，
     // 不打断（见挑素材回调：fp2 为空时不发起打回）。
     const bool pose2Wanted = true;
     t += L"【不要重写台词】，也不要解释，只要下面"
@@ -11033,28 +10611,27 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
     int nPose = 0, nBg = 0, nBgm = 0;
     const std::wstring lp = AssetListBlock(visible_.pose, true, &nPose);
     //
-    // ---- 【教学段第一次定场景：只列能上课的地方】
+    // ---- 教学段第一次定场景：只列能上课的地方
     //
     // 不这么做的话，她在这一轮挑了「神社夜晚」，整章的课就在神社夜晚上了。
     // 认不出任何教室类就退回全量（宁可不限制，也不能给她空清单）。
     // （lockBg 已在这一段上面定义，开头那句"要几个名字"要用）
     //
-    // 【清单 / 校验 / 打回三处共用同一份集合】
-    // 这里改成调 BgAcceptNow()，跟校验层、打回层是同一份，
+    // 清单 / 校验 / 打回三处共用同一份集合
+    // 这里改成调 BgAcceptNow，跟校验层、打回层是同一份，
     // 不会再出现"清单里没有、填了却被接受"或"打回说不行、清单里又有"。
     const std::vector<std::wstring> bgPool = BgAcceptNow();
     const bool firstSceneForLesson = (BgLockedNow() && chapterBg_.empty() && !bgPool.empty());
     const std::wstring lb = AssetListBlock(bgPool, true, &nBg);
     const std::wstring lm = AssetListBlock(visible_.bgm,  true, &nBgm);
-
     //
-    // ---- 【emotion 必须写在 pose 之前】
+    // ---- emotion 必须写在 pose 之前
     //
     // 输出顺序本身就是引导。直接要 pose，它最容易给的就是"上一张"
     // （沿用是成本最低的答案）。先让它用一个词说出情绪，
-    // 名字自然跟着情绪走——这跟主请求里 scene/beat 排在前面是同一个道理。
+    // 名字自然跟着情绪走
     //
-    // ---- 【emotion 是桥梁，不是终点】
+    // ---- emotion 是桥梁，不是终点
     //
     // emotion 是自由词（她用自己的话），pose 必须从清单照抄。
     // 这两步的关系要写明，否则她可能把 emotion 当成答案直接交，
@@ -11065,30 +10642,29 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
 
     t += L"【可用清单——只能从这里选，而且要照抄】\n";
     //
-    // ---- 【数量必须跟实际列出的条数一致】
+    // ---- 数量必须跟实际列出的条数一致
     // 写死总数、下面却只列一部分，她会以为清单没显示全，
     // 于是去填一个没显示出来的名字——而那正是被禁用的那个。
     //
-    // ---- 【人称化措辞】
+    // ---- 人称化措辞
     //
-    // 原来是"pose（N 个）："——那是导演在给选项做分类题，模型做的是
-    // "从选项里挑一个最像的"。改成"挑选词语代表你此刻的状态"之后，
-    // 视角从【你在导演】变成【你在这个场景里】，角色扮演质量更好。
+    // "从选项里挑一个最像的"。改成"挑选词语代表
+    // 视角从
     //
-    // 【为什么是"状态"不是"情绪"】清单里既有真情绪（害羞/惊讶/得意），
-    // 也有姿态动作（认真/讲解/提问/思考）。说"情绪"她面对「讲解」会卡——
+    // 为什么是"状态"不是"情绪"清单里既有真情绪（害羞/惊讶/得意），
+    // 也有姿态动作（认真/讲解/提问/思考）。说"情绪"她面对「讲解」会卡
     // "讲解算什么情绪？"——结果要么跳过它，要么自己编一个不在清单里的情绪词。
     // "状态"同时覆盖两者，清单里每个词都说得通。
     //
-    // 【"挑选""照抄原词"必须留着】人称化最大的风险是她开始自由发挥
-    // （"我想去个安静点的地方"）。"挑选"暗示从下面给的一堆里选，
+    // "挑选""照抄原词"必须留着人称化最大的风险是她开始自由发挥
+    // （"
     // "照抄原词"是最后一道保险——人称化是语气，不是放开自由度。
     t += L"pose（" + WFromInt((long long)nPose) + L" 个）——"
          L"挑选词语代表你此刻的状态（从下面这些里挑，照抄原词）：\n" + lp;
     //
-    // ---- 【恋爱段：pose2 = 同一句里的第二个表情】
+    // ---- 恋爱段：pose2 = 同一句里的第二个表情
     //
-    // 放在 pose 清单【正下方】：她刚看完可选项，顺势就知道
+    // 放在 pose 清单正下方：她刚看完可选项，顺势就知道
     // "第二个也从这里挑"。放远了她会以为这是个新字段、要去别处找清单。
     if (pose2Wanted) {
         t += L"\n【一句台词可以给两个表情】\n"
@@ -11098,23 +10674,22 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
              L"  两个【必须不一样】：状态在这一句里往前走一步。\n"
              L"    两个填同一个等于后半句没有变化，画面会一直停在第一个表情上。\n";
         //
-        // ---- 【教学段必须举例，否则她会认为"讲课状态没变"】
+        // ---- 教学段必须举例，否则她会认为"讲课状态没变"
         //
         // 恋爱段的转折是情绪（脸红 -> 眼神软下来），模型凭直觉就能写出来；
-        // 教学段她容易觉得"我在讲课，从头到尾一个状态"，
-        // 于是 pose2 要么空着、要么跟第一个填成一样。
+        // 教学段她容易觉得"
         // 给三个讲课里真实会发生的转折，让她知道"这也算变了"。
-        // 【只描述状态，不点任何素材名】换角色包照样成立。
+        // 只描述状态，不点任何素材名换角色包照样成立。
         if (!romance)
             t += L"  讲课时状态也会变：讲到一半停下来考他、讲完开了个玩笑、\n"
                  L"  发现他没跟上——都算是往前走一步。\n";
         t += L"  都从上面这份清单里照抄，名单外的名字画面不会变。\n";
     }
     //
-    // ---- 【章内锁定生效时，bg 直接不给清单、也不进 JSON 模板】
+    // ---- 章内锁定生效时，bg 直接不给清单、也不进 JSON 模板
     //
-    // 给她清单她就会挑，挑出来的往往又是另一个地方——
-    // 然后被锁定覆盖，等于她白选、我们白等。
+    // 给她清单她就会挑，挑出来的往往又是另一个地方
+    // 然后被锁定覆盖，等于白选、白等。
     // 不如明说"这一章就在这里"，把这一项从她的任务里拿掉。
     if (lockBg) {
         t += L"bg：这一章的场景已经定下来了 —— 「" + chapterBg_ + L"」。\n"
@@ -11124,17 +10699,17 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
              L"挑选一个你想去的地方（从下面这些里挑，照抄原词）：\n" + lb;
         if (BgLockedNow())
             //
-            // 【这句原来是"挑一个适合上课的地方"，恋爱段也走这条分支】
+            // 这句
             // 她在约会段被要求挑教室，选什么都是错。
             // 现在只有教学段会看到它，措辞也改成"这一整章的教学"。
             //
-            // 【"上课的地方"这个词本身也是素材语义】换角色包后可能是道场、实验室。
+            // "上课的地方"这个词本身也是素材语义换角色包后可能是道场、实验室。
             // 用 char.ini 的 教学地点 类别名生成措辞；没配就退回中性的"教学"。
             t += L"      【这是本章第一次定场景】：你要上课——挑一个"
                  + (gRole.placeKey.empty() ? L"适合教学的" : (L"「" + gRole.placeKey + L"」类的"))
                  + L"地方，\n      这一整章的教学都在这里，不再换了。\n"
                  //
-                 // ---- 【教学↔恋爱切换：鼓励她主动定一个新地方】
+                 // ---- 教学↔恋爱切换：鼓励她主动定一个新地方
                  //
                  // 每进一章场景锁都会清空重定，但原来没明说"可以换一个"，
                  // 模型默认求稳就沿用上一章那个——作者配了 10 张背景，
@@ -11144,26 +10719,26 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
                  + L"跟上一章不一样也没关系。\n";
         else {
             //
-            // ---- 【恋爱段：默认沿用，写了转场才换】
+            // ---- 恋爱段：默认沿用，写了转场才换
             //
             // 不写这句她会以为"背景还是要沿用上一个"，
-            // 于是台词里写了转场、画面却不动——正是这次穿帮的成因。
+            // 于是台词里写了转场、画面却不动
             //
             // ★ 地点跟着台词走：她写了「走吧」「走在…路上」「推开…门」才是真换地方。
-            //   "可以自由换"不等于"每轮都要换"——只说前者，她会每轮都重选，
-            //   两个教室之间无意义地来回跳：台词里一句"换地方"都没写，画面却一直在动。
+            // "可以自由换"不等于"每轮都要换"——只说前者，她会每轮都重选，
+            // 两个教室之间无意义地来回跳：台词里一句"换地方"都没写，画面却一直在动。
             // ★ 地点举例不能写死：括号里点名具体店名 / 地点的话，那都是这一个角色包
-            //   的素材名——换包后她会照着清单里没有的名字去填。
-            //   真要给举例就写在 char.ini 的 选地点 里。
+            // 的素材名——换包后她会照着清单里没有的名字去填。
+            // 真要给举例就写在 char.ini 的 选地点 里。
             //
-            // ---- 【刚换场：鼓励主动带玩家去新地方】
+            // ---- 刚换场：鼓励主动带玩家去新地方
             //
-            // ★ 只有"没换地方就照抄"这一种语气的话，考完那一轮她被要求"别换"——
-            //   课都结束了，两人还杵在教室里开始约会。只写"鼓励换"也不行：她会每轮都换。
-            //   所以靠 dailyFresh_ 区分：只在"这一段还没定过地方"时出现一次。
+            // ★ 只有"没换地方就照抄"这一种语气的话，考完那一轮她被要求"别换"
+            // 课都结束了，两人还杵在教室里开始约会。只写"鼓励换"也不行：她会每轮都换。
+            // 所以靠 dailyFresh_ 区分：只在"这一段还没定过地方"时出现一次。
             // ★ 且必须等 dailyBgHeld_ 松开：考完那第一轮是先沿用考场的
-            //   （她的台词往往还写在教室里），那轮就催她换，画面会在她还在说
-            //   "今天的课就到这里"的时候跳走——正是之前穿帮的成因。
+            // （她的台词往往还写在教室里），那轮就催她换，画面会在她还在说
+            // "今天的课就到这里"的时候跳走——正是之前穿帮的成因。
             if (dailyFresh_ && !dailyBgHeld_)
                 t += L"      【上一幕结束了】：这是你们两个人的时间，"
                      L"你可以主动带他去个不一样的地方。\n"
@@ -11173,10 +10748,10 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
                      + (chapterBg_.empty() ? L"上面清单里的一个" : (L"「" + chapterBg_ + L"」"))
                      + L"。\n";
             //
-            // ---- 【已经安定：填同一个地方＝留在原地】
+            // ---- 已经安定：填同一个地方＝留在原地
             //
-            // 【正向表述比"别换"好】"别换"是禁令，模型容易理解成
-            // "这一项不重要、随便填一个"；而"填同一个＝你们还在这儿"
+            // 正向表述比"别换"好"别换"是禁令，模型容易理解成
+            // "这一项不重要、随便填一个"；而"填同一个＝
             // 给了它一个默认动作，大多数对话本来就该待着不动。
             else if (!chapterBg_.empty())
                 t += L"      【你们现在在「" + chapterBg_ + L"」】："
@@ -11191,9 +10766,9 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
         }
     }
     //
-    // ---- 【bgm 从"氛围"入手，而不是"配乐"】
+    // ---- bgm 从"氛围"入手，而不是"配乐"
     //
-    // 【为什么不问"你听到什么"】角色不该意识到配乐存在，硬问很怪。
+    // 为什么不问"
     // 但"此刻的氛围"是她能感知的——让她描述空气，再落到曲名上，
     // 人称化的同时不破坏世界观。且"音乐"比"声音"明确，避免填到音效上。
     t += L"bgm（"  + WFromInt((long long)nBgm)  + L" 个）——"
@@ -11204,47 +10779,47 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
     if (!gRole.hintPose.empty()) t += L"：" + gRole.hintPose;
     t += L"\n";
     //
-    // ---- 【整章锁定时，bg 这条根本不该出现】
+    // ---- 整章锁定时，bg 这条根本不该出现
     //
     // 上面已经明说"这一章的场景已经定下来了…不用选，也不要换"，
-    // JSON 模板里也【没有 bg 字段】。这里再来一句"挑你想去的地方"
+    // JSON 模板里也没有 bg 字段。这里再来一句"挑
     // 是自相矛盾：它召唤模型去想一个填了也不用的值。
     if (!lockBg) {
         t += L"  · bg 挑你想去的地方";
         if (!gRole.hintBg.empty())
             //
-            // ---- 【这句原来是直接接在后面的，读起来像在教她"往教室去"】
+            // ---- 这句
             // hintBg 是"台词里出现这些物件 -> 对应哪类地方"的对照，
-            // 是【判断依据】不是【推荐选项】。不点明这一点，它跟下面
-            // "你们现在在田心屋，填同一个＝留在原地" 直接打架：
+            // 是判断依据不是推荐选项。不点明这一点，它跟下面
+            // "
             // 上半段说留在甜品店，下半段举例讲台黑板。
             t += L"（台词里出现这些物件，就往对应的地方去）：" + gRole.hintBg;
         t += L"\n";
         //
-        // ---- 【"留在原地"要讲成一个默认动作，而不是一条禁令】
+        // ---- "留在原地"要讲成一个默认动作，而不是一条禁令
         //
-        // 【怎么选】这一节离输出位近，是通用兜底——上面那几条分语气的
+        // 怎么选这一节离输出位近，是通用兜底——上面那几条分语气的
         // 只在给清单时出现，而它每一轮都在。
         // 说"不要乱换"，模型容易理解成"这一项随便填"；
-        // 说"填同一个＝你们还在这儿"，它就有了一个默认该怎么做的答案。
+        // 说"填同一个＝
         //
-        // 【原来它跟 hintBg 挤在同一行】括号里的内容跟前面的举例连成一句，
+        // 原来它跟 hintBg 挤在同一行括号里的内容跟前面的举例连成一句，
         // 语义上变成了"讲台黑板 -> 教室类（填同一个＝留在原地）"，自相矛盾。
         // 独立成行之后，两句各管一件事：一句说怎么判断，一句说没转场该怎么办。
         if (!BgLockedNow()) {
             //
-            // ---- 【台词里点名了某个地方，就该换过去】
+            // ---- 台词里点名了某个地方，就该换过去
             //
-            // 【这是"她没带玩家去新地方"的真凶】
-            // 玩家说「要不我们一起去芦花姐的田心屋」，
-            // 她回「诶……！你、你居然记得那个地方——！」——
-            // 话都说到田心屋了，画面还锁在空无一人的课室。
+            // 这是"她没带玩家去新地方"的真凶
+            // 玩家说「要不
+            // 她回「诶……！
+            // 话都说到那家店了，画面还锁在空无一人的课室。
             //
             // 因为上面只认「走吧」「走在…路上」「推开…门」这几个动词，
-            // 而她答应的方式根本不是动词，是【提那个地方的名字】。
+            // 而她答应的方式根本不是动词，是提那个地方的名字。
             // 判据太死，于是整段日常一次都没换过地方。
             //
-            // 【不能点名举例】写「比如她说起田心屋」就等于代码认识素材名，
+            // 不能点名举例写「比如她说起那家店」就等于代码认识素材名，
             // 换角色包这句会指向一个清单里没有的地方。只说规则。
             t += L"  · 这句台词里【提到了清单里的某个地方】，就填那个地方——"
                  L"她想带他去那儿，画面跟着走\n";
@@ -11258,13 +10833,13 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
     t += L"  · 清单里没有的名字画面不会变，等于白填；"
          L"上面清单已经把这一轮不能用的去掉了\n";
     //
-    // ---- 【这里原来没有花括号，第二条 if 是【无条件执行】的】
+    // ---- 这里原来没有花括号，第二条 if 是【无条件执行的】
     //
     // 缩进看着像在 if (romance) 里面，C++ 只认花括号——于是非恋爱段
     // 也会冒出孤零零一行"（举例：脸红/嘴硬 -> 害羞系……）"，
     // 而那段里根本没提 pose2，举例凭空出现，读起来莫名其妙。
     //
-    // 【而且它跟上面 "· pose 跟着你此刻的状态走：" 的内容一字不差】
+    // 而且它跟上面 "· pose 跟着
     // 同一段 prompt 里两遍完全相同的映射表是纯噪音。hintPose 是
     // "情绪 -> 表情"的映射，对 pose 和 pose2 通用，上一条已经给过，
     // 这里不再重复。
@@ -11276,7 +10851,7 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
     }
     t += L"\n【只输出这一段 JSON，不要解释，不要重复台词】\n";
     //
-    // ---- 【模板里也人称化】
+    // ---- 模板里也人称化
     //
     // 模板是最靠近输出位置的地方，人称化的引导在这里最强。
     // 键名一个字都不改（pose/bg/bgm 是机器解析用的），只改占位说明文字。
@@ -11286,11 +10861,11 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
              L"\"bgm\":\"<表现当前氛围的音乐，照抄>\"}";
     else if (firstSceneForLesson)
         //
-        // ---- 【教学段定场景：约束写在【输出位】上】
+        // ---- 教学段定场景：约束写在【输出位上】
         //
-        // 【为什么必须放这儿】原来那句"挑一个适合上课的地方"写在 bg 清单后面，
-        // 可它和 JSON 模板之间还隔着【整整 10 行 bgm 清单】+ 6 行【怎么选】。
-        // 模型生成 bg 这个值时，最近的上下文是 bgm 和模板，那句约束早被稀释了——
+        // 为什么必须放这儿
+        // 可它和 JSON 模板之间还隔着整整 10 行 bgm 清单+ 6 行怎么选。
+        // 模型生成 bg 这个值时，最近的上下文是 bgm 和模板，那句约束早被稀释了
         // 于是它等于"从 10 张里随便挑一张"，神社夜晚就是这么被挑中的。
         // 约束离输出位置越近越强，模板里的字段名本身就是最靠近输出的地方。
         t += L"{\"emotion\":\"<状态词>\",\"pose\":\"<代表你此刻状态的词，照抄>\","
@@ -11303,25 +10878,24 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
              L"\"bg\":\"<你想去的地方，照抄>\",\"bgm\":\"<表现当前氛围的音乐，照抄>\"}";
     return t;
 }
-
 //
-// ---- 【剔除会剔光时，两边必须一起退回完整清单】
+// ---- 剔除会剔光时，两边必须一起退回完整清单
 //
-// 【这是"她明明从清单里选了，却每轮都被拒"的根因】
+// 这是"她明明从清单里选了，却每轮都被拒"的根因
 // 给模型看的清单（PoseListExcluding）里有一条保护：
 // 剔完之后空了就退回完整清单，因为它知道"空清单会逼模型瞎编名字"。
-// 但【校验层没有这条保护】——bannedPose_ 该禁还是禁。
+// 但校验层没有这条保护——bannedPose_ 该禁还是禁。
 //
 // 于是两边口径打架：
-//   她看到的清单   = 完整清单（因为剔光了，触发了退回）
-//   校验的口径     = 全部禁用
+// 她看到的清单 = 完整清单（因为剔光了，触发了退回）
+// 校验的口径 = 全部禁用
 // 她照着看到的清单选了一个 → 校验说"禁用" → 拒绝 → 打回 →
 // 打回来的清单同样剔光、同样退回 → 她再选 → 再被拒。
-// 每一轮都空转一次，画面永远不动，而日志里只有一句"本轮禁用(预期)"。
+// 每一轮都空转一次，画面永远不动，而运行时只有一句"本轮禁用(预期)"。
 //
 // 立绘只剩两三张、或者作者临时删了几张图时，这条特别容易踩到。
 //
-// 所以：剔除后【一个都不剩】时，校验层也要跟着解除禁用。
+// 所以：剔除后一个都不剩时，校验层也要跟着解除禁用。
 // 宁可让她继续用同一张脸，也不能让她陷入"选什么都是错"的死循环。
 static bool BansWouldEmpty(const std::vector<std::wstring>& pool,
                            const std::vector<std::wstring>& banned) {
@@ -11364,10 +10938,10 @@ void Director::NarrowPoseToOutfit(const std::wstring& outfit) const {
     if (poseAll_.empty()) return;
     if (outfit.empty()) { visible_.pose = poseAll_; return; }
     //
-    // 只留【这一套衣服画过的那些脸】。
+    // 只留这一套衣服画过的那些脸。
     // 造型名是「服装_表情」，前缀命中就是这套的。
-    // 【不做兜底】收窄之后一件不剩 = 这套衣服一张脸都没画，
-    // 那就让她选不到，而不是悄悄把别的衣服的脸塞回清单里——
+    // 不做兜底收窄之后一件不剩 = 这套衣服一张脸都没画，
+    // 那就让她选不到，而不是悄悄把别的衣服的脸塞回清单里
     // 那样她会选中一张根本不存在的组合，画面还是沿用上一张，
     // 而日志写着"接住了"。宁可空着，也不要假的成功。
     std::vector<std::wstring> keep;
@@ -11382,13 +10956,13 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
                             const std::wstring& pose) const {
     // ---- 校验依据：扫出来的真实文件，不是写死的名单
     //
-    // 【这里以前是两份硬编码白名单】
-    //   kBgSlots[] = { 开场, 课, 题, 通过, 卡住, 终章, 结局_真 ... }
-    //   kBgmSlots[] = { 平静, 开心, 疑惑, 惊吓, 紧张, 结局 }
+    // 这里早期版本是两份硬编码白名单
+    // kBgSlots[] = { 开场, 课, 题, 通过, 卡住, 终章, 结局_真 ... }
+    // kBgmSlots[] = { 平静, 开心, 疑惑, 惊吓, 紧张, 结局 }
     // 作者往 assets/bg/ 丢一张新图，代码里没有它 → 模型永远切不过去，
     // 而改名单要重新编译。素材变了要改代码，这件事本身就是错的。
     //
-    // 现在：文件在清单里就能切。清单由 ScanVisibleAssets() 扫目录得出。
+    // 现在：文件在清单里就能切。清单由 ScanVisibleAssets 扫目录得出。
     bool changed = false;
     // 审计字段：每轮重来，不重来会把上一轮的结论带到这一轮
     v.gavePose = !pose.empty(); v.okPose = false;
@@ -11397,19 +10971,19 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
     // 原文留档：打回时要原样摆给她看（见 StageFixPrompt）
     v.gavePoseName = pose; v.gaveBgName = bg; v.gaveBgmName = bgm;
     //
-    // ---- 【四个"附加结论"也必须每轮清零】
+    // ---- 四个"附加结论"也必须每轮清零
     //
-    // 【这是"效果一直不尽人意"的一个真凶】
-    // 上面四行只清了"给了没有 / 接住没有"，而这四个标记是【只写不清】的：
+    // 这是"效果一直不尽人意"的一个真凶
+    // 上面四行只清了"给了没有 / 接住没有"，而这四个标记是只写不清的：
     // 置真的地方有 5 处，清零的地方一处都没有。
-    // 于是某一轮被置真之后，它会【永久为真】地污染之后每一轮：
+    // 于是某一轮被置真之后，它会永久为真地污染之后每一轮：
     //
-    //   ① poseViaAlias 残留 -> StageNeedsFix 恒为真
-    //      -> 【每一轮都发起打回】，多等几秒却毫无必要，白烧请求
-    //   ② poseWasBanned 残留 -> main 里那三条"接住兜底"被 !WasBanned 挡住
-    //      -> 真的接住了却永远报「被拒!」，日志持续误报
-    //   ③ 同上 -> anyRejected 被压制，真问题不再标 ★
-    //   ④ cmp2 传 okPose || poseWasBanned -> 一律记成「✓一致」
+    // ① poseViaAlias 残留 -> StageNeedsFix 恒为真
+    // -> 每一轮都发起打回，多等几秒却毫无必要，白烧请求
+    // ② poseWasBanned 残留 -> main 里那三条"接住兜底"被 !WasBanned 挡住
+    // -> 真的接住了却永远报「被拒!」，日志持续误报
+    // ③ 同上 -> anyRejected 被压制，真问题不再标 ★
+    // ④ cmp2 传 okPose || poseWasBanned -> 一律记成「✓一致」
     //
     // 三处后果叠加的表现正是实测描述的："一致性 100%，可画面就是不对"。
     // 一致性这个数字本身是被残留标记喂出来的。
@@ -11418,15 +10992,14 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
     v.bgmWasBanned  = false;
     v.poseViaAlias  = false;
     v.bgLocked      = false;
-
     //
-    // ---- 【章内场景锁定：这一轮直接用锁定值，她填的 bg 作废】
+    // ---- 章内场景锁定：这一轮直接用锁定值，她填的 bg 作废
     //
-    // 【必须放在校验之前】校验之后再覆盖的话，v.bg 会被改成锁定值，
+    // 必须放在校验之前校验之后再覆盖的话，v.bg 会被改成锁定值，
     // 但 okBg / gaveBg 已经按她填的值算完了——于是"她填了、没接住"
     // 照样成立，触发一次毫无意义的打回（她重填也改不了锁定的背景）。
     //
-    // 【gaveBg 必须置 false】StageNeedsFix 靠它判断"她填了但没接住"，
+    // gaveBg 必须置 falseStageNeedsFix 靠它判断"她填了但没接住"，
     // 这一轮压根没问她 bg，她填了什么都不能算错。
     std::wstring bgIn = bg;
     if (BgLockedNow() && !chapterBg_.empty()) {
@@ -11439,10 +11012,9 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
     // visible_ 为空 = 还没扫过（调用方漏了 SetVisible）。
     // 这时候【放行】而不是全部拒绝：漏调是程序的错，不该让功能静默失效。
     const bool checkOut  = !visible_.outfit.empty();
-
     // ---- 先归一化她给的名字
     //
-    // 【这是"她明明选了、画面却没反应"最常见的原因】
+    // 这是"她明明选了、画面却没反应"最常见的原因
     // 她不照抄清单：写成 神社.png / bg\\神社 / " 神社 " 都很常见。
     // 那些写法跟清单里的"神社"对不上，于是被当成"瞎编的名字"拒绝，
     // 画面保持原样 —— 从玩家角度看就是"她根本没有换场景"。
@@ -11450,12 +11022,11 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
     const std::wstring bgmN = NormalizeAssetName(bgm);
     const std::wstring posN = NormalizeAssetName(pose);
     const std::wstring outN = NormalizeAssetName(outfit);
-
     //
-    // ---- 【校验用的背景集合：教学段定场景时只收"能上课的地方"】
+    // ---- 校验用的背景集合：教学段定场景时只收"能上课的地方"
     //
-    // 【必须在这里收口】提示词只给她 3 个教室，但校验走全量的话，
-    // 她填「神社夜晚」照样精确命中、照样锁成整章场景——
+    // 必须在这里收口提示词只给她 3 个教室，但校验走全量的话，
+    // 她填「神社夜晚」照样精确命中、照样锁成整章场景
     // "清单里没列"和"不接受"是两回事，之前正是漏了这一层。
     const std::vector<std::wstring> bgAccept = BgAcceptNow();
     const bool checkBgOk = !bgAccept.empty();
@@ -11474,17 +11045,17 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
         // 拼出来的目录层级根本不存在 —— 校验过了，画面却还是空白。
         if (v.bg != bgN) { v.bg = bgN; changed = true; }
     } else if (!bgN.empty() && !bgBanned && checkBgOk) {
-        // ---- 精确匹配不上时，试着做【模糊匹配】
+        // ---- 精确匹配不上时，试着做模糊匹配
         //
-        // 【这就是"bg 输出是上课的教室、画面却是乡间小道"的根因】
+        // 这就是"bg 输出是上课的教室、画面却是乡间小道"的根因
         // 清单里叫「上课期间的课室」，模型自己写了个近义名「上课的教室」。
         // 精确比对落空 → 当成瞎编静默拒绝 → v.bg 保持原样 → 画面不动。
-        // 她给了场景名、日志看着也填了，玩家却看到背景纹丝不动——
+        // 她给了场景名、日志看着也填了，玩家却看到背景纹丝不动
         // 没有任何报错，这种最难查。
         //
-        // 命中就存【清单里的真名】：清单是扫文件扫出来的，
+        // 命中就存清单里的真名：清单是扫文件扫出来的，
         // 用真名去 ResolveBgFor 一定能拿到图，不会再出现"状态换了画面没换"。
-        // 【同样只在"可接受集合"里匹配】
+        // 同样只在"可接受集合"里匹配
         // 用全量清单的话，她填「神社」会模糊匹配到「神社夜晚」并被接受，
         // 教学段那 3 个教室的过滤就形同虚设。
         std::wstring m = MatchAssetName(bgAccept, bgN);
@@ -11500,9 +11071,9 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
         }
     }
     //
-    // ---- 【本章第一次定场景：她这一轮选中的就是整章的场景】
+    // ---- 本章第一次定场景：她这一轮选中的就是整章的场景
     //
-    // 只认【校验通过】的值。她填了个清单里没有的名字时 v.bg 还是旧的，
+    // 只认校验通过的值。她填了个清单里没有的名字时 v.bg 还是旧的，
     // 拿旧值去锁会把上一阶段的地方（比如开场的教室）锁成整章场景。
     // 锁不上就留空，下一轮再定——反正那时背景也没换，效果一样。
     if (BgLockedNow() && chapterBg_.empty() && v.okBg && !v.bg.empty()) {
@@ -11510,16 +11081,16 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
         Dbg(L"本章场景锁定为「%s」（整章不再更换）", chapterBg_.c_str());
     }
     //
-    // ---- 【恋爱段：只记录"现在在哪儿"，不锁】
+    // ---- 恋爱段：只记录"现在在哪儿"，不锁
     //
-    // 记下来是为了写台词时告诉她"你们现在在 X，想到别处就去"——
+    // 记下来是为了写台词时告诉她"
     // 她没有跨轮记忆，不知道当前地点就只能瞎猜，
     // 表现是"上一句还在甜品店，这一句突然在神社，中间没有任何交代"。
-    // 这里【不】做校验拦截：恋爱段允许她一直待在同一个地方，
+    // 这里不做校验拦截：恋爱段允许她一直待在同一个地方，
     // 也允许她每轮都换，重复多少次都不管。
     else if (!BgLockedNow() && v.okBg && !v.bg.empty()) {
         //
-        // ---- 【这一段定过地方了】
+        // ---- 这一段定过地方了
         //
         // 不管她是换了还是照抄原地，只要给了有效值，
         // "刚换场、鼓励带他去别处"就该收起来——否则每轮都催她换，
@@ -11527,24 +11098,23 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
         dailyFresh_ = false;
         if (chapterBg_ != v.bg) {
             //
-            // ---- 【离开的那个地方记为"刚去过"】
+            // ---- 离开的那个地方记为"刚去过"
             //
-            // 换景的【这一刻】才知道上一个地方是哪儿，所以只能在这里记。
-            // 记的是【旧值】：新的那个是"现在在"，会被清单剔除，
+            // 换景的这一刻才知道上一个地方是哪儿，所以只能在这里记。
+            // 记的是旧值：新的那个是"现在在"，会被清单剔除，
             // 记进来反而自己跟自己冲突。
             NotePlaceVisited(chapterBg_);
             chapterBg_ = v.bg;
             Dbg(L"[恋爱段] 场景跟到「%s」（不锁定，下一轮还能换）", chapterBg_.c_str());
         }
     }
-
     //
-    // ---- 【背景定死服装：必须排在 bg 定下来之后、pose 校验之前】
+    // ---- 背景定死服装：必须排在 bg 定下来之后、pose 校验之前
     //
     // 一个地方一套衣服，由 char.ini 的 [Outfit] 背景服装 显式绑定。
-    // 她自己填的 outfit 【不再生效】——背景已经决定穿什么了。
+    // 她自己填的 outfit 不再生效——背景已经决定穿什么了。
     //
-    // 顺序不能挪：早于 bg 的话用的是【上一轮】的场景去定这一轮的衣服；
+    // 顺序不能挪：早于 bg 的话用的是上一轮的场景去定这一轮的衣服；
     // 晚于 pose 校验的话，清单里还留着别的衣服的脸，她照样能选中。
     //
     // 没绑到（这个背景没配 / 角色只有一套衣服）就还原完整清单，
@@ -11559,10 +11129,8 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
             NarrowPoseToOutfit(L"");
         }
     }
-
-    // ---- BGM：交给她挑，但【主页曲拿不到】
+    // ---- BGM：交给她挑，但主页曲拿不到
     //
-    // 原来这里写死两首（主页曲 + 主题曲），她完全没有选择权。
     // 现在跟 bg 一样看扫描清单：ScanVisibleAssets 已经把主页曲剔掉了，
     // 所以她能挑的都是"游戏里的曲子"，怎么挑都不会把标题曲带进剧情。
     //
@@ -11587,18 +11155,18 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
     //
     // ---- 服装：可选字段，不参与"两轮必换"
     //
-    // 【为什么不进禁用名单】
+    // 为什么不进禁用名单
     // 表情是跟着台词走的，每两轮换一次合理；服装是场景层面的事。
     // 强制换衣服的结果是她讲着讲着突然换装——比一直同一张脸更出戏。
-    // 所以这里【不做收窄】，她只在场景真的切换时才会给值。
+    // 所以这里不做收窄，她只在场景真的切换时才会给值。
     //
-    // 【为什么也要模糊匹配】
+    // 为什么也要模糊匹配
     // 她会把「忍者服」写成「忍者装」「忍者」——精确匹配落空就保持原样，
     // 表现是"台词说她换上了忍者服，画面还是校服"，而且日志一切正常。
     //
-    // 【组合不存在时怎么办】
+    // 组合不存在时怎么办
     // 不再有"换一套有它的"这回事——渲染层已经不降级了。
-    // 真值表（outfitExpr）在这里只用来【记一笔】，方便排查哪套衣服缺哪张脸。
+    // 真值表（outfitExpr）在这里只用来记一笔，方便排查哪套衣服缺哪张脸。
     if (!boundOutfit.empty()) {
         // 背景已经定死了，她填什么都作废。
         // 不记 lastBad*、不触发打回——她没做错，是这个字段不该她管。
@@ -11622,64 +11190,63 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
     // 记下当前服装：挑素材的 prompt 要告诉模型"你现在穿的是哪一套"。
     // 放在校验之后——用的是【这一轮真正生效的值】，不是她给的原始文本。
     outfitNow_ = v.outfit;
-
     // ---- 造型：服装 + 表情捆绑，这是主字段
     //
     // ★ pose 排在 outfit / emote 前面：立绘是服装 × 表情一张张画的，
-    //   模型分别给"校服"和"害羞"，组合出「校服_害羞」可能根本没画，
-    //   降级链会悄悄退回平静脸——模型以为自己选对了，玩家看到的却是错的，
-    //   而且日志里一切正常。pose 是整段名字，选到的必然是真实存在的那张图。
-    //   给了 pose 就不再单独处理 outfit（造型里已含服装），
-    //   否则会出现"pose 说校服、outfit 说私服"互相打架。
+    // 模型分别给"校服"和"害羞"，组合出「校服_害羞」可能根本没画，
+    // 降级链会悄悄退回平静脸——模型以为自己选对了，
+    // 而且运行时一切正常。pose 是整段名字，选到的必然是真实存在的那张图。
+    // 给了 pose 就不再单独处理 outfit（造型里已含服装），
+    // 否则会出现"pose 说校服、outfit 说私服"互相打架。
     //
     // ★ 禁用名单在校验层也要生效：只收窄 prompt 里的清单不够——她可能从对话历史里
-    //   翻出一个旧名字，或者干脆没读清单，那样 HasPose 照样通过，收窄就变成
-    //   "告诉她不能选，她选了你还接受"。精确匹配和模糊匹配的结果都要再过一遍。
+    // 翻出一个旧名字，或者干脆没读清单，那样 HasPose 照样通过，收窄就变成
+    // "告诉她不能选，她选了
     //
-    // ★ poseBanned 为 true 时下面两个分支都跳过，lastBadPose_ 就不会被设——
-    //   她填了被禁的名字却收不到任何反馈，下一轮还会再填一次（模型不记得自己写过什么）。
+    // ★ poseBanned 为 true 时下面两个分支都跳过，lastBadPose_ 就不会被设
+    // 她填了被禁的名字却收不到任何反馈，下一轮还会再填一次（模型不记得自己写过什么）。
     //
-    // 明确要求：连续两轮后就不能再选同一张。反对的是【引擎随机挑一张替她换】，
-    // 不是反对【把她已经连用两轮的这张从选项里拿掉】——后者由白名单更新完成，
+    // 明确要求：连续两轮后就不能再选同一张。反对的是引擎随机挑一张替她换，
+    // 不是反对把她已经连用两轮的这张从选项里拿掉——后者由白名单更新完成，
     // 引擎不替她挑脸，只缩小可选项。
     const bool poseBanned = IsBannedPose(posN);
     if (poseBanned && !posN.empty()) {
         v.poseWasBanned = true;   // 审计用：这是设计行为，别报成 bug
         lastBadPose_ = posN;
         //
-        // ---- 【挡下之后交给打回让她自己选，引擎不替她挑】
+        // ---- 挡下之后交给打回让她自己选，引擎不替她挑
         //
         // ★ 引擎曾按台词挑一张（脸红->害羞，"诶？！"->惊讶），实测是负作用：
-        //   两次挡下分别挑出「呆滞」和「失望」——两张都明显错误，
-        //   「失望」是他没做出来时的脸，可她那句是在夸他。
-        //   而同一轮发起的【打回】里，模型自己给的是「认真」和「惊讶」，两次都对。
-        //   结论：从台词猜情绪这件事本身就做不好（规则表永远补不完），
-        //   而模型知道自己那句话是什么情绪。引擎挑的那一版只会让画面先闪一下错脸，
-        //   打回失败时错脸还会留下。这正是核心思路：素材让模型自己定，程序少掺和。
+        // 两次挡下分别挑出「呆滞」和「失望」——两张都明显错误，
+        // 「失望」是他没做出来时的脸，可她那句是在夸他。
+        // 而同一轮发起的打回里，模型自己给的是「认真」和「惊讶」，两次都对。
+        // 结论：从台词猜情绪这件事本身就做不好（规则表永远补不完），
+        // 而模型知道自己那句话是什么情绪。引擎挑的那一版只会让画面先闪一下错脸，
+        // 打回失败时错脸还会留下。这正是核心思路：素材让模型自己定，程序少掺和。
         //
         // ★ 但也不能一直沿用：她填同一个名字 -> 被挡下 -> 槽位保持旧值，
-        //   看到的就是"两轮必换根本没生效"。打回失败时由引擎轮换兜底。
+        // 看到的就是"两轮必换根本没生效"。打回失败时由引擎轮换兜底。
         Dbg(L"造型「%s」连用两轮已移出白名单，画面暂不变，等她重选", posN.c_str());
         v.poseWasBanned = true;
         //
-        // ---- 【被禁就要算没接住，必须触发打回】
+        // ---- 被禁就要算没接住，必须触发打回
         //
         // ★ 这里曾经写成 `if (v.pose == posN) v.okPose = true;`，理由是
-        //   "画面已经是她要的那张，打回纯属浪费"——严重错误。
-        //   "她填的名字跟当前画面相同"恰恰说明【她没能换成】，正是要禁止的结果。
-        //   判成 okPose=true 有三重后果：
-        //     ① StageNeedsFix 返回 false -> 打回根本不发起
-        //     ② 审计把它记成"接住" -> 日志自相矛盾，看不出问题
-        //     ③ streak 继续涨，禁用名单永远剔不掉那张脸
-        //   （实测整局五轮全是同一张脸，而日志每轮都写着"禁用(预期)"+"✓一致"）。
-        //   所以保持 okPose=false：填了被禁的名字 = 没接住 = 要打回。
-        //   打回失败时还有引擎轮换兜底，不会就此卡在同一张脸上。
+        // "画面已经是她要的那张，打回纯属浪费"——严重错误。
+        // "她填的名字跟当前画面相同"恰恰说明她没能换成，正是要禁止的结果。
+        // 判成 okPose=true 有三重后果：
+        // ① StageNeedsFix 返回 false -> 打回根本不发起
+        // ② 审计把它记成"接住" -> 日志自相矛盾，看不出问题
+        // ③ streak 继续涨，禁用名单永远剔不掉那张脸
+        // （实测整局五轮全是同一张脸，而日志每轮都写着"禁用(预期)"+"✓一致"）。
+        // 所以保持 okPose=false：填了被禁的名字 = 没接住 = 要打回。
+        // 打回失败时还有引擎轮换兜底，不会就此卡在同一张脸上。
         //
-        // ---- 【必须在这里 return】
+        // ---- 必须在这里 return
         //
         // ★ 后面还有 emote 的处理（outfit × emote 时代的遗留分支）。不 return，
-        //   它会拿这一轮的 emote 去改 v.emote，而渲染层在 pose 解析不到时
-        //   会退回用 emote —— "状态显示平静、画面却是另一张脸"又回来了。
+        // 它会拿这一轮的 emote 去改 v.emote，而渲染层在 pose 解析不到时
+        // 会退回用 emote —— "状态显示平静、画面却是另一张脸"又回来了。
         v.changed = changed;
         return changed;
     }
@@ -11702,8 +11269,8 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
         //
         // ---- 英文 / 罗马字情绪名（tsundere / smile / happy…）
         //
-        // 【这是"模型返回奇怪立绘名"的直接对策】
-        // 实际运行日志里出现过 pose=tsundere、pose=smile。
+        // 这是"模型返回奇怪立绘名"的直接对策
+        // 运行时出现过 pose=tsundere、pose=smile。
         // 清单里是中文名，字符重合度算法对中英混排无效（零个共享字符），
         // 于是被当瞎编拒绝 —— 她明明选了，画面却保持上一张脸。
         //
@@ -11720,7 +11287,7 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
             } else {
                 v.okPose = true;
                 //
-                // ---- 【接住了 ≠ 接对了】
+                // ---- 接住了 ≠ 接对了
                 //
                 // 「smile」被情绪词表翻成「平静」——从程序看是"接住了"，
                 // 可她想表达的明明是开心，画面给的是面无表情。
@@ -11728,7 +11295,7 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
                 //
                 // 字符重合度接住的（「害羞」->「害羞眼神躲闪」）可信：
                 // 名字本身就长得像，基本就是她指的那张。
-                // 靠情绪词表接住的是在【猜她想把 smile 对应成什么】，
+                // 靠情绪词表接住的是在猜她想把 smile 对应成什么，
                 // 猜错了没有任何报错 —— 所以要打回让她自己选。
                 v.poseViaAlias = viaAlias;
                 if (v.pose != m) { v.pose = m; changed = true; }
@@ -11740,7 +11307,7 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
         //
         // ---- 记下"她给了个不认识的名字"，下一轮 prompt 点名纠正
         //
-        // 【没有这一步，同样的错会一轮一轮重复】
+        // 没有这一步，同样的错会一轮一轮重复
         // 模型不记得自己上一轮写过什么。它给了 tsundere，
         // 引擎默默忽略，它下一轮很可能再给一次。
         // 把原话摆回给它看，它才知道那个名字是无效的。
@@ -11750,10 +11317,8 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
                 Dbg(L"造型「%s」本轮禁用（刚用过），保持当前画面", posN.c_str());
         }
     }
-
-    // ---- 表情：也按【扫出来的真实素材】校验
+    // ---- 表情：也按扫出来的真实素材校验
     //
-    // 原来写死四档（calm/joy/doubt/fear）。但作者的立绘是"服装 × 表情"
     // 每张一张图，他实际画了害羞、得意，代码不该假装不存在。
     // 现在跟 bg/bgm/outfit 一样看扫描清单：画了就能用。
     const std::wstring emoN = NormalizeAssetName(emote);
@@ -11763,18 +11328,15 @@ bool Director::ApplyAiStage(DirView& v, const std::wstring& bg, const std::wstri
     v.changed = changed;
     return changed;
 }
-
-// ============================================================================
-//  模块：剧本 DSL —— 解析器 / 编译期检查 / 虚拟机
+// 模块：剧本 DSL —— 解析器 / 编译期检查 / 虚拟机
 //
-//  解析器是手写的行式解析（不是递归下降的完整语法分析器），因为剧本本质上是
-//  "一行一条指令"的平铺结构，不需要表达式以外的嵌套语法——而表达式已经交给
-//  表达式那一层交给上面的调度场算法处理，这里只管剧本。
+// 解析器是手写的行式解析（不是递归下降的完整语法分析器），因为剧本本质上是
+// "一行一条指令"的平铺结构，不需要表达式以外的嵌套语法——而表达式已经交给
+// 表达式那一层交给上面的调度场算法处理，这里只管剧本。
 //
-//  @task 的子字段故意做成独立的 @tpl/@stmt/@test 而不是缩进块：
-//  缩进块对"作者不小心混用空格和 Tab"极其敏感，而剧本作者（很可能就是你自己）
-//  不该在这种事上浪费时间。平铺的 @ 指令没有缩进歧义。
-
+// @task 的子字段故意做成独立的 @tpl/@stmt/@test 而不是缩进块：
+// 缩进块对"作者不小心混用空格和 Tab"极其敏感，而剧本作者（很可能就是
+// 不该在这种事上浪费时间。平铺的 @ 指令没有缩进歧义。
 namespace ck {
 
 // ============================================================================
@@ -12011,11 +11573,11 @@ bool ScriptCompile(const std::wstring& text, const std::wstring& assetDir, Progr
             else if (kw == L"narr") { in.cmd = Cmd::Narrate; in.text = Unescape(rest); }
             else if (kw == L"ach") {
                 //
-                // ---- 【成就系统已移除，@ach 整行忽略】
+                // ---- 成就系统已移除，@ach 整行忽略
                 //
                 // 默认剧本和作者手上的老剧本里都写着 @ach，
                 // 直接当成"未知指令"报错的话这些剧本会全部打不开。
-                // 所以它保留为【无效果的空指令】：认得出，但不产生任何行为。
+                // 所以它保留为无效果的空指令：认得出，但不产生任何行为。
                 //
                 // 这跟 @cg 的处理不同：@cg 报错是刻意的，因为作者会以为
                 // 图没放对而反复排查；而成就消失不会造成任何误解。
@@ -12181,13 +11743,10 @@ bool ScriptCompile(const std::wstring& text, const std::wstring& assetDir, Progr
         }
         if (prog.entry.empty()) prog.entry = prog.scenes[0].name;
     }
-
-    // ========================================================================
-    //  编译期检查
-    // ========================================================================
+    // 编译期检查
     // 1) 跳转目标是否存在；顺手收集可达关系
     //
-    // 这里原来有个定义了但从没被调用的 checkTarget lambda（-Wunused 报出来的）。
+    // 这里
     // 真正的检查在下面循环里内联做。留着这个"看起来做了检查"的空壳最危险：
     // 改代码的人会以为检查已存在，于是放心地删掉下面的内联判断。
     // 所以直接删掉，让唯一的一份检查留在它能起作用的地方。
@@ -12301,16 +11860,15 @@ void Vm::Load(const Program* p) {
 const std::wstring& Vm::SceneName() const {
     static const std::wstring empty;
     //
-    // ---- 【这里原来只查了 scene_ < 0，没查上界】
+    // ---- 这里原来只查了 scene_ < 0，没查上界
     //
-    //  它是"创建存档时崩溃"的直接原因：SaveGameNow 第一行就是 a.vm.Save()，
-    //  而 Snapshot 要取当前场景名——【不管是不是导演模式都会走这一行】。
-    //  导演模式下剧本 VM 根本没加载过（也没有可加载的 .cks），
-    //  scenes 是空的，而 scene_ 停在初始的 0 ——
-    //  于是 scenes[0] 就是一次越界读，Debug 下直接 vector subscript out of range。
+    // 它是"创建存档时崩溃"的直接原因：SaveGameNow 第一行就是 a.vm.Save，
+    // 而 Snapshot 要取当前场景名——不管是不是导演模式都会走这一行。
+    // 导演模式下剧本 VM 根本没加载过（也没有可加载的 .cks），
+    // scenes 是空的，而 scene_ 停在初始的 0
     //
-    //  同一类的另外三处（Step / Choose / AfterFree）都先判了 Ok() 或显式比过上界，
-    //  只有这一处漏了。
+    // 同一类的另外三处（Step / Choose / AfterFree）都先判了 Ok 或显式比过上界，
+    // 只有这一处漏了。
     if (!prog_ || scene_ < 0 || scene_ >= (int)prog_->scenes.size()) return empty;
     return prog_->scenes[(size_t)scene_].name;
 }
@@ -12633,44 +12191,33 @@ bool Vm::Load(const Snapshot& s) {
 }
 
 } // namespace ck
-
-// ============================================================================
-//  模块：大模型对话 —— WinHTTP 请求 / 回复解析 / 重试
-
-// ============================================================================
-//  调试开关：1 = 把模型原文打到 VS 输出窗口。会泄露对话内容，默认 0。
-// ============================================================================
+// 模块：大模型对话 —— WinHTTP 请求 / 回复解析 / 重试
+// 调试开关：1 = 把模型原文打到 VS 输出窗口。会泄露对话内容，默认 0。
 #undef  CK_LLM_DEBUG
 #define CK_LLM_DEBUG 0      // 1 = 连对话内容一起记（请求体 / 回复原文）。会泄露隐私，默认关
 
 #undef  CK_LLM_TRACE
 #define CK_LLM_TRACE 1      // 1 = 只记网络层诊断（目标地址、状态码、错误原文）。
-                            //    不含任何对话内容，所以默认开着——
-                            //    排查"连不上"靠的就是这些，而它们不敏感。
-
+                            // 不含任何对话内容，所以默认开着
+                            // 排查"连不上"靠的就是这些，而它们不敏感。
 // 两个宏分开是必要的：之前只有一个 LLDBG 且恒为空实现，
 // 结果"接口连不上"这类问题完全没有日志可看，只能靠猜。
 // 写成两段独立的 #if 而不是 #if / #else：
-// 之前 #else 在某些环境下报过"意外的 #else"（根因是文件编码被破坏，
 // 不是代码本身），但既然能绕开就绕开，少一个可能出问题的点。
 // 开关注释：#if 会让合并后的单文件版在编码被破坏时报
 // "意外的 #else / #endif"（真机实测过）。两个宏本身极短，
 // 直接按开关值写成固定定义 —— 想改日志行为就改上面那两个 0/1。
 #define LLDBG(x)    ((void)0)      // CK_LLM_DEBUG=0：不记对话内容
 #define LLTRACE(x)  Dbg x          // CK_LLM_TRACE=1：记网络层诊断
-
-// ============================================================================
-//  WinHTTP 对话
+// WinHTTP 对话
 //
-//  为什么不用 WinInet：WinInet 有 IE 的代理/缓存/弹窗历史包袱，偶尔会弹
-//  "是否拨号连接"的对话框；WinHTTP 是给服务用的，不会有任何 UI，更适合
-//  跑在游戏进程里。
-// ============================================================================
+// 为什么不用 WinInet：WinInet 有 IE 的代理/缓存/弹窗历史包袱，偶尔会弹
+// "是否拨号连接"的对话框；WinHTTP 是给服务用的，不会有任何 UI，更适合
+// 跑在游戏进程里。
 namespace {
-
 // 从字符串里抠出整数。"2" / " 2 " / "2." 都能认。
 //
-// 【专门为"模型把数字加了引号"这种情况准备】
+// 专门为"模型把数字加了引号"这种情况准备
 // JSON 里 {"advance": 2} 和 {"advance": "2"} 在模型眼里是同一件事，
 // 在解析器眼里却是两个类型。只认 TNum 的话，后者一律被当成"没填"。
 static bool ParseIntFromStr(const std::wstring& s, int* out) {
@@ -12711,16 +12258,15 @@ bool CrackUrl(const std::wstring& url, std::wstring& host, int& port, bool& http
     if (port == 0) port = https ? 443 : 80;
     return !host.empty();
 }
-
 // 字符串字面量的拼接助手。
 //
-// 【这里踩过一个很深的坑】JsonEscape 只做转义，【不加两侧的引号】。
+// 这里踩过一个很深的坑JsonEscape 只做转义，不加两侧的引号。
 // 之前每个调用点都直接把它拼在冒号后面，于是生成的是：
-//     {"model":deepseek-chat,"messages":[{"role":system,...}]}
+// {"model":deepseek-chat,"messages":[{"role":system,...}]}
 // 这是非法 JSON：value 位置的 'd' / 's' 被当成数字去解析，报"数字为空"。
 //
 // 请求体非法时服务端只回一句 HTTP 400 "Failed to deserialize the JSON body",
-// 不告诉你哪错了，所以这个 bug 藏了很久。现在统一走这个函数，
+// 不告诉
 // 顺手把 NaN / Inf 也挡掉（那同样会生成非法数字）。
 static void AppendJsonStr(std::string& o, const std::wstring& w) {
     o += '"';
@@ -12754,38 +12300,35 @@ std::string BuildBody(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs) {
     o += "],\"temperature\":";
     AppendJsonNum(o, cfg.temperature);
     //
-    // ---- 【无上限时干脆不发送 max_tokens】
+    // ---- 无上限时干脆不发送 max_tokens
     //
-    // 【绝不能发一个很大的数】
+    // 绝不能发一个很大的数
     // 填 999999 这类值会被服务端拒绝：它超过模型自身的上下文上限，
     // 服务端直接返回 400，表现是"她一句话都说不出来"，比截断还糟。
     //
     // 省略这个字段才是真正的"不限制"——服务端会用模型默认的最大输出长度。
     // （曾经这里按 maxTokens 决定发不发，那个字段已随 token 上限机制移除。）
     //
-    // 【一律不发送 max_tokens】（见 LlmConfig 里的说明）
+    // 一律不发送 max_tokens（见 LlmConfig 里的说明）
     // 曾经这里按 maxTokens / noTokenLimit 决定发不发、发多少，
     // 那两个开关已整体移除：不缺 token 就是不给输出设限。
     //
-    //
-    // 【这里刻意不留任何拼接 max_tokens 的代码，哪怕是 if(false) 的死代码】
+    // 这里刻意不留任何拼接 max_tokens 的代码，哪怕是 if(false) 的死代码
     // 死代码里那句写的是 max_tokens:0，而 0 在多数服务端是"生成 0 个 token"，
-    // 一旦有人把条件改成 true，表现就是她一句话都说不出来——
+    // 一旦有人把条件改成 true，表现就是她一句话都说不出来
     // 而且从日志看不出原因。不写，才不会被人改错。
-    //
     o += ",\"stream\":";
     o += cfg.stream ? "true" : "false";
     o += '}';
     return o;
 }
-
 // SSE 增量解析：把新收到的一块数据追加到 buf，逐行取出 "data: " 后面的内容。
 // 关键点是"跨块的行"要留在 buf 里等下一块——一次 WinHttpReadData 拿到的
 // 数据边界跟 SSE 的行边界没有任何关系，直接按块切会丢半行。
 // ---------------------------------------------------------------- 字节层小工具
 //
 // SSE 是字节流协议，整个解析过程必须停在 std::string（UTF-8 字节）层面，
-// 只在【拿到完整一行之后】才转成 wstring。
+// 只在拿到完整一行之后才转成 wstring。
 static bool IsSpaceCh(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v';
 }
@@ -12795,14 +12338,12 @@ static std::string TrimA(const std::string& s) {
     while (e > b && IsSpaceCh(s[e - 1])) --e;
     return s.substr(b, e - b);
 }
-
 // SSE 分行解析器。
 //
-// 【这里改过一次，改的是缓冲的单位】
-// 之前 buf 是 std::wstring，每次 Feed 都立刻 W(...) 把字节转宽字符。
+// 这里改过一次，改的是缓冲的单位
 // 问题在于：网络数据是任意切块的，一个中文字符的 3 个 UTF-8 字节
-// 完全可能横跨两个 chunk。而 W() 用的是 MultiByteToWideChar(CP_UTF8, 0, ...)
-// ——flags 为 0 时遇到非法序列【不会报错】，而是静默替换成 U+FFFD。
+// 完全可能横跨两个 chunk。而 W 用的是 MultiByteToWideChar(CP_UTF8, 0, ...)
+// ——flags 为 0 时遇到非法序列不会报错，而是静默替换成 U+FFFD。
 // 于是断在边界上的汉字会变成乱码，且不可逆。
 //
 // 改成字节缓冲后：只有在找到完整一行（\n 之前）时才转换，
@@ -12810,11 +12351,10 @@ static std::string TrimA(const std::string& s) {
 struct SseParser {
     std::string buf;
     bool done = false;
-
     // ★ 结束原因（choices[0].finish_reason）："stop" 正常说完 / "length" 被输出上限掐断。
     //
-    // 症状：她一句话说到一半就没了（比如停在 "所以，你觉得 scanf(" 上）。
-    // 没有这个字段时只能靠"JSON 有没有结尾 }"去猜是【长度上限】还是【中途断网】，
+    // 症状：她一句话说到一半就没了（比如停在 "所以，
+    // 没有这个字段时只能靠"JSON 有没有结尾 }"去猜是长度上限还是中途断网，
     // 两者修法完全不同——前者要让她说短点，后者该自动重发一次。
     // 猜错的代价是玩家按错误提示去翻设置页，翻遍也找不到能调的地方。
     std::string finishReason;
@@ -12946,14 +12486,13 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
         WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &len, WINHTTP_NO_HEADER_INDEX);
         out.httpStatus = (int)status;
-
         // ------------------------------------------------------- 读响应
         //
-        // 【这里踩过一个必现的坑】
+        // 这里踩过一个必现的坑
         // 之前用 WinHttpQueryDataAvailable 先问"有多少数据"，
-        // 返回 0 就 break。但那个 0 只代表【此刻】缓冲区是空的——
+        // 返回 0 就 break。但那个 0 只代表此刻缓冲区是空的
         // SSE 是分块到达的流，服务端发完响应头、正文还没到的时候
-        // 它就会给你一个 0，于是循环立刻退出，raw 是空的，
+        // 它就会给
         // 最后报"流式响应里没有内容"。这正是那张截图上的错误。
         //
         // 正确做法是只信 WinHttpReadData：它返回 0 才是真的 EOF。
@@ -12976,8 +12515,7 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
 
         if (status != 200) {
             out.err = L"HTTP " + WFromInt(status);
-
-            // 服务端会在 body 里说明原因。但直接把原文塞进 err 没用——
+            // 服务端会在 body 里说明原因。但直接把原文塞进 err 没用
             // 状态栏显示宽度有限，长 JSON 会被截成 {"error":{"code":" 这种
             // 半截，什么都看不出来。所以先抠出 code / message 拼成人话，
             // 抠不出来（body 不是 JSON）才退回原文。
@@ -13011,21 +12549,20 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
                 out.full         = streamFull;
                 out.finishReason = W(sp.finishReason);
                 out.streamDone   = sp.done;
-
                 // ---- 流式解析不出内容时的两级兜底
                 //
-                // 【这里之前有个必现的坑】
+                // 这里之前有个必现的坑
                 // 旧的兜底直接 JsonParse(raw)，假定 raw 是一个完整的 JSON 对象。
-                // 但 stream 模式下 raw 是【多行 SSE】：
-                //     data: {"choices":[{"delta":{"content":"你"}}]}
-                //     data: {"choices":[{"delta":{"content":"好"}}]}
-                //     data: [DONE]
+                // 但 stream 模式下 raw 是多行 SSE：
+                // data: {"choices":[{"delta":{"content":"
+                // data: {"choices":[{"delta":{"content":"好"}}]}
+                // data: [DONE]
                 // 拿整包去解析必然失败，于是明明收到了内容却报
                 // "流式响应里没有内容"——截图上的那个错误就是这么来的。
                 //
                 // 正确做法是按实际可能的情况分两级兜底：
-                //   1) raw 是 SSE 多行 → 逐行重解析（用同一个 SseParser）
-                //   2) raw 是单个 JSON → 服务端其实没开 stream，取 message
+                // 1) raw 是 SSE 多行 → 逐行重解析（用同一个 SseParser）
+                // 2) raw 是单个 JSON → 服务端其实没开 stream，取 message
                 if (out.full.empty() && !raw.empty()) {
                     SseParser retry;
                     std::wstring retryFull;
@@ -13088,10 +12625,10 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
 }
 
 bool LlmChat(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, LlmResult& out, DeltaCb delta) {
-    // ★ 拿到内容 ≠ 拿到【完整】内容。
+    // ★ 拿到内容 ≠ 拿到完整内容。
     //
-    // 流式中途被掐断时 out.full 非空，但话停在半句上——玩家看到的就是
-    // "所以，你觉得 scanf(" 后面什么都没有。以前这里直接 return true，
+    // 流式中途被掐断时 out.full 非空，但话停在半句上
+    // "所以，
     // 把半截当成完整回复用了，从来不会重试。
     //
     // 注意 finish_reason == "length" 不算这一类：那是服务端 / 模型自身的
@@ -13102,14 +12639,13 @@ bool LlmChat(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, LlmResult& 
         cutByNet = !out.streamDone && out.finishReason != L"length";
         if (!cutByNet) return true;
     }
-
     // ---------------------------------------------------------------- 流式兜底
     //
-    // 流式拿不到内容时，自动降级成【非流式】再试一次。
+    // 流式拿不到内容时，自动降级成非流式再试一次。
     //
     // 有些服务端 / 代理对 SSE 支持得不完整：提前断开、不按 data: 分行、
     // 或者干脆无视 stream 参数直接返回整包 JSON。表现都是同一个：
-    // "流式响应里没有内容" —— 可玩家看不懂这句话，只会觉得程序坏了。
+    // "流式响应里没有内容" —— 可
     //
     // 与其让他对着错误发呆，不如自己换条路再试一次。非流式没有打字机
     // 效果（一次性收到），但至少能玩下去，比失败强。
@@ -13135,31 +12671,27 @@ bool LlmChat(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, LlmResult& 
         }
         //
         // ★ 整包重发也没救回来：手上只有半截，可 out.ok 还是 true。
-        //   以前不标记，调用方就把半句当完整台词用——
-        //   玩家看到「所以，你觉得 scanf(」，后面什么都没有，
-        //   而界面上不报错、不提示，只会以为她说话说一半。
+        // 早期版本不标记，调用方就把半句当完整台词用
+        // 而界面上不报错、不提示，只会以为她说话说一半。
         else if (cutByNet && !out.full.empty()) {
             out.partial = true;
         }
     }
     return out.ok;
 }
-
-// ============================================================================
-//  回复解析
+// 回复解析
 //
-//  模型经常这样回：
-//      "好的呢～\n```json\n{\"say\":\"...\",\"emote\":\"smile\"}\n```"
-//  所以我们不要求"整条回复就是 JSON"，而是"从第一个 { 扫到最后一个 }"，
-//  扫出来能解析就用，解析不了就把整段原文当台词。这样任何格式意外都
-//  退化成"她说了一句格式奇怪的话"，而不是"她没有说话"。
-// ============================================================================
+// 模型经常这样回：
+// "好的呢～\n```json\n{\"say\":\"...\",\"emote\":\"smile\"}\n```"
+// 所以不要求"整条回复就是 JSON"，而是"从第一个 { 扫到最后一个 }"，
+// 扫出来能解析就用，解析不了就把整段原文当台词。这样任何格式意外都
+// 退化成"她说了一句格式奇怪的话"，而不是"她没有说话"。
 // 中文模型（尤其 DeepSeek）很爱用中文引号 “ ” ‘ ’ 包字符串，
 // 而 JSON 只认 ASCII 双引号——一遇到就整个解析失败，
 // 然后走兜底把带 {} 的原始 JSON 直接显示给玩家。这是最常见的翻车点。
 //
 // 这里把成对的中文引号还原成 ASCII 双引号。
-// 注意只处理【成对】的：文本里出现单个中文引号（比如角色引用别人说话）
+// 注意只处理成对的：文本里出现单个中文引号（比如角色引用别人说话）
 // 不应该被改，否则反而把内容弄坏。
 static void UnsmartQuotes(std::wstring& s) {
     // 先把 ‘ ’ 统一成 “ ”，再成对处理
@@ -13218,13 +12750,12 @@ static std::wstring UnescapeJson(const std::wstring& s) {
     }
     return o;
 }
-
 // 从一段"可能是 JSON"的文本里抠出台词。
 // 返回 true 表示拿到了；false 表示这段根本不像台词，别拿去显示。
 //
-// 【核心原则】
-// 宁可显示一句兜底台词，也绝不把带 { " } 的机器格式直接给玩家看。
-// 看到 {"say":"你好"} 这种东西出现在对话框里，玩家的信任感直接归零。
+// 核心原则
+// 宁可显示一句兜底台词，也绝不把带 { " } 的机器格式直接给
+// 看到 {"say":"
 static bool ExtractSay(const std::wstring& slice, std::wstring& out) {
     static const wchar_t* keys[] = { L"say", L"Say", L"SAY", L"text", L"content",
                                      L"reply", L"line", L"dialogue", L"utterance" };
@@ -13265,8 +12796,7 @@ static bool ExtractSay(const std::wstring& slice, std::wstring& out) {
     }
     return false;
 }
-
-// 截断版：给【没有结尾 }】的半截 JSON 抠 say。
+// 截断版：给没有结尾 }的半截 JSON 抠 say。
 //
 // 跟 ExtractSay 的差别是结尾处理：找不到闭合引号时不再放弃，
 // 而是把剩下所有内容都当成 say（去掉末尾半个转义）。
@@ -13310,33 +12840,31 @@ static bool ExtractSayTruncated(const std::wstring& slice, std::wstring& out) {
     }
     return false;
 }
-
 // 还原 JSON 字符串里的转义。
 //
-// 【为什么手工路径也必须做】
-// 走 JsonParse 时解析器自己会还原 \" \n 这些，玩家看到的是正常文本。
-// 但模型经常返回【不严格合法】的 JSON（尾部逗号、前后加了客套话…），
+// 为什么手工路径也必须做
+// 走 JsonParse 时解析器自己会还原 \" \n 这些，
+// 但模型经常返回不严格合法的 JSON（尾部逗号、前后加了客套话…），
 // 那些会落到 ExtractSay 的手工路径上——它直接 substr 抠文本，不做还原，
-// 于是玩家看到 他说\"好的\"然后走了 这种带反斜杠的鬼东西。
+// 于是
 // 只要模型回复里有一个引号，就会露馅。
-
 //
-// 玩家在【普通对话框】里贴了一段代码——要当成"交作业"，不能当闲聊。
+// 玩家在普通对话框里贴了一段代码——要当成"交作业"，不能当闲聊。
 //
 // ★ 她出题后引擎没进做题界面，他只能把代码粘在对话框里回车，引擎当成普通聊天发给她，
-//   她就在对话框里把卷判了一次（"你真的写出来了？！完全正确！"）——
-//   而 phase 不是 Review，verdict 没被记为判卷结果，进度完全没动；
-//   之后引擎又因为别的条件进了做题界面，他再交一次，同一份代码被判了两遍，
-//   她的判卷台词也说了两遍。所以：只要他贴的是代码，就走 StartJudge，别走闲聊。
-//   判据取得很松——宁可把一句带分号的话误判成代码（他会看到编辑器打开，内容还在，
-//   能改能交），也不能漏判（漏了就是判两次 + 进度卡住）。
+// 她就在对话框里把卷判了一次（"
+// 而 phase 不是 Review，verdict 没被记为判卷结果，进度完全没动；
+// 之后引擎又因为别的条件进了做题界面，他再交一次，同一份代码被判了两遍，
+// 她的判卷台词也说了两遍。所以：只要他贴的是代码，就走 StartJudge，别走闲聊。
+// 判据取得很松——宁可把一句带分号的话误判成代码（他会看到编辑器打开，内容还在，
+// 能改能交），也不能漏判（漏了就是判两次 + 进度卡住）。
 //
-// ★ 她【没填 verdict 字段】，但话里已经判了——从台词里把结论读出来。
-//   只在判卷语境里用：讲课时她也常说"完全正确"夸他答对问题，那不是判卷——
-//   不限定语境就会把一次普通夸奖当成"这一章过了"，直接跳章。
-//   用计数而不是"出现就算"：她很爱说"没错……不过还有个小问题"，一句话里两种信号都有。
-//   谁的词多听谁的；打平或都没有就判不出来——判不出来时【保持原样】（让她重说），
-//   不猜——猜错比让她重说一次更糟。
+// ★ 她没填 verdict 字段，但话里已经判了——从台词里把结论读出来。
+// 只在判卷语境里用：讲课时她也常说"完全正确"夸他答对问题，那不是判卷
+// 不限定语境就会把一次普通夸奖当成"这一章过了"，直接跳章。
+// 用计数而不是"出现就算"：她很爱说"没错……不过还有个小问题"，一句话里两种信号都有。
+// 谁的词多听谁的；打平或都没有就判不出来——判不出来时保持原样（让她重说），
+// 不猜——猜错比让她重说一次更糟。
 int VerdictFromWords(const std::wstring& say, bool strict) {
     if (say.empty()) return 0;      // 0 = 判不出来
     static const wchar_t* const kPass[] = {
@@ -13346,26 +12874,22 @@ int VerdictFromWords(const std::wstring& say, bool strict) {
         L"语法也一点问题没有", L"一点问题没有", L"思路完全正确",
         L"合格", L"满分", L"做对了", L"你做对了",
         //
-        // ---- 【"通关"这类词必须补，运行日志里就是它】
-        // 她的原话："……不过既然你都学到这里了，这章就算你通关啦。"
+        // ---- "通关"这类词必须补，运行时就是它
+        // 她的原话："……不过既然
         // 任何一个读它的人都知道这是通过，可词表里没有「通关」，
         // 于是判不出来 -> 算没过 -> 章号不动、章间日常不触发。
-        // 她宣布"这章过了"的说法很多（通关/过关/算你过/这章就算），
+        // 她宣布"这章过了"的说法很多（通关/过关/算
         // 只认"完全正确"那种技术性措辞会漏掉最直白的那句。
         L"通关", L"过关", L"算你过", L"这章就算", L"就算你过",
         L"这章就算你", L"算通过了", L"算你通过", L"你通过了",
         L"这章过了", L"这一章就算", L"就算过", L"通过了这章",
         //
-        // ---- 【"写出来了 / 没写错"这类说法必须补，2026-10-27 真实日志就是它】
-        //
         // 他交完代码，她的判卷原话：
-        //   "——等、等等！你、你真的写出来了？！"
-        //   "……不过，思路很清楚，没绕路，也没写错语法。"
+        // "——等、等等！
+        // "……不过，思路很清楚，没绕路，也没写错语法。"
         // 任何一个读它的人都知道这是通过，可词表里一个词都没命中
-        // （"三步全对"那句是【第二次】判卷才说出口的）——
-        // 于是 guess=0 -> 判不出来 -> 算没过 -> EnterCodeMode 把他赶回编辑器
+        // （"三步全对"那句是第二次判卷才说出口的）
         // -> 他原样再交一次 -> 她再说一遍评语。
-        // 玩家看到的就是【考试结束后又考了一次】，这正是本次报的 bug。
         //
         // 教训：她宣布"他做出来了"的说法远比"完全正确"那种技术措辞常见，
         // 词表只认后者就会在最直白的那一句上漏判。
@@ -13380,14 +12904,14 @@ int VerdictFromWords(const std::wstring& say, bool strict) {
         L"跑出来了", L"结果对", L"输出对", L"答案对"
     };
     //
-    // ---- 【弱信号：只在【判卷语境】里算数】
+    // ---- 弱信号：只在【判卷语境里算数】
     //
-    // 「没错」「漂亮」「写得很好」这类词她平时夸人也常说——
+    // 「没错」「漂亮」「写得很好」这类词她平时夸人也常说
     // 讲课夸一句"没错，就是这个意思"也会被算成"这一章过了"，
-    // 而那个判断会【直接跳章】（见下面 20305 那段"对话里判过"）。
+    // 而那个判断会直接跳章（见下面 20305 那段"对话里判过"）。
     // 所以分两档：
-    //   · Review 阶段（他刚交了代码，她正在批改）  -> 强弱都算
-    //   · 教学阶段（他贴过代码，她顺口夸了一句）   -> 只认强信号
+    // · Review 阶段（他刚交了代码，她正在批改） -> 强弱都算
+    // · 教学阶段（他贴过代码，她顺口夸了一句） -> 只认强信号
     // 判不出来宁可让她重说，也不能凭一句"没错"把整章跳过去。
     static const wchar_t* const kPassLoose[] = {
         L"没错", L"都对", L"写得很好", L"写得漂亮",
@@ -13420,9 +12944,9 @@ bool LooksLikeCode(const std::wstring& s) {
     if (s.find(L"printf")       != std::wstring::npos) return true;
     if (s.find(L"scanf")        != std::wstring::npos) return true;
     if (s.find(L"return 0")     != std::wstring::npos) return true;
-    // 更通用的：有花括号 + 分号，或者【分号够多】。
+    // 更通用的：有花括号 + 分号，或者分号够多。
     //
-    // 【分号数 >= 2 这一条是补的】：题面让他填的是函数体，
+    // 分号数 >= 2 这一条是补的：题面让他填的是函数体，
     // 他就只会粘那几行（"int t = *a; *a = *b; *b = t;"），没有花括号。
     // 只认花括号的话这种最常见的交法反而漏掉。
     int semi = 0; bool brace = false; int lines = 0;
@@ -13440,13 +12964,12 @@ bool LooksLikeMachineText(const std::wstring& s) {
 
     // 转义残留：UnescapeJson 之后就不该再有 \" 了。
     if (s.find(L"\\\"") != std::wstring::npos) return true;
-
     // 字段名。带引号是为了避开正常对话里恰好出现 say / bg 这类英文单词。
     //
-    // 【这里刻意【不】因为"含花括号"就判机器格式】
+    // 这里刻意【不因为"含花括号"就判机器格式】
     // 她是教 C 语言的，台词里带代码块太正常了：
-    //   "看这个：int main(){ return 0; }"
-    // 一刀切按花括号拦，等于她每次讲代码那一段都会变成空白——
+    // "看这个：int main{ return 0; }"
+    // 一刀切按花括号拦，等于她每次讲代码那一段都会变成空白
     // 为了挡一个已经基本挡住的 bug，去制造一个必现的显示事故，不划算。
     static const wchar_t* const keys[] = {
         L"\"say\"", L"\"emote\"", L"\"pose\"", L"\"bg\"", L"\"bgm\"",
@@ -13464,8 +12987,7 @@ bool LooksLikeMachineText(const std::wstring& s) {
     size_t p = 0;
     while (p < s.size() && (s[p] == L' ' || s[p] == L'\t' || s[p] == L'\r' || s[p] == L'\n')) ++p;
     if (p < s.size() && s[p] == L'{') return true;
-
-    // ---- 【最关键的一条】键值分隔符 ":" 或 ","
+    // ---- 最关键的一条键值分隔符 ":" 或 ","
     //
     // 上面两条都依赖"认得出字段名"和"整段以 { 开头"，只要模型在 JSON 前面
     // 加了句客套话（"好的，这是回复：\n{...}"），或者用了列表外的字段名,
@@ -13473,32 +12995,31 @@ bool LooksLikeMachineText(const std::wstring& s) {
     // 玩家就看到带着 {} 和 "say" 的机器格式。读档时正好卡在思考中，
     // 这个现象最容易被看到。
     //
-    // 而 ":" / "," 这种【引号-冒号-引号】的组合，在人类对话里几乎不存在：
-    //   · 她讲 C 代码：int main(){ return 0; }  —— 没有 ":"
-    //   · 她用中文标点：冒号是全角"："，不是 ":"
+    // 而 ":" / "," 这种引号-冒号-引号的组合，在人类对话里几乎不存在：
+    // · 她讲 C 代码：int main{ return 0; } —— 没有 ":"
+    // · 她用中文标点：冒号是全角"："，不是 ":"
     // 所以这条判据既精准又不会误伤正常台词。
     if (s.find(L"\":\"") != std::wstring::npos) return true;
     if (s.find(L"\",\"") != std::wstring::npos) return true;
 
     return false;
 }
-
-// 【判卷标记泄漏：她的话开头孤零零一个 pass】
+// 判卷标记泄漏：她的话开头孤零零一个 pass
 //
-// 【日志实况】对话记录里她的话是这样显示的：
-//     她：
-//     pass
-//     哼，三步走——先存、再盖、最后还回去，完全正确。
+// 日志实况对话记录里她的话是这样显示的：
+// 她：
+// pass
+// 哼，三步走——先存、再盖、最后还回去，完全正确。
 // 玩家在对话框里读到的第一个词是 "pass"——那是判卷字段，不是她说的话。
 // 它还会被 PushHist 存进存档，读档回来照样挂在那儿。
 //
-// 【为什么 LooksLikeMachineText 拦不住】
+// 为什么 LooksLikeMachineText 拦不住
 // 那条判的是"像不像 JSON"，而单独的 pass 既没有引号冒号、
-// 也没有花括号，完全不像机器格式——它是【字段的值】漏进了 say，
-// 不是【字段本身】漏进来。判据不同，必须单独处理。
+// 也没有花括号，完全不像机器格式——它是字段的值漏进了 say，
+// 不是字段本身漏进来。判据不同，必须单独处理。
 //
-// 【只剥"整行只有标记"的情况】
-// "pass 了！你做得不错" 这种标记跟正文混在一行的是正常说话，不能动。
+// 只剥"整行只有标记"的情况
+// "pass 了！
 static bool IsBareVerdictToken(const std::wstring& raw)
 {
     size_t a = 0, b = raw.size();
@@ -13572,23 +13093,22 @@ static bool StripVerdictLeak(std::wstring& s)
     s.erase(0, cut);
     return true;
 }
-
 //
-// ---- 【模型把自己那套工具调用 / 思考的 XML 标签写进了台词】
+// ---- 模型把自己那套工具调用 / 思考的 XML 标签写进了台词
 //
 // 模型自己那套协议标签（Anthropic 的 invoke/parameter、各家推理模型的
-// think/reasoning）不是她说的话，却被整段存进了对话记录和存档——
+// think/reasoning）不是她说的话，却被整段存进了对话记录和存档
 // 读档回来照样挂在那儿，还会被 PushHist 反复喂回给她，越积越多。
 //
 // ★ LooksLikeMachineText 拦不住：它判的是"像不像 JSON"（引号、冒号、花括号），
-//   而 `</parameter>` 里一样都没有——它是【协议标签】不是【字段】，判据不同。
+// 而 `</parameter>` 里一样都没有——它是协议标签不是字段，判据不同。
 // ★ 不能一刀切把所有 <...> 都删掉——她是教 C 语言的，台词里尖括号太常见：
-//     #include <stdio.h>   删掉就变成 `#include `，代码直接残缺
-//     if (a < b && c > d)  比较符会被当成标签吃掉
-//   所以只删【已知的那几个协议标签名】，其余一概不动。
+// #include <stdio.h> 删掉就变成 `#include `，代码直接残缺
+// if (a < b && c > d) 比较符会被当成标签吃掉
+// 所以只删已知的那几个协议标签名，其余一概不动。
 // ★ 按 ｜ / | 分段：DeepSeek 那类的标签写作 `<｜DSML｜parameter name="say">`，
-//   标签名前面还挂着一段前缀。只取头部第一个标识符会读成 "dsml"，
-//   于是真正的 "parameter" 反而漏掉。
+// 标签名前面还挂着一段前缀。只取头部第一个标识符会读成 "dsml"，
+// 于是真正的 "parameter" 反而漏掉。
 static bool MatchProtocolTag(const std::wstring& head, std::wstring& name, bool& closing)
 {
     closing = false;
@@ -13659,24 +13179,21 @@ static bool IsThinkTagName(const std::wstring& n)
         if (n == kThink[i]) return true;
     return false;
 }
-
-// ---------------------------------------------------------------------------
-//  把模型顺手写的 Markdown 强调 **…** 换成中文引号「…」
+// 把模型顺手写的 Markdown 强调 **…** 换成中文引号「…」
 //
-//  【这是"讲指针那一章满屏星号看得头晕"的另一半】
-//  模型习惯拿 **…** 当强调（Markdown 写法）。可这几门课里星号本身是语法：
-//  C 的 int *p 和 *p、Python 的 *args / **kwargs、乘方 2 ** 3、乘法 a * b。
-//  台词里冷不丁冒出一对 **，玩家分不清那是强调还是代码——
-//  尤其正好在讲 * 这一章的时候，等于给理解添堵。
+// 这是"讲指针那一章满屏星号看得头晕"的另一半
+// 模型习惯拿 **…** 当强调（Markdown 写法）。可这几门课里星号本身是语法：
+// C 的 int *p 和 *p、Python 的 *args / **kwargs、乘方 2 ** 3、乘法 a * b。
+// 台词里冷不丁冒出一对 **，玩家分不清那是强调还是代码
+// 尤其正好在讲 * 这一章的时候，等于给理解添堵。
 //
-//  【为什么不能无脑删】
-//  无脑替换会把上面的代码一起改坏，那比留着星号更糟。
-//  所以只认"成对、紧贴文字、内层是中文"的那一种：
-//  那是模型拿它当强调用的情况，中文引号本来也是中文里的强调写法。
-//   · 2 ** 3：开头 ** 后面跟着空格 -> 不认
-//   · **kwargs：内层没有中日韩字符 -> 不认
-//   · **真的很关键**：紧贴、内层是中文 -> 换成「真的很关键」
-// ---------------------------------------------------------------------------
+// 为什么不能无脑删
+// 无脑替换会把上面的代码一起改坏，那比留着星号更糟。
+// 所以只认"成对、紧贴文字、内层是中文"的那一种：
+// 那是模型拿它当强调用的情况，中文引号本来也是中文里的强调写法。
+// · 2 ** 3：开头 ** 后面跟着空格 -> 不认
+// · **kwargs：内层没有中日韩字符 -> 不认
+// · **真的很关键**：紧贴、内层是中文 -> 换成「真的很关键」
 static bool IsCjkChar(wchar_t c) {
     return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF) ||
            (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF00 && c <= 0xFFEF);
@@ -13728,7 +13245,7 @@ static bool StripToolCallTags(std::wstring& s)
         if (s[i] != L'<') { out += s[i++]; continue; }
         size_t gt = s.find(L'>', i + 1);
         //
-        // 【这两个限制是防误伤的关键】
+        // 这两个限制是防误伤的关键
         // 标签头不该跨行、也不该有几百字符那么长。
         // `if (a < b && c > d)` 这种中间可能隔着半句台词，
         // 不加限制就会被当成标签头去匹配，误删一大段正文。
@@ -13771,8 +13288,7 @@ static bool StripToolCallTags(std::wstring& s)
     s = t.substr(a, b - a);
     return true;
 }
-
-// 【已不再用于流式显示】
+// 已不再用于流式显示
 //
 // 原来 WM_TIMER 每帧调它，从"模型已收到的那半截 JSON"里抠出台词显示。
 // 但半截 JSON 的断法有无穷多种（断在转义符、包在 ```json 代码块里、
@@ -13832,10 +13348,9 @@ LlmReply ParseReply(const std::wstring& raw) {
             r.mood   = W(v.getStr("mood"));
             r.scene  = W(v.getStr("scene"));
             r.beat   = W(v.getStr("beat"));
-
     // ---- 推进权
     // advance：0/1/2。模型可能写成布尔（true 当成"该出题了"），
-    // 也可能写成字符串 "quiz" / "next"，都得接住——
+    // 也可能写成字符串 "quiz" / "next"，都得接住
     // 接不住的话她明明想推进却推不动，表现是"她一直讲、永远不考"。
     {
         const ck::JValue* av = v.find("advance");
@@ -13845,18 +13360,18 @@ LlmReply ParseReply(const std::wstring& raw) {
             else {
                 std::wstring as = W(av->asStr());
                 //
-                // ---- 【数字写成字符串：这是"章节号永远停在第一章"的根因】
+                // ---- 数字写成字符串：这是"章节号永远停在第一章"的根因
                 //
                 // 模型很爱把整个 JSON 的值都加上引号：{"advance": "2"}。
                 // 而这里只认 "quiz" / "next" 这类词，认不出 "2"/"1"/"0"，
                 // 于是统统落进 else 的 else → r.advance = 0（继续讲这一章）。
                 //
-                // 后果非常隐蔽：她明明在回复里写了"我们进下一章吧"、也填了 2，
+                // 后果非常隐蔽：她明明在回复里写了"
                 // 引擎却当成"继续讲"，章号原地不动。
-                // 她只好自己接着往下讲 —— 于是玩家看到：
-                //   内容已经进入第 2 章（数组），右上角却还写着第 1 章；
-                //   而且因为从没走 AfterJudge，章间日常那段相处压根没发生。
-                // 日志里 advance 显示为 0，看着也像"她没要求推进"。
+                // 她只好自己接着往下讲 —— 于是
+                // 内容已经进入第 2 章（数组），右上角却还写着第 1 章；
+                // 而且因为从没走 AfterJudge，章间日常那段相处压根没发生。
+                // 运行时 advance 显示为 0，看着也像"她没要求推进"。
                 //
                 // 先把字符串当数字试一遍，再退回按词匹配。
                 int num = 0;
@@ -13905,7 +13420,6 @@ LlmReply ParseReply(const std::wstring& raw) {
             r.parsed = true;
         }
     }
-
     // ---- 解析失败 / 没有 say 字段：手工抠
     //
     // 走到这里说明 JSON 不合法（中文引号、单引号、尾部逗号、模型多说了话…）。
@@ -13915,16 +13429,14 @@ LlmReply ParseReply(const std::wstring& raw) {
         std::wstring v;
         if (ExtractSay(slice, v)) { r.say = v; got = true; }
     }
-
-    // ---- 【输出被 max_tokens 截断】的抢救
+    // ---- 输出被 max_tokens 截断的抢救
     //
     // 症状：有 '{' 但没有 '}' —— 话说一半就被 API 掐断了。
     // 这时候上面两条路都走不通（都要求找得到结尾的 }），
-    // 于是掉进最后兜底 → 显示"网络断了，我有点接不上话"。
-    // 玩家以为断网了，其实是话太长被截断——真正的错误被假象盖住。
+    // 于是掉进最后兜底 → 显示"网络断了，
     //
     // 抢救办法：say 通常是第一个字段，它的值多半还能完整抠出来。
-    // 就算抠不全（正好断在句子中间），也比给一句"网络断了"强——
+    // 就算抠不全（正好断在句子中间），也比给一句"网络断了"强
     // 至少玩家能看到她讲了什么。
     if (!got && a != std::wstring::npos && b == std::wstring::npos) {
         std::wstring v;
@@ -13934,10 +13446,9 @@ LlmReply ParseReply(const std::wstring& raw) {
             got = true;
         }
     }
-
     // ---- 最后兜底
     //
-    // 拿不到台词时，【绝不】把原文当台词显示。
+    // 拿不到台词时，绝不把原文当台词显示。
     // 判断方法：这段看着像机器格式（有 { 或 "say" 之类）就用兜底台词；
     // 确实是一句普通人类的话（模型忘了 JSON 直接说了）才原样用。
     if (!got) {
@@ -13953,18 +13464,18 @@ LlmReply ParseReply(const std::wstring& raw) {
         }
     }
     //
-    // ---- 【统一剥掉协议标签】
+    // ---- 统一剥掉协议标签
     //
     // 放在这里（函数唯一的出口）是因为上面有 5 个 r.say 赋值点：
     // 标准 JSON、字段名兜底、手工抠、截断抢救、整段原文兜底。
     // 逐个赋值点去剥，漏一个就是"某种情况下标签又漏进对话框"。
     // 出口只有一个，在这里剥等于覆盖了所有路径。
     //
-    // 【注意不能剥 raw 再解析】标签里的 parameter name="say" 之类
+    // 注意不能剥 raw 再解析标签里的 parameter name="say" 之类
     // 会让 JSON 解析更乱；先按原样解析出台词，再剥台词本身最稳。
     StripToolCallTags(r.say);
     //
-    // ---- 【顺手把 Markdown 的 **强调** 换成「强调」】
+    // ---- 顺手把 Markdown 的 **强调** 换成「强调」
     //
     // 放在这个唯一出口上，理由跟上面剥标签一样：
     // 上面有 5 个 r.say 赋值点，逐个去改必漏。
@@ -14019,7 +13530,7 @@ void Memory::Load(const std::wstring& path) {
     //
     // ---- 老存档迁移：没有 bond / recent 字段就是"还没有"，留空即可。
     //
-    // 【为什么不补一次】补要发请求，而第一章结束时自然会填上；
+    // 为什么不补一次补要发请求，而第一章结束时自然会填上；
     // 留空时 prompt 里就不带这一段，行为跟改动前完全一致。
     bond_        = W(v.getStr("bond"));
     bondChapter_ = (int)v.getNum("bondChapter", 0);
@@ -14034,7 +13545,7 @@ void Memory::Load(const std::wstring& path) {
     const ck::JValue* arr = v.find("facts");
     if (!arr || !arr->isArr()) return;
     //
-    // ---- 老存档迁移：把以前记在长期记忆里的"玩家说过：xxx"挪到近期流水层
+    // ---- 老存档迁移：把早期版本记在长期记忆里的"玩家说过：xxx"挪到近期流水层
     //
     // 内容不丢，只是换个层——它们本来就不该占那 60 条额度。
     // 不挪的话老存档一读进来还是一堆流水账挤着真记忆，
@@ -14157,10 +13668,10 @@ void Memory::SetBond(const std::wstring& text, int chapter) {
 std::wstring Memory::BondPrompt() const {
     if (bond_.empty()) return L"";
     //
-    // 【这一段要写在 system prompt 最末尾】（调用处保证）
+    // 这一段要写在 system prompt 最末尾（调用处保证）
     //
     // 跟"关系声明"同一个道理：约束离输出越近她越照做。
-    // 而"现在我对他是……"这种内心状态最容易被通用套路挤掉——
+    // 而"现在
     // 不放在最后，她五章下来会用同一套反应演到底。
     std::wstring o = L"\n\n【你现在对他的感觉】（第" + WFromInt(bondChapter_)
                    + L"章结束时你自己写下的）\n" + bond_;
@@ -14270,11 +13781,10 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
                        const RecentAssets* recent, const std::wstring* assetNote,
                        bool splitAsset) {
     std::wstring s;
-
     // ---- 玩家叫什么
     //
     // 续集设定下由角色包指定（进剧情就是那个人），所以这一处统一取一次，
-    // 下面几个分支都用同一个值——免得"人设里叫将臣、台词里又叫别的"。
+// 下面几个分支都用同一个值——免得人设里的称呼和台词里的对不上。
     const std::wstring pName = PlayerNameFor(cd, p.playerName);
 
     // 有角色定义时走角色的人设 prompt。
@@ -14282,19 +13792,19 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     // 联网时"她到底怎么说话"完全由 systemTpl + sampleLines 决定。
     if (cd && !cd->isDefault) {
         //
-        // ---- 记忆条数：不缺 token 时【全部】带上
+        // ---- 记忆条数：不缺 token 时全部带上
         //
         // 只有 12 条的话，聊久了早期的事会被挤掉，
-        // 表现是"她把我上次说的事忘了"——而这跟输出上限无关，
+        // 表现是"她把
         // 玩家就算选了无上限也照样忘。
         //
-        // ---- 【切掉 BuildCharSystem 自带的那份输出格式契约】
+        // ---- 切掉 BuildCharSystem 自带的那份输出格式契约
         //
         // 它末尾写的是 "emote 只能是 normal/smile/sad/angry/tsundere/surprise 之一"，
         // 那是 outfit × emote 时代六档英文表情的遗留。而现在：
-        //   · 导演模式下画面由 pose 决定，emote 根本不该出现
-        //     （下面 12041 处也明确写了 directorMode 时不列 emote 清单）
-        //   · 可这份契约在 system prompt 里、位置更靠前，模型照样会照着填
+        // · 导演模式下画面由 pose 决定，emote 根本不该出现
+        // （下面 12041 处也明确写了 directorMode 时不列 emote 清单）
+        // · 可这份契约在 system prompt 里、位置更靠前，模型照样会照着填
         // 于是两条指令打架：一条要它填英文六档，一条说别填。
         // 主请求在下面会追加自己那套完整格式，所以这里先把旧契约切掉，
         // 只留人设 / 记忆 / 关系那部分。
@@ -14323,34 +13833,33 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"\n【他的学习进度】\n" + prof.ToPrompt();
         if (!sceneHint.empty()) s += L"\n【当前情境】\n" + sceneHint + L"\n";
     }
-
     // ---- 输出格式
     //
-    // 【这里统一过一次表情档位】
+    // 这里统一过一次表情档位
     // 之前写的是 normal/smile/sad/angry/tsundere/surprise 六档，
     // 但立绘规范早就改成四档（平静/开心/疑惑/惊吓）——档位 × 服装 × 口型
     // 会指数级放大素材量，六档做不出来。两边不一致时模型给的标签
     // 映射不到文件，画面就永远是那一张脸。
     s += L"\n【输出格式】必须只返回一个 JSON 对象，不要 Markdown 代码块，不要任何解释：\n";
     //
-    // ---- 【say 排在 pose/bg/bgm 之后】
+    // ---- say 排在 pose/bg/bgm 之后
     //
-    // 【改前 say 是第一个字段，这是"台词和表情对不上"的一个成因】
+    // 改前 say 是第一个字段，这是"台词和表情对不上"的一个成因
     // 模型按字段顺序生成。say 在最前面时，它先把一整段台词写完，
     // 然后再回头随手填 pose——那时它已经在想下一句了，
-    // 于是表情跟刚写完的那段话没关系（运行日志里"认真起来"给叹气就是这么来的）。
+    // 于是表情跟刚写完的那段话没关系（运行时"认真起来"给叹气就是这么来的）。
     //
-    // 把画面字段提到 say 之前，它会先定好"这一拍在哪儿、什么情绪、哪张脸"，
+    // 把画面字段提到 say
     // 再据此写台词。输出顺序本身就是最强的引导，比任何措辞都管用。
     s += L"{\"emote\":\"表情\",\"mem\":[\"本轮值得记住的事实\"],\"hint\":\"给玩家的提示，没有就空字符串\"";
     if (directorMode && splitAsset) {
         //
-        // ---- 【素材独立请求】这一轮只要台词，画面稍后单独问
+        // ---- 素材独立请求这一轮只要台词，画面稍后单独问
         //
         // 一次请求里她的注意力全在台词上，pose/bg/bgm 是最后随手补的。
         // 这里干脆不向它要那三个字段，它就不会把精力分到那里。
         //
-        // scene / beat 【必须保留而且要排在 say 之前】：
+        // scene / beat 必须保留而且要排在 say 之前：
         // 那是第二次请求挑画面的依据。她在写台词前先想清楚"这一拍在哪儿、
         // 发生了什么"，素材请求拿到这两个就几乎不会选偏。
         s += L",\"scene\":\"眼前是哪儿、有什么(写给自己看)\""
@@ -14362,7 +13871,7 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         // ready 保留在格式里：老 prompt / 老模型只认它，去掉会让它们整段不推进。
         // 两个都填时引擎以 advance 为准（见下面的说明）。
         // 三个字段一个都不能少、不能空——少了画面就停在上一轮甚至变空。
-        // scene / beat 排在 pose/bg/bgm 【之前】：先想这一拍在哪儿、
+        // scene / beat 排在 pose/bg/bgm 之前：先想这一拍在哪儿、
         // 发生了什么，再挑素材。
         // 输出顺序本身就是一种引导——先写 scene 和 beat 的时候，
         // 后面三个字段几乎总是跟它们一致；反过来则是随手填。
@@ -14370,7 +13879,7 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         // 示例里的 pose 值标签也要跟着素材走：
         // 只有表情的角色就写"表情"，写"造型"会诱导它去拼"服装_表情"。
         //
-        // 注意：这个角色【没有服装分化】时 vis->outfit 为空，
+        // 注意：这个角色没有服装分化时 vis->outfit 为空，
         // 而 directorMode 下 vis 一定不为空（调用方保证）。
         const wchar_t* poseLabel = (vis && vis->outfit.empty())
             ? L"表情名(必填,只写表情)" : L"造型(必填)";
@@ -14386,11 +13895,11 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     s += L"}\n";
     if (directorMode && splitAsset) {
         //
-        // ---- 【必须明说，否则她会自作主张把 pose/bg/bgm 塞回来】
+        // ---- 必须明说，否则她会自作主张把 pose/bg/bgm 塞回来
         //
         // 下面还有一整段素材清单和"pose 每一轮都必须填"的说明
         // （关掉 splitAsset 时要用）。不在这里讲清楚"这一轮不用填"，
-        // 两条指令打架，她多半会照着下面那条填一个——
+        // 两条指令打架，她多半会照着下面那条填一个
         // 填了也无害（引擎会忽略），但会分散它对台词的注意力。
         s += L"【这一轮【不用】填 pose / bg / bgm】画面我会另外单独问你一次，"
              L"那时候再把完整清单给你、让你专心挑。\n"
@@ -14399,11 +13908,10 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     }
     // 表情清单也来自扫描：作者画了什么表情，模型就能用什么表情。
     //
-    // 原来写死"只能取 calm/joy/doubt/fear 四个之一"。但立绘是
     // 服装 × 表情 一张一张画的，作者画了"害羞""得意"，
     // 代码却告诉他只能用四档——等于逼他白画。
     //
-    // 【导演模式下不要再提 emote】
+    // 导演模式下不要再提 emote
     // pose 已经完整表达了"哪张脸"，这里再列一遍 emote 清单，
     // 模型就会顺手填它——而 emote 是 outfit × emote 时代的遗留字段，
     // 它会跨轮残留：这一轮 pose=平静，emote 还留着上一轮的「叹气」，
@@ -14416,69 +13924,65 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     }
     s += L"mem 里只放【新的、关于玩家本人的、以后用得上】的事实，最多 2 条；没有就给空数组。\n";
     //
-    // ---- 【他叫什么名字，一个字都不能改】
+    // ---- 他叫什么名字，一个字都不能改
     //
-    // 【实测】他说「我是XX，某件东西的持有者」，
+    // 实测他说「
     // 她记住的却是「玩家是YY，某件东西的持有者」——YY 是另一个人。
     // 后面她真按这条记忆去叫他，玩家当场出戏。
     //
     // 更麻烦的是权重：改写过的那条是 60，原话那条是 40。
-    // 权重高的排前面，于是越往后她越确信他叫真冬——
+    // 权重高的排前面，于是越往后她越确信他叫真冬
     // 错的那条反而把对的那条盖住了。
     //
     // 名字 / 称呼 / 地名 / 作品里的专有名词一律照抄他打出来的字，
     // 不许概括、不许替换成"更像角色名"的说法。
     //
-    // ---- 【举例不能写死当前角色包里那个人的名字】
+    // ---- 举例不能写死当前角色包里那个人的名字
     //
-    // 原来这里写的是「他说『我是XX』，就写『XX』」。
-    // XX 是【某一个角色包】里玩家的身份（[Player].Name），
-    // 换一个包之后玩家是别的人，她却还在提示词里读到这个名字——
-    // 项目一路守着「代码不认识任何角色名」，这里是漏网的第三处。
+    // XX 是某一个角色包里玩家的身份（[Player].Name），
+    // 换一个包之后玩家是别的人，她却还在提示词里读到这个名字
+// 举例用 XX 这种一眼看出是占位的写法，规则本身一个字没变。
     // 举例用 XX 这种一眼看出是占位的写法，规则本身一个字没变。
     s += L"【名字、称呼、地名一律照抄他打出来的字】：他说「我是XX」，\n";
     s += L"就写「XX」——不要写成别的名字，也不要自己另起一个。\n";
     //
-    // ---- 【没有好感度这一项】
+    // ---- 没有好感度这一项
     //
     // ★ 两个人的关系由角色包自己定：恋人、搭档、陌生人都有可能。
-    //   已经在一起的两个人之间再算"好感度"，既别扭，
-    //   又会让她把注意力放在打分上，而不是在演戏上。
+    // 已经在一起的两个人之间再算"好感度"，既别扭，
+    // 又会让她把注意力放在打分上，而不是在演戏上。
     //
     // 感情的推进交给大纲：课程的章、剧情的幕、章末她自己写的 bond。
-    // 想做数值养成的作者，在剧本里自己用 $好感 这类变量实现——
+    // 想做数值养成的作者，在剧本里自己用 $好感 这类变量实现
     // 那是剧本的事，引擎不再内置。
     //
     // ---- 讲透，而不是惜字如金
     //
-    // 【之前写"say 控制在 1~3 句"，是内容空洞的直接原因】
+    // 之前写"say 控制在 1~3 句"，是内容空洞的直接原因
     // 一句两句根本讲不清指针：得有比喻、有反例、有"什么时候会踩坑"。
-    // 模型很听话，你说三句它就真的只说三句——于是每一章都像蜻蜓点水，
-    // 玩家看完还是不会，还得自己去搜教程。
+    // 模型很听话，
     //
-    // 现在改成按【内容完整性】要求：讲清为止，但保持口语、别写成教科书。
+    // 现在改成按内容完整性要求：讲清为止，但保持口语、别写成教科书。
     s += L"say 要【把说到的事讲透】，不要为了短而短。\n";
     s += L"  · 讲概念：先给一个好懂的比喻，再给真实代码，再点一个常见坑。\n";
     s += L"  · 答疑问：顺着他的困惑讲清楚，必要时换个说法重讲一遍。\n";
     s += L"  · 讲题目：说清思路和为什么这么想，可以分步讲，但别直接把可编译的完整答案贴出来。\n";
     s += L"  · 控制在 3~8 句。该长就长，闲聊可以短，但【不要一句话打发他】。\n";
     s += L"  · 保持口语和你的说话方式，别写成说明书或 PPT 条目。\n";
-
     // ---- 每轮必须留一个钩子
     //
-    // 【这是玩家"不知道该怎么回应"的直接解药】
+    // 这是玩家"不知道该怎么回应"的直接解药
     // 之前她经常讲完一段就停住，纯陈述、不提问。
     // 玩家读完只能回"哦"或者"然后呢"，对话很快就冷掉，
     // 而且他根本不知道现在该写代码、该回答问题、还是该继续听。
     //
-    // 要求她每轮【必须】在结尾做一件事：抛问题 / 请他试着说 / 请他动手。
+    // 要求她每轮必须在结尾做一件事：抛问题 / 请他试着说 / 请他动手。
     // 这是教学对话的基本节奏，不是可选的修辞。
     //
-    // ---- 【剧情里的"钩子"是感情的钩子，不是知识点的钩子】
+    // ---- 剧情里的"钩子"是感情的钩子，不是知识点的钩子
     //
-    // 原来这一段不分模式：举例直接拼 Subject（剧情大纲不写 [Course]，
     // 于是退回内置的「C 语言」），第 3 条写的是"改一行代码、猜一下输出"。
-    // 她在"契约的代价"那一幕里照着做，就会问出"那你说，C 语言里这个写法
+    // 她在"契约的代价"那一幕里照着做，就会问出"那
     // 跟刚才那个写法意思一样吗"——前面所有的感情铺垫一秒破功。
     //
     // 钩子本身要留（不留对话会冷掉），但留什么必须跟着模式走。
@@ -14505,53 +14009,51 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"【绝对不要】以一句纯陈述或感叹结尾，那会让他不知道该回什么。\n";
         s += L"【绝对不要】写「还有什么想问的吗」「今天就到这里吧」这类客套结束语。\n";
     }
-
     // ---- 不要脱离 C 语言教学
     //
     // 模型很容易滑向泛泛闲聊：聊聊天气、聊聊今天过得怎么样。
     // 玩这个游戏的人是要学 C 的，闲聊超过一两句就是在浪费他的时间。
     //
-    // ---- 【开场段不适用：那一幕本来就是闲聊】
+    // ---- 开场段不适用：那一幕本来就是闲聊
     //
     // 开场那一拍是"课还没开始，先聊两句"。这一段如果也写
     // "主线永远是知识点、不要连续两轮纯闲聊"，就跟 kick 里那句
     // "现在不要讲知识点"直接打架——两条指令相反，
     // 她只能两头都不做，表现就是开场那句话又短、又没有下文。
     //
-    // 【开场】这个标签是 Director::SceneHint() 自己写进去的，
+    // 开场这个标签是 Director::SceneHint 自己写进去的，
     // 属于同一份代码里的约定，不是靠猜素材名。
     const bool introStage = (sceneHint.find(L"【开场】") != std::wstring::npos);
     if (!introStage) {
     //
-    // ---- 【课程名取自剧本，不写死】
+    // ---- 课程名取自剧本，不写死
     //
-    //  原来这里硬写「C 语言」，连举例都点名"不要用 Python / Java"。
-    //  换 Python 剧本时，system 会一本正经地要求她"不要用 Python 举例"——
-    //  她只能照做，于是整门课被自己禁止掉了。
-    //  课程是剧本的事（[Course] Subject），没写就退回内置的 C 语言。
+    // 换 Python 剧本时，system 会一本正经地要求她"不要用 Python 举例"
+    // 她只能照做，于是整门课被自己禁止掉了。
+    // 课程是剧本的事（[Course] Subject），没写就退回内置的 C 语言。
     const std::wstring& subj = g_app.dir.Syl().Subject();
     if (g_app.dir.Syl().isStory) {
         //
-        // ---- 【剧情大纲里没有"教"这回事】
+        // ---- 剧情大纲里没有"教"这回事
         //
-        //  课程模式下这几句是主线：围着知识点转、举例要用这门课、讲完就推进。
-        //  剧情大纲里照抄的话，她会在"那块碎片"那一幕里突然开始上课——
-        //  而剧情幕根本没有 Task，于是讲了也没得考，
-        //  表现是"演着演着变成上课，然后卡在那里没人往下接"。
+        // 课程模式下这几句是主线：围着知识点转、举例要用这门课、讲完就推进。
+        // 剧情大纲里照抄的话，她会在"那块碎片"那一幕里突然开始上课
+        // 而剧情幕根本没有 Task，于是讲了也没得考，
+        // 表现是"演着演着变成上课，然后卡在那里没人往下接"。
         //
-        //  剧情的主线是【感情曲线】：这一幕该是什么味道、必须发生什么、
-        //  绝对不能发生什么——那三栏由 SyllabusToPrompt 给。
+        // 剧情的主线是感情曲线：这一幕该是什么味道、必须发生什么、
+        // 绝对不能发生什么——那三栏由 SyllabusToPrompt 给。
         const std::wstring u = ChapterUnit(true);
         s += L"\n【这一局没有课要上】\n";
         s += L"  · 你们在过的是一段故事，主线是当前这一" + u + L"的感情走向。\n";
         s += L"  · 不要讲知识点、不要出题、不要考他——这里没有要教的东西。\n";
         //
-        // ---- 【"演到位"是感觉，不是判据】
+        // ---- "演到位"是感觉，不是判据
         //
         // ★ 同一份提示词里若一边写可核对的"那件事发生了没有"、
-        //   一边写"演到位了"，模型会挑省事的那个（感觉），
-        //   于是可核对的那条白写，advance 永远停在 0。
-        //   这里是通用说明，必须跟上面那条判据同一个说法。
+        // 一边写"演到位了"，模型会挑省事的那个（感觉），
+        // 于是可核对的那条白写，advance 永远停在 0。
+        // 这里是通用说明，必须跟上面那条判据同一个说法。
         s += L"  · 这一" + u + L"该发生的事发生了才推进（advance），\n";
         s += L"    不要还没发生就急着往下走。\n";
     } else {
@@ -14565,23 +14067,23 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     }
     }   // !introStage —— 开场段不加这条，见上面注释
     if (directorMode) {
-        // ---- 画面字段：清单来自【扫目录】，不再是写死的白名单
+        // ---- 画面字段：清单来自扫目录，不再是写死的白名单
         //
-        // 【这里原来写死了两份名单】
-        //   bg：  开场 / 课 / 题 / 通过 / 卡住 / 终章 / 结局_真 ...
-        //   bgm： 平静 / 开心 / 疑惑 / 惊吓 / 紧张 / 结局
+        // 这里
+        // bg： 开场 / 课 / 题 / 通过 / 卡住 / 终章 / 结局_真 ...
+        // bgm： 平静 / 开心 / 疑惑 / 惊吓 / 紧张 / 结局
         // 问题：作者往 assets/bg/ 丢一张新图，代码里没有它 → 模型永远切不过去。
-        // 现在把 ScanVisibleAssets() 扫到的真实文件名全部交给模型，
+        // 现在把 ScanVisibleAssets 扫到的真实文件名全部交给模型，
         // 它对着的永远是"确实存在的东西"，加图即生效，不用改代码。
         s += L"\n【画面由你决定】你可以借这几个字段改变画面，用得好会让对话更有电影感。\n";
         //
-        // ---- 【本轮禁用的表情】连续用过就从清单里拿掉
+        // ---- 本轮禁用的表情连续用过就从清单里拿掉
         //
-        // 【这是"表情锁死"的硬约束，措辞压不住】
-        // 运行日志：教学阶段连续 6 轮「叹气」，重开后又连续 6 轮「无语」。
-        // 期间 prompt 里一直写着"两轮必须换脸""不会有人替你换"，她照样填同一个。
+        // 这是"表情锁死"的硬约束，措辞压不住
+        // ★ 症状：教学阶段连续 6 轮「叹气」，重开后又连续 6 轮「无语」。
+        // 期间 prompt 里一直写着"两轮必须换脸""不会有人替
         //
-        // 不是偷懒（当前值已经不给抄了），是她【真的认为整段都是同一个情绪】
+        // 不是偷懒（当前值已经不给抄了），是她真的认为整段都是同一个情绪
         // ——在她眼里"无可奈何地教"就是「叹气」，讲一整章都是这个情绪。
         //
         // 措辞是软约束，清单是硬约束：从菜单里拿掉，她就填不出来。
@@ -14590,9 +14092,9 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         //
         // 只剔最近 2 个：足够打破连续同一张脸，又不至于把可选范围越收越窄。
         //
-        // 【直接用调用方算好的那份，不在这里重算】
-        // 重算就会出现"prompt 里拿掉了、校验却还认"的分叉——
-        // 那正是收窄上一版失效的原因。必须同源。
+        // 直接用调用方算好的那份，不在这里重算
+        // 重算就会出现"prompt 里拿掉了、校验却还认"的分叉
+        // 那正是收窄早期版本失效的原因。必须同源。
         std::vector<std::wstring> bannedPoses;
         if (recent) bannedPoses = recent->banned;
         //
@@ -14603,29 +14105,27 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"【只能从里面挑，而且要照抄】——自己另起一个名字（哪怕意思差不多）会被忽略。\n";
         s += L"填了名单外的名字时画面不会变，等于你白说。\n\n";
         s += L"其中 pose 是【立绘本身】——它同时决定了穿什么衣服和什么表情。\n\n";
-
         // ---- pose：服装 + 表情捆绑，主字段
         //
-        // 【为什么不再让模型分别填 outfit 和 emote】
+        // 为什么不再让模型分别填 outfit 和 emote
         // 立绘是"一套衣服 × 一种表情"一张图画出来的。
         // 让它分别给"校服"和"害羞"，组合出的「校服_害羞」可能压根没画，
-        // 引擎只能悄悄退回平静脸——它以为自己选对了，玩家看到的却是错的。
+        // 引擎只能悄悄退回平静脸——它以为自己选对了，
         // 给整段名字就没有这个问题：清单里的每一项都对应一张真实存在的图。
-        // ---- 换画面的【思考顺序】
+        // ---- 换画面的思考顺序
         //
-        // 【只列清单是不够的：模型会一直挑最眼熟的那个】
+        // 只列清单是不够的：模型会一直挑最眼熟的那个
         // 她现在每轮都填了，但填的几乎永远是同一个——因为挑最眼熟的
         // 比"理解这一拍是什么氛围、再按氛围找素材"省事得多。
         // 所以这里强制一个顺序：先想清楚这一拍是什么（beat），再按它挑。
         // 顺序反过来（先给素材再补氛围）等于没约束，她会随手填。
         s += L"【换画面的思考顺序】先想 beat（这一拍发生了什么），再按 beat 挑素材。\n";
         s += L"  不要先挑素材再补理由——那样你只会一直用同一个最眼熟的。\n\n";
-
         // ---- 最近几轮用过什么：模型自己没有这个记忆
         //
-        // 【这是"连续好几轮同一张脸"的直接对策】
-        // 每一轮请求对它都是独立的一局，它只看到【当前画面】一个值。
-        // 沿用是最省力的，于是玩家看到连续三轮叹气脸。
+        // 这是"连续好几轮同一张脸"的直接对策
+        // 每一轮请求对它都是独立的一局，它只看到当前画面一个值。
+        // 沿用是最省力的，于是
         // 把清单列出来，"别再用"才有具体所指。
         if (recent && (!recent->poses.empty() || !recent->bgs.empty())) {
             auto join = [](const std::vector<std::wstring>& v) {
@@ -14646,66 +14146,64 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
             // ---- 连着用同一个 pose 时点名说破
             //
             // 只写"别重复"太抽象，它会觉得自己每轮都换了（beat 确实变了）。
-            // 把"你已经连续 N 轮用这张脸了"这个事实摆出来，它才会当回事。
+            // 把"
             //
-            // ---- 【只在【跨轮禁用真的生效】时才说这句话】
+            // ---- 只在【跨轮禁用真的生效时才说这句话】
             //
-            // 【放开教学段跨轮禁用之后，这段措辞会跟引擎对着干】
+            // 放开教学段跨轮禁用之后，这段措辞会跟引擎对着干
             // pose2 全段落地后，只要素材独立请求开着，跨轮连用就一律放行
-            // （见 Director 那边 pose2Active 的注释），换脸由【同句两个表情】保证。
-            // 而这段是写死"同一张脸最多连用 2 轮、这一轮必须换一张不同的"——
+            // （见 Director 那边 pose2Active 的注释），换脸由同句两个表情保证。
+            // 而这段是写死"同一张脸最多连用 2 轮、这一轮必须换一张不同的"
             // 它在教学段会逼她躲开唯一贴切的那张（比如讲课的「认真」），
             // 正是放开要解决的那个问题。
             //
             // 而且 splitAsset 开着时，主请求本来就写着"这一轮不用填 pose"，
             // 紧接着又来一段"必须换脸"，两条指令打架。
-            // 关掉素材独立请求时 pose 才在这一轮填，那也正是跨轮禁用生效的时候——
+            // 关掉素材独立请求时 pose 才在这一轮填，那也正是跨轮禁用生效的时候
             // 两种情况正好互补，用同一个条件就够。
             if (recent->streak >= 2 && !recent->poses.empty() && !splitAsset) {
                 s += L"\n【★必须换脸★】你已经连续 " + WFromInt(recent->streak)
                    + L" 轮用「" + recent->poses.back() + L"」这张脸了。\n";
                 //
-                // 【规则是硬的：最多连用 2 轮，第 2 轮就必须换】
-                // 原来写的是"除非这一拍确实是同一个情绪"——
+                // 规则是硬的：最多连用 2 轮，第 2 轮就必须换
                 // 这条例外成了万能借口：她几乎总能给自己的沿用找到理由，
-                // 于是"别重复"形同虚设，玩家看到连续三轮甚至更多同一张脸。
-                // 现在不给例外：情绪没变也要换一张【细微不同】的，
+                // 于是"别重复"形同虚设，
+                // 现在不给例外：情绪没变也要换一张细微不同的，
                 // （无奈地教可以是 叹气 → 无语 → 呆滞，不用一直挂在 叹气 上）
                 s += L"  【同一张脸最多连用 2 轮，这一轮必须换一张不同的。】\n";
                 s += L"  没给理由的沿用一律不接受。情绪确实没变也要换一张细微不同的：\n";
                 s += L"  比如一直在无奈地教，可以在那几张无奈系的脸之间轮换，别一直挂同一张。\n";
                 //
-                // ---- 【必须点明：不会再有人替你换】
+                // ---- 必须点明：不会再有人替
                 //
-                // 【这是删掉引擎强制换脸之后必须补的一句话】
+                // 这是删掉引擎强制换脸之后必须补的一句话
                 // 原来引擎会在她连用两轮时随机替她换一张。删掉之后，
                 // 如果 prompt 没说清楚，她会以为"照抄最省事，
-                // 反正系统会帮我处理"，于是画面连续十几轮挂着同一张脸。
+                // 反正系统会帮
                 //
-                // 而且这句话能消掉一个副作用：以前她给的跟画面不一致，
-                // 是引擎替她换的；现在她给的跟画面【永远一致】——
+                // 而且这句话能消掉一个副作用：早期版本她给的跟画面不一致，
+                // 是引擎替她换的；现在她给的跟画面永远一致
                 // 好处是不再出现"奇怪的脸"，代价是她不换就真不换。
                 // 讲清这一点，她才知道这件事现在完全落在自己身上。
                 s += L"  【不会再有人替你换】以前系统会在你沿用太久时帮你换一张，\n";
                 s += L"  现在已经取消了——你不换，画面就一直挂着同一张脸，很呆板。\n";
                 s += L"  换脸这件事现在【完全由你决定】，也只由你负责。\n";
                 //
-                // ---- 【直接给出排除后的候选，这是最有效的一招】
+                // ---- 直接给出排除后的候选，这是最有效的一招
                 //
                 // ★ 光说"必须换脸"没用：连续 6 轮同一张脸期间，这句警告一直在 prompt 里，
-                //   她依然每轮都填同一张——原因很简单，它不知道该换成什么。
-                //   "换一张不同的"是个开放题，而开放题最省力的答案就是沿用。
-                //   把最近用过的从清单里剔除后列出来，沿用就直接变成
-                //   "填了一个不在清单里的名字"——会被拒绝。这是把软约束变成硬约束。
+                // 她依然每轮都填同一张——原因很简单，它不知道该换成什么。
+                // "换一张不同的"是个开放题，而开放题最省力的答案就是沿用。
+                // 把最近用过的从清单里剔除后列出来，沿用就直接变成
+                // "填了一个不在清单里的名字"——会被拒绝。这是把软约束变成硬约束。
                 //
-                // ---- 【这份候选必须跟下面的正式清单同源】
+                // ---- 这份候选必须跟下面的正式清单同源
                 //
                 // ★ 同一个 prompt 里出现两份不一样的清单，是"她填了、画面却不动"
-                //   的一半成因：上面按"最近用过的全部"剔除后列出 6 张，
-                //   下面正式清单按 bannedPoses 列 9 张。模型照下面那份挑，
-                //   挑到的正好是【最近用过】的一张，而校验只禁 1 张于是放行了——
-                //   玩家看到"她换了、却换回刚才那张"，而且日志一切正常。
-                //   两边必须用同一份 bannedPoses。
+                // 的一半成因：上面按"最近用过的全部"剔除后列出 6 张，
+                // 下面正式清单按 bannedPoses 列 9 张。模型照下面那份挑，
+                // 挑到的正好是最近用过的一张，而校验只禁 1 张于是放行了
+                // 两边必须用同一份 bannedPoses。
                 if (vis && !vis->pose.empty()) {
                     std::wstring cand;
                     for (size_t i = 0; i < vis->pose.size(); ++i) {
@@ -14730,11 +14228,10 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
             }
             s += L"\n";
         }
-
         //
         // ---- 她上一轮给了一个无效名字：点名纠正
         //
-        // 【没有这一段，同样的错会一轮轮重复】
+        // 没有这一段，同样的错会一轮轮重复
         // 它给了「tsundere」被忽略，下一轮很可能原样再给一次，
         // 因为它根本不记得自己上一轮写过什么。
         // 把原话 + 正确写法一起摆出来，一次就能纠正。
@@ -14744,13 +14241,11 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
             s += L"  清单里没有这个名字，程序只能忽略它——画面上一整轮都没换脸。\n";
             s += L"  这一轮请从下面清单里挑一个【中文名】原样照抄，不要再自己造词。\n\n";
         }
-
         //
-        // 【措辞必须跟着素材的实际组织方式走】
-        // 这个角色如果【没有服装分化】（立绘只有表情，一套衣服穿到底），
+        // 措辞必须跟着素材的实际组织方式走
+        // 这个角色如果没有服装分化（立绘只有表情，一套衣服穿到底），
         // 就不能再说"服装 + 表情"——模型会照着给出「校服_害羞」这种组合名，
         // 而清单里只有「害羞」→ 匹配不上 → 被拒 → 画面沿用上一张。
-        // 玩家看到的就是"她明明选了，画面却不动"，而且没有任何报错。
         const bool noOutfitSplit = !(vis && !vis->outfit.empty());
         if (noOutfitSplit) {
             s += L"  pose —— 代表你此刻状态的词"
@@ -14766,7 +14261,7 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
             //
             // ---- 清单变短了要说明，否则她会填一个刚才还在、现在没了的名字
             //
-            // 她没有跨轮记忆，但会照着【最近用过】那条回忆。
+            // 她没有跨轮记忆，但会照着最近用过那条回忆。
             // 不解释为什么「叹气」突然从清单里消失了，
             // 她很可能照记忆填上——那是个现在不在清单里的名字，画面不会变，
             // 于是"强制换脸"反而变成"画面卡住"。
@@ -14780,10 +14275,10 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
                 s += L"       填了画面不会变。请从上面这份里挑一张。\n";
             }
             //
-            // ---- 【禁止用英文 / 罗马字】
+            // ---- 禁止用英文 / 罗马字
             //
-            // 【这是"模型返回奇怪立绘名"的首要对策】
-            // 日志里出现过 pose=tsundere、pose=smile。
+            // 这是"模型返回奇怪立绘名"的首要对策
+            // 运行时出现过 pose=tsundere、pose=smile。
             // 清单里全是中文名，英文名一个字符都对不上，
             // 结果是被当成无效值丢掉 —— 她以为自己选了，画面却纹丝不动。
             //
@@ -14800,14 +14295,13 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
             // 改成通用原则：原则对任何角色包都成立，举例只对这一个角色成立。
             s += L"       你的 beat 是什么情绪，就挑情绪对得上的那张脸——对不上就不要用。\n";
             //
-            // ---- 【必须点明"照抄会被强行换掉"，否则它一定照抄】
+            // ---- 必须点明"照抄会被强行换掉"，否则它一定照抄
             //
-            // 【这是日志里"她给平静、画面却是叹气"的真正来源】
+            // 这是运行时"她给平静、画面却是叹气"的真正来源
             // 别处（bgm 那条）写着"跟现在一样就抄回来，引擎发现没变就不会重播"，
             // 而这里又要求"两轮必须换一次"。两条规则打架时，
             // 模型必然选省事的那个：照抄。
             // 于是引擎的兜底把它换掉 —— 画面动的是引擎，不是它，
-            // 玩家看到的就是"返回的和实际的对不上"。
             //
             // 把后果讲清楚：照抄不是"保持不变"，而是"交出选择权"，
             // 引擎会替它挑一张，而那张很可能跟这句台词不搭。
@@ -14833,22 +14327,21 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
             s += L"       换脸完全由你决定，不会有人替你换——沿用就等于画面一直挂着\n";
             s += L"       同一张脸，很呆板。\n\n";
         }
-
         //
         // ---- beat 到表情的硬对应
         //
-        // 【运行日志里最刺眼的一条】：她说「清了清嗓子，认真起来」，
-        // 给的却是「叹气」。她不是不会换脸，是没把 beat 和表情关联起来——
+        // ★ 症状：最刺眼的一条，她说「清了清嗓子，认真起来」，
+        // 给的却是「叹气」。她不是不会换脸，是没把 beat 和表情关联起来
         // 在它眼里「叹气」和「认真」只是两张"有反应的脸"，随手挑一个。
         // 把对应关系写死成表，它才有判断依据。
         //
-        // ---- 【这张对照表必须按当前清单过滤】
+        // ---- 这张对照表必须按当前清单过滤
         //
         // 原来硬编码了「生气」「失望」「无语」「呆滞」——作者后来把它们删掉了，
         // 表里却还在推荐。她照着填 -> 清单里根本没有 -> 被拒 -> 打回 -> 每轮白跑一次请求。
         // 而且不报错，日志上只看到"她又填了个不存在的名字"，查不出根因。
         //
-        // 现在每一行先查白名单：清单里没有的那一行【整行不输出】。
+        // 现在每一行先查白名单：清单里没有的那一行整行不输出。
         // 作者往目录里加新表情也一样——表里没有它就靠清单说明，不会反过来误导。
         s += L"       【beat 到表情的对应，照着挑】\n";
         {
@@ -14862,15 +14355,15 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"       【注意】清单里写着「这不是讲课的表情」的那几张，讲课时别用——\n";
         s += L"       讲知识点的时候该用清单里写明适合讲课的那几张。\n\n";
         //
-        // ---- 【用她真实犯过的错做反例】
+        // ---- 用她真实犯过的错做反例
         //
-        // 【运行日志里最刺眼的两条】，措辞规则讲过但没用，
-        // 必须点名到"你上次就是这么错的"：
-        //   · 教学阶段连续 6 轮「叹气」——台词却是
-        //     "我清了清嗓子，认真起来""在黑板上画了一排整齐的格子"
-        //   · 重开后连续 6 轮「无语」——台词却是
-        //     "哦？挺敏锐的嘛""诶——竟然答对了！"
-        // 她不是不会换脸，是把"教你"这整件事理解成了单一情绪。
+        // ★ 症状：最刺眼的两条。措辞规则讲过但没用，
+        // 必须点名到"
+        // · 教学阶段连续 6 轮「叹气」——台词却是
+        // "
+        // · 重开后连续 6 轮「无语」——台词却是
+        // "哦？挺敏锐的嘛""诶——竟然答对了！"
+        // 她不是不会换脸，是把"教
         // 讲一章的过程中情绪其实是波动的：开场认真 → 他答对了惊讶
         // → 他答错了失望 → 讲累了叹气。别一张脸挂到底。
         s += L"       【最常见的错】讲知识点时给了一张写着「这不是讲课的表情」的脸——\n";
@@ -14890,13 +14383,13 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         //
         // ---- 台词里的物件必须跟背景对得上
         //
-        // 【这是"她在讲黑板、画面却是乡间小道"的直接对策】
+        // 这是"她在讲黑板、画面却是乡间小道"的直接对策
         // 光说"提到哪儿就去哪儿"太抽象：它并不真的理解
         // "黑板"这个词意味着"人在教室里"。给出物件->场所的对照表，
         // 它才有具体的检查依据。
         //
-        // 【整张表来自 char.ini 的 物件对照】代码里写死举例 = 换角色包后全是噪音，
-        // 它会照着一个不存在的名字去挑。没配就只留原则——
+        // 整张表来自 char.ini 的 物件对照代码里写死举例 = 换角色包后全是噪音，
+        // 它会照着一个不存在的名字去挑。没配就只留原则
         // 原则对任何角色都成立，举例只对这一个角色成立。
         s += L"       【对不上就是穿帮】你台词里提到某个地方特有的东西时，\n";
         s += L"       背景必须换成那个地方。\n";
@@ -14915,8 +14408,7 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         }
         s += L"       反过来，你正在讲的东西跟画面不是同一个地方——这就是穿帮，\n";
         s += L"       玩家一眼就会觉得不对。挑之前先扫一眼自己的台词。\n\n";
-
-        // ---- bgm：她能挑，但【主页曲不在清单里】
+        // ---- bgm：她能挑，但主页曲不在清单里
         //
         // 原来撤销了这个字段（音乐写死两首）。现在放开给她：
         // 讲到大段落、进入考试、他做对了，换一首确实更有戏。
@@ -14934,12 +14426,11 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"       他做对了换亮一点的，气氛松下来换轻快一点的。\n";
         s += L"       一句台词换一次会显得很吵——但字段本身不能空，\n";
         s += L"       跟现在一样就把【当前画面】里的名字抄回来，引擎发现没变就不会重播。\n\n";
-
-        // outfit / emote 保留在输出格式里，但【不再作为主推字段】：
+        // outfit / emote 保留在输出格式里，但不再作为主推字段：
         // 老角色包、老 prompt 可能还在用，去掉会让它们整段失效。
         // 同时给了 pose 的话，引擎以 pose 为准，这两个会被忽略。
         //
-        // 【没有服装分化时，这两个字段一个都不给】
+        // 没有服装分化时，这两个字段一个都不给
         // 只要字段还在格式里，模型就会去填——它不知道"留空"是更优解。
         // 而 outfit 一旦被填上（哪怕清单是空的，校验也会放行），
         // 引擎就会拿着一个不存在的衣服名去拼立绘路径，画面就不动了。
@@ -14964,8 +14455,7 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"  beat —— 这一拍发生了什么（\"她被夸了，嘴硬但很高兴\"）。\n";
         s += L"        先写它，再按它挑上面三个。它不会显示给玩家。\n";
         s += L"  mood —— 一句话描述此刻的氛围，会进你的记忆，不会显示给玩家。\n";
-
-        // ---- 什么时候【必须】重新挑
+        // ---- 什么时候必须重新挑
         //
         // 光说"情绪对了就换"，模型会把"情绪对了"理解成很窄的东西，
         // 于是全程只挑一次。把触发点一条条列出来，它才有具体的检查表。
@@ -14979,14 +14469,13 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         //
         // ---- 情绪词 → 立绘词的对照
         //
-        // 【"台词明显害羞却给了惊讶"就是靠这张表挡的】
-        // 模型并不真的理解"惊讶"和"害羞"是两种不同的情绪——
+        // "台词明显害羞却给了惊讶"就是靠这张表挡的
+        // 模型并不真的理解"惊讶"和"害羞"是两种不同的情绪
         // 在它眼里都只是"有反应的脸"。不把对应关系写出来，
         // 它就会随手挑一个看起来差不多的。
         //
-        // 【整块来自 char.ini 的 hintEmo】
-        // 原来在代码里写死"害羞/平静/惊讶/认真""上课期间的课室""黑板"这些名字——
-        // 换角色包后全是噪音，而且【「平静」这张素材早就删了】，
+        // 整块来自 char.ini 的 hintEmo
+        // 换角色包后全是噪音，而且「平静」这张素材早就删了，
         // 提示词里还留着它，等于诱导她去挑一个清单里没有的东西。
         // 按 ； 分行输出；没配就只留标题，不再举例。
         s += L"\n【台词里的情绪 → 该用哪张脸（别挑错）】\n";
@@ -15003,10 +14492,9 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
                 pos = nl + 1;
             }
         }
-
         //
-        // 【few-shot 示范整块来自 char.ini 的 示范】
-        // 规则讲得再清楚不如给例子，但例子里全是素材名——
+        // few-shot 示范整块来自 char.ini 的 示范
+        // 规则讲得再清楚不如给例子，但例子里全是素材名
         // 换包后她会照着一个清单里没有的名字去填。没配就不给示范。
         s += L"\n【示范】\n";
         {
@@ -15024,10 +14512,8 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         }
 
         s += L"\n【填名字时】只写名字本身，不要把括号里的说明抄进来。\n";
-
         // ---- 推进权：交给她
         //
-        // 【之前 ready 只是"建议"，门槛还在引擎手里】
         // 引擎不知道她讲到哪了、讲透没有，只能靠"聊了几轮"这种粗糙指标，
         // 于是经常出现"她还想讲但被拉去出题"或者"她讲完了还在硬聊"。
         // 现在她说什么时候推进就什么时候推进。
@@ -15038,8 +14524,8 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"         别急着填 1：他要是还在问问题，就先答完。\n";
         s += L"         他要是能把知识点自己讲明白，填 2 也完全可以。\n";
         //
-        // 【明确告诉她：节奏归她，没有上限】
-        // 原来引擎有一条"聊满 N 轮就替你开考"的兜底，
+        // 明确告诉她：节奏归她，没有上限
+        // 原来引擎有一条"聊满 N 轮就替
         // 于是她讲到一半被强行拉走。那条已经删了，
         // 但不说清楚的话她仍可能以为"系统随时会打断"，从而急着填 1。
         s += L"         【讲多久完全由你定】没有轮数上限，系统不会打断你；\n";
@@ -15052,20 +14538,19 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         s += L"         反过来，跑挂了但只是笔误、思路是对的，你可以给 pass。\n\n";
         s += L"  ready ——（旧字段）等价于 advance=1，两个都填时以 advance 为准。\n";
     }
-
     //
-    // ---- 【她自己写的素材笔记，放在最后】
+    // ---- 她自己写的素材笔记，放在最后
     //
-    // 【这是"叫了半天还是那几张脸"的根治办法】
+    // 这是"叫了半天还是那几张脸"的根治办法
     // 之前所有的对策（别名表、字符重合度、按台词挑脸、打回重填）
-    // 全都是在【引擎这边】猜她的意思，每一层都治好一批、又留下新的例外。
+    // 全都是在引擎这边猜她的意思，每一层都治好一批、又留下新的例外。
     //
-    // 真正的问题是：素材说明是【作者写的】，而要用它的是【模型】。
+    // 真正的问题是：素材说明是作者写的，而要用它的是模型。
     // 两边措辞对不上时，"作者写的是无奈"会被模型读成"讲课也行"。
     //
     // 让它在开场前自己看一遍清单、自己总结一遍，
     // 写出来的就是它自己的理解方式，之后每轮带进上下文，
-    // 它参照的是自己能读懂的话——这比我们再补十条匹配规则都管用。
+    // 它参照的是自己能读懂的话
     //
     // 放在最后是因为它是"参考材料"，不能盖住上面那些硬规则的输出格式要求。
     if (assetNote && !assetNote->empty()) {
@@ -15079,10 +14564,9 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     m.content = s;
     return m;
 }
-
 // 点评代码的 user 消息。
 //
-// 【之前只给她"通过 / 未通过"两个字，她根本判不了】
+// 之前只给她"通过 / 未通过"两个字，她根本判不了
 // 她看不到题面、看不到测试用例、也不知道判定标准，
 // 于是只能说一句「不错嘛」或者「再想想」——点评空洞，也没法讲题。
 //
@@ -15096,8 +14580,7 @@ std::wstring BuildCodeReviewUser(const std::wstring& taskTitle, const std::wstri
     if (!tpl.empty())  u += L"你给他的模板：\n```cpp\n" + tpl + L"\n```\n";
     u += L"\n他写的代码：\n```cpp\n" + code + L"\n```\n";
     //
-    // 【判定权完全在你手里，没有机器结论可参考】
-    // 原来这里会附带"编译运行结果"和"系统判定（通过/未通过）"。
+    // 判定权完全在
     // 现在都不给了：她要自己读代码、自己在心里跑一遍。
     // 给机器结论的问题是她会随声附和——"系统说通过了，那就通过吧"，
     // 于是写死答案（hardcode）这种骗过用例的写法就永远抓不出来。
@@ -15105,9 +14588,8 @@ std::wstring BuildCodeReviewUser(const std::wstring& taskTitle, const std::wstri
     u += L"重点看这些：\n";
     u += L"  · 他把答案写死了（hardcode），换个输入就不对 → fail\n";
     //
-    // ---- 【举例不要点名具体知识点】
+    // ---- 举例不要点名具体知识点
     //
-    // 原来写的是「比如该用指针他却用了全局变量」。
     // 「指针」是这门课第 1 章的标题，写在剧本包里；
     // 换一门课（换剧本）之后，她判卷时会被提醒一个不属于当前课程的知识点。
     // 判定规则本身跟知识点叫什么无关，举例改成通用的说法即可。
@@ -15119,24 +14601,24 @@ std::wstring BuildCodeReviewUser(const std::wstring& taskTitle, const std::wstri
     u += L"然后在 say 里：先说你的判断和理由（具体到他代码的哪一行），\n";
     u += L"再讲清楚这道题该怎么想。别只说一句「不错」或者「再试试」。\n";
     //
-    // ---- 【判完不要问他要不要休息，直接把话题接走】
+    // ---- 判完不要问他要不要休息，直接把话题接走
     //
     // 这里要改的是：她原来判完会说
-    //   「你想现在继续，还是先休息一下？」
-    // 把主动权丢回给玩家，玩家一选就冷场；而且这是【选项】不是【对话】，
+    // 「
+    // 把主动权丢回给玩家，玩家一选就冷场；而且这是选项不是对话，
     // Galgame 里由角色提问才是推进关系的正确姿势。
     //
-    // 现在要求她判完就【自己开口】开启下一段相处，并抛一个问题。
+    // 现在要求她判完就自己开口开启下一段相处，并抛一个问题。
     //
-    // ---- 【列举句式挡不住她——改成语义禁令】
+    // ---- 列举句式挡不住她——改成语义禁令
     //
-    // 【这一轮日志里她的原话】
-    //   「下一题是数组——不过嘛，今天先到这里，你休息一下？」
-    // 上一版列举的是「要不要休息」「要不要继续」「累不累」，
-    // 而她说的是「你休息一下？」——话是同一个意思，句式不同就绕过去了。
+    // 这一轮她的原话
+    // 「下一题是数组——不过嘛，今天先到这里，
+    // 早期版本列举的是「要不要休息」「要不要继续」「累不累」，
+    // 而她说的是「
     // 列举式禁令只能挡住原样照抄的那几句，她换个说法就失效。
     //
-    // 所以改成讲【原则】：凡是"接下来干嘛由你决定"都算把球踢回去。
+    // 所以改成讲原则：凡是"接下来干嘛由
     u += L"\n【判完之后不要把节奏的决定权交给他】\n";
     u += L"「要不要休息」「你休息一下？」「要不要继续」「累不累」"
          L"「现在就教吗」「先预习吗」——\n";
@@ -15147,24 +14629,24 @@ std::wstring BuildCodeReviewUser(const std::wstring& taskTitle, const std::wstri
     u += L"  「要不要听我说说我的事」——由你起头，别等他找话题。\n";
     u += L"没过就安慰他、换个角度再讲一遍，同样不要把节奏交给他。\n";
     //
-    // ---- 【也不要预告下一章、不要问"现在就教吗"】
+    // ---- 也不要预告下一章、不要问"现在就教吗"
     //
-    // 【运行日志里她的原话】
-    //   「行吧，第一章通关。……好了，继续！第二章是数组，
-    //    比指针简单多了——先预习一下？还是现在就教？」
+    // ★ 症状：她会这样说：
+    // 「行吧，第一章通关。……好了，继续！第二章是数组，
+    // 比指针简单多了——先预习一下？还是现在就教？」
     // 她在一个句子里既宣布通关、又讲起下一章的标题、还丢了个选项。
     // 玩家刚考完，本该是两人说话的时间，被她一句话推进走了：
-    //   下一轮进的是【章间日常】，而她的上下文已经"答应过要讲下一章"，
-    //   于是那段相处又会被跳过去（这个坑在注释里记过一次）。
+    // 下一轮进的是章间日常，而她的上下文已经"答应过要讲下一章"，
+    // 于是那段相处又会被跳过去（这个坑在注释里记过一次）。
     //
-    // 所以判完就【停在当下】：只说这道题、只说刚才那句打动你的话。
+    // 所以判完就停在当下：只说这道题、只说刚才那句打动
     // 下一章的事等那段相处结束再说。
     u += L"【另外：判卷时不要提下一章】\n";
     u += L"不说它的标题、不讲它是什么、不预告它简单还是难——\n";
     //
-    // ---- 【这里原来写着「这一轮日志里她说『下一题是数组』」】
+    // ---- 这里
     //
-    // 那是排查问题时把【当时那一局的日志原文】直接粘进了提示词：
+    // 那是排查问题时把当时那一局的日志原文直接粘进了提示词：
     // 一是模型会读到一句跟它毫无关系的"日志"，二是「数组」是这门课
     // 第 2 章的标题——换一门课（或换剧本）之后，她会在判卷时读到
     // 一个不属于当前课程的章节名。
@@ -15402,11 +14884,7 @@ using namespace Gdiplus;
 
 #undef  M_PI
 #define M_PI 3.14159265358979323846
-
-// ============================================================================
-//  配色：整体走"深夜里的霓虹粉"，二次元感来自配色而不是素材量。
-//  素材不齐的时候，光靠这套配色也能看。
-// ============================================================================
+// 配色：整体走"深夜里的霓虹粉"，二次元感来自配色而不是素材量。 素材不齐的时候，光靠这套配色也能看。
 namespace {
 const ARGB kBoxFill    = Color::MakeARGB(200, 24, 20, 34);
 const ARGB kBoxBorder  = Color::MakeARGB(220, 255, 150, 190);
@@ -15427,7 +14905,7 @@ const wchar_t* const kImgExt[] = { L".png", L".jpg", L".jpeg", L".bmp", nullptr 
 const int kBoxX = 100, kBoxY = 460, kBoxW = 1080, kBoxH = 228;
 // 正文区：框内从 460 到 688，共 228px。
 //
-// 【为什么又调高了一截】
+// 为什么又调高了一截
 // 原来 4 行 × 36px。她现在一句能讲 300~800 字，4 行只装 190 字左右，
 // 于是长台词被切成三四页——玩家读着读着就忘了前面讲了什么，
 // 感觉就是"话被截断了"。能多放一行就少切一次。
@@ -15435,40 +14913,36 @@ const int kBoxX = 100, kBoxY = 460, kBoxW = 1080, kBoxH = 228;
 const int kTextX = 136, kTextY = 484, kTextW = 1008, kLineH = 34;
 const int kBodyLines = 5;      // 一页几行
 const int kChoiceH = 56, kChoiceGap = 10;
-
-// ---------------------------------------------------------------------------
-//  自由输入（轮到玩家打字）时的专用布局
+// 自由输入（轮到玩家打字）时的专用布局
 //
-//  【这是"输入轮出现好几个框叠在一起"的根因】
-//  原来无论收起还是展开，对话框恒为 460..688，而引导语（512..546）
-//  和输入框（550..670）直接压在它身上——正文区是 484..654，
-//  等于被这两条带子整段盖住。于是玩家看到的是：
-//  一个空对话框 + 一条带描边的引导语 + 一个带描边的输入框 + 白色编辑框，
-//  四个圆角框层层相叠，而她的对话框空着挂在那儿没消失。
+// 这是"输入轮出现好几个框叠在一起"的根因
+// 原来无论收起还是展开，对话框恒为 460..688，而引导语（512..546）
+// 和输入框（550..670）直接压在它身上——正文区是 484..654，
+// 等于被这两条带子整段盖住。于是
+// 一个空对话框 + 一条带描边的引导语 + 一个带描边的输入框 + 白色编辑框，
+// 四个圆角框层层相叠，而她的对话框空着挂在那儿没消失。
 //
-//  现在展开时把对话框压矮、引导语和输入框排到它下面，三者互不重叠：
-//    对话框 460..578（两行正文）
-//    引导语 584..618
-//    输入框 622..708（编辑框 634..698）
+// 现在展开时把对话框压矮、引导语和输入框排到它下面，三者互不重叠：
+// 对话框 460..578（两行正文）
+// 引导语 584..618
+// 输入框 622..708（编辑框 634..698）
 //
-//  收起时不走这套：收起的目的是"把正文整段露出来重读"，
-//  那时对话框恢复全高，输入框只剩右下角一句提示。
-// ---------------------------------------------------------------------------
+// 收起时不走这套：收起的目的是"把正文整段露出来重读"，
+// 那时对话框恢复全高，输入框只剩右下角一句提示。
 const int kBoxHInput   = 118;                    // 输入态对话框高度（460..578）
 const int kBodyLinesIn = 2;                      // 输入态一页几行
 const int kGuideYIn    = 584, kGuideHIn = 34;    // 引导语
 const int kInputYIn    = 622, kInputHIn = 86;    // 输入框外框
 const int kEditYIn     = 634, kEditHIn  = 64;    // EDIT 子窗口（LayoutEdit 对齐）
-
-// 输入区在【剧情模式】下整体上移。
+// 输入区在剧情模式下整体上移。
 //
 // 剧情模式不画引导语（见下面 st.storyMode 那处说明），
-// 于是对话框 460..578 下面会空出 584..618 那一条——
+// 于是对话框 460..578 下面会空出 584..618 那一条
 // 输入框还留在 622 的话，中间就是一道 44px 的空白，看着像漏画了。
 //
-// 【为什么是函数而不是两个常量】
+// 为什么是函数而不是两个常量
 // 渲染层画外框、LayoutEdit 摆 EDIT 子窗口，两处必须落在同一处。
-// 各写一份数字就是本项目最典型的那类 bug：画在这里、点（打字）在那里。
+// ★ 绘制与命中必须共用同一个公式。
 inline int InputBoxYIn(const RenderState& st) {
     return st.storyMode ? kGuideYIn : kInputYIn;
 }
@@ -15476,11 +14950,10 @@ inline int InputBoxYIn(const RenderState& st) {
 inline int EditBoxYIn(const RenderState& st) {
     return InputBoxYIn(st) + (kEditYIn - kInputYIn);
 }
-
 // 文本框是不是"展开等着玩家打字"。
 //
-// 【画和命中必须问同一个判据】
-// 这套布局在两种高度之间切换，对话框的矩形也跟着变——
+// 画和命中必须问同一个判据
+// 这套布局在两种高度之间切换，对话框的矩形也跟着变
 // 渲染算一套、命中算另一套的话，又会出现"画在这、点在那"。
 // 所以抽成一个函数，两处共用。
 inline bool InputExpanded(const RenderState& st) {
@@ -15492,8 +14965,8 @@ inline int DialogBoxH(const RenderState& st) {
 }
 // 代码编辑区（做题时）。
 //
-// 【布局原则：做题环节跟对话环节是同一个界面】
-// 原来做题是【另一块全屏面板】——深色遮罩盖住背景、立绘收起、
+// 布局原则：做题环节跟对话环节是同一个界面
+// 原来做题是另一块全屏面板——深色遮罩盖住背景、立绘收起、
 // 左侧 16 行小字题面、右侧编辑器、四个按钮。跟对话界面完全是两个东西，
 // 玩家一进考试就像切到了另一个程序。
 //
@@ -15501,11 +14974,10 @@ inline int DialogBoxH(const RenderState& st) {
 // 只是画面上方多了一块写代码的地方。差异只剩"多了个编辑器"。
 const int kEditorX = 160, kEditorY = 70, kEditorW = 960, kEditorH = 300;
 const int kTaskBtnY = 384, kTaskBtnH = 42;
-
 // 做题时的按钮。四个：运行 / 问她 / 放弃 / 她记得的事
 //
-// 【为什么要"问她"】
-// 写代码时被锁在编辑器里，想问"这题怎么做"没地方问——
+// 为什么要"问她"
+// 写代码时被锁在编辑器里，想问"这题怎么做"没地方问
 // 而她手里明明有题面和测试用例（SceneHint 里给了）。
 // 没有这个入口，"她能讲题"就等于只能在出题前讲，做题时卡住只能干瞪眼。
 //
@@ -15517,30 +14989,28 @@ int TaskBtnX(int i) {
     int total = kTaskBtnCount * kTaskBtnW + (kTaskBtnCount - 1) * kTaskBtnGap;
     return (CK_BASE_W - total) / 2 + i * (kTaskBtnW + kTaskBtnGap);
 }
-
 // ---- 右上角「明天见」按钮
 //
 // 位置：紧贴 HUD（那一行画在 W-330..W-20、y 14..44）的下面，
 // 右边缘跟 HUD 对齐。字号 17 时三个字加边距不会超出 150 宽。
 //
-// 【为什么放在右上角而不是对话框旁边】
+// 为什么放在右上角而不是对话框旁边
 // 对话框那一圈是"点一下推进对话"的热区，把功能按钮塞进去会误触：
 // 想翻页却进了下一章，那比没有按钮更糟。
 const int kNextDayW = 150, kNextDayH = 44;
 const int kNextDayX = CK_BASE_W - 20 - kNextDayW;
 const int kNextDayY = 52;
 }
-
 // ---------------------------------------------------------------- 折行
 // 规范化台词里的换行。
 //
-// 【为什么必须做】
+// 为什么必须做
 // 大模型很喜欢用换行分段，一次回复里能有十几个 \n，
-// 有的还连着写（\n\n\n）。而 WrapText 是先按 \n 切段再对每段折行——
+// 有的还连着写（\n\n\n）。而 WrapText 是先按 \n 切段再对每段折行
 // 空段也会产出一行。于是：
-//   · 行数虚高 → 明明只有两句话，却算出"第 1 / 3 页"
-//   · 空行占满整页 → 翻到下一页是【一片空白】，玩家以为程序坏了
-//   · 打字机按页推进 → 每页只打几个字就"完成"，感觉文字断断续续
+// · 行数虚高 → 明明只有两句话，却算出"第 1 / 3 页"
+// · 空行占满整页 → 翻到下一页是一片空白，
+// · 打字机按页推进 → 每页只打几个字就"完成"，感觉文字断断续续
 //
 // 截图就是这么来的：第 1 页只有一句"哼，看懂了？那敢不敢动手试试？"，
 // 却标着"第 1 / 3 页"。
@@ -15619,15 +15089,15 @@ void Renderer::Shutdown() {
 
 void Renderer::DropDerived() {
     //
-    // 只清【派生】缓存（预缩放图 / 包围盒），保留解码好的原图。
+    // 只清派生缓存（预缩放图 / 包围盒），保留解码好的原图。
     //
-    // 【为什么开局和读档都要清一次】
+    // 为什么开局和读档都要清一次
     // 玩家反馈"新建存档时返回与实际不符几乎必现，读档则不那么容易"。
-    // 两者的差别就在于：新游戏必然先经过【选角界面】——
+    // 两者的差别就在于：新游戏必然先经过选角界面
     // 那里会为三个角色各画一张卡面，把 3 套预缩放图写进 scaled_。
     // scaled_ 只有 20 个槽，选角那一轮就占掉一大半，
     // 之后进游戏时立绘的缩放结果不断被 LRU 挤掉又重算，
-    // 而包围盒 bbox_ 与 scaled_ 的淘汰并不同步——
+    // 而包围盒 bbox_ 与 scaled_ 的淘汰并不同步
     // "用 A 的包围盒去裁 B 的缩放图"这种错配就有了发生的窗口。
     // 读档通常从标题页直接进，没经过选角，占坑少，所以不那么容易出现。
     //
@@ -15652,14 +15122,12 @@ void Renderer::ClearCache() {
         delete it->second;
     scaled_.clear();
     scaledUsed_.clear();
-
     // 内容包围盒也必须一起清。
     // 它是从图片内容算出来的，图换了新的（重新导入、素材被替换）
-    // 而 bbox 还留着旧值，就会出现"裁错了区域"——
+    // 而 bbox 还留着旧值，就会出现"裁错了区域"
     // 人物被切掉半边，或者又变回大小不一，而且很难联想到是缓存没清。
     bbox_.clear();
 }
-
 // 原图缓存 LRU 淘汰。
 //
 // 为什么不让它无限长：立绘是 角色×服装×表情，背景是 章节×角色系列，
@@ -15708,13 +15176,12 @@ static Gdiplus::RectF SnapRect(const Gdiplus::RectF& want, int dw, int dh) {
     return Gdiplus::RectF((float)(int)(want.X + 0.5f), (float)(int)(want.Y + 0.5f),
                           (float)dw, (float)dh);
 }
-
 // 预缩放缓存的 LRU 淘汰。
 //
 // 上限 20 张：1280x720 的 ARGB 位图约 3.5MB，不做限制的话
 // 素材一多（立绘是 角色 x 服装 x 表情）就会吃掉几百 MB。
 //
-// 提取成函数是因为 PrepareScaledCrop 也要用——
+// 提取成函数是因为 PrepareScaledCrop 也要用
 // 两处各自写一份淘汰逻辑，迟早会不一致（一边淘汰一边不淘汰）。
 void Renderer::TrimScaled() {
     const int kMaxScaled = 20;
@@ -15786,10 +15253,9 @@ Gdiplus::Image* Renderer::Scaled(Image* src, const std::wstring& srcKey, int dw,
     Image* r = MakeScaled(src, srcKey, dw, dh, 0, 0, src->GetWidth(), src->GetHeight());
     return r ? r : src;
 }
-
 // 缩放前的公共检查。
 //
-// 【原来 PrepareScaled 和 PrepareScaledCrop 各写了一遍，共 2 处】
+// 原来 PrepareScaled 和 PrepareScaledCrop 各写了一遍，共 2 处
 // 这类"前置检查"最容易在加新功能时被漏掉：
 // 少判一个 <=0 就是 GDI+ 返回 InvalidParameter，而画面只是"没画出来"。
 bool Renderer::ScaleTargetOk(Gdiplus::Image* src, const Gdiplus::RectF& want,
@@ -15817,7 +15283,6 @@ Gdiplus::Image* Renderer::PrepareScaled(Image* src, const std::wstring& srcKey,
     out = SnapRect(want, dw, dh);
     return s;
 }
-
 // 把 src 的某一块区域缩放到 want。
 //
 // 缓存 key 必须带上 srcRect：同一张原图可能在不同场合裁不同的区域
@@ -15876,11 +15341,10 @@ static bool IsAbsPath(const std::wstring& p) {
     if (p.size() >= 2 && p[0] == L'\\' && p[1] == L'\\') return true;   // \\server\share
     return false;
 }
-
 // 从内存流加载图片，而不是 Image::FromFile。
 //
-// 【这是"背景删不掉"的根因】
-// Image::FromFile 会【一直持有文件句柄】直到 Image 被析构。
+// 这是"背景删不掉"的根因
+// Image::FromFile 会一直持有文件句柄直到 Image 被析构。
 // 而这里的结果是要长期缓存的——于是只要某张背景被显示过一次，
 // 它的文件就被锁住，DeleteFileW 永远返回 FALSE（共享冲突）。
 // 玩家点了「确认删除？」，界面毫无反应、连个报错都没有，
@@ -15901,7 +15365,7 @@ Image* Renderer::LoadImageNoLock(const std::wstring& full) {
     GlobalUnlock(h);
 
     IStream* st = nullptr;
-    // 第二个参数 TRUE：流释放时自动 GlobalFree，不用我们管
+    // 第二个参数 TRUE：流释放时自动 GlobalFree，不用手动释放
     if (CreateStreamOnHGlobal(h, TRUE, &st) != S_OK) { GlobalFree(h); return nullptr; }
 
     Image* img = Image::FromStream(st);
@@ -15930,7 +15394,6 @@ Image* Renderer::GetImage(const std::wstring& relPathNoExt, const wchar_t* const
     }
     return nullptr;
 }
-
 // 立绘查表：<名>_<表情>_o / <名>_<表情> / <名>_normal_o / <名>_normal / <名>
 // 这样作者可以只画一张 normal，也能逐步补差分——没有差分就一直用同一张，
 // 不会画不出人。"_o" 是张嘴版，只在打字时出现，用来做简易口型。
@@ -15942,10 +15405,9 @@ static std::wstring SpriteName(const std::wstring& base, const std::wstring& mid
     if (!tail.empty()) s += L"_" + tail;
     return s;
 }
-
 // hitNameOut：实际命中的那个候选名（素材相对路径，不含扩展名）。
 //
-// 【为什么必须把它传出去】
+// 为什么必须把它传出去
 // 降级链意味着"请求的表情"和"实际拿到的图"经常不是一回事：
 // 要 校服_害羞.png，没有，退到 校服_平静.png。
 // 调用方如果拿"请求参数"去当图片的身份标识（做缓存 key 之类），
@@ -15965,14 +15427,12 @@ Image* Renderer::GetCharImage(const CharDef* def, const std::wstring& fallbackKe
         std::wstring full = SpriteName(def->SpriteBase(), pose, L"");
         Image* img = GetImage(full, kImgExt);
         if (img) { if (hitNameOut) *hitNameOut = full; return img; }
-
         // 无前缀：sprite\校服_平静.png
         //
-        // 【这是"对话中立绘有时消失"的一个根因】
+        // 这是"对话中立绘有时消失"的一个根因
         // 一个角色一个目录时，文件名常常不写角色名前缀（目录已经说明是谁了）。
         // 造型名是模型从扫描清单里挑的，清单确实收了这种无前缀文件，
         // 但这里只会去拼 <base>_<造型> —— 拼出来的是带前缀的路径，找不到。
-        // 于是 fallthrough 到下面的 emote 降级链；而导演模式下模型往往只给 pose、
         // 不给 emote，emote 为空时链里全是 normal / 本体图，同样找不到 →
         // 返回 nullptr → 立绘整个消失。
         // 表现是"有时"：emote 恰好有值且能命中时就正常，没有就消失。
@@ -16005,26 +15465,24 @@ Image* Renderer::GetCharImage(const CharDef* def, const std::wstring& fallbackKe
         if (key.empty()) return nullptr;
         base = L"ch\\" + key;
     }
-
     //
-    // 【降级链整条删掉了】
+    // 降级链整条删掉了
     //
-    // 原来是一条 7 段以上的链：当前服装+当前表情 → 默认服装+当前表情 →
     // 当前服装+平静 → 默认+平静 → 无中缀+表情 → 无中缀+平静 → 本体图
     // 再接 _o 张嘴版和默认造型兜底。
     //
-    // 它解决的是"素材没画全"，代价是【画面跟日志对不上】：
+    // 它解决的是"素材没画全"，代价是画面跟日志对不上：
     // 要 校服_害羞，没有，悄悄退到 校服_平静——模型以为选对了，
-    // 调试行写的还是"害羞"，玩家看到的是另一张脸，全程不报错。
+    // 调试行写的还是"害羞"，
     // 连着好几轮截图问的就是这一类。
     //
-    // 现在只认【她要的那一张】：
-    //   · 造型名（服装_表情整段）-> 子目录 / 平铺，命中就画
-    //   · 没有造型名时，服装 × 表情 也只合成【一个】名字，不换衣服也不换脸
-    //   · 找不到就返回空，由调用方【沿用上一张】或【不画】
+    // 现在只认她要的那一张：
+    // · 造型名（服装_表情整段）-> 子目录 / 平铺，命中就画
+    // · 没有造型名时，服装 × 表情 也只合成一个名字，不换衣服也不换脸
+    // · 找不到就返回空，由调用方沿用上一张或不画
     // 素材缺哪一张，日志会明说（见调用方），不再用"画点别的"盖过去。
     //
-    // 只找【闭嘴】的静态图。不再按"说话中"切换 _o 版本——
+    // 只找闭嘴的静态图。不再按"说话中"切换 _o 版本
     // 口型动画让画面一直在跳，而且大部分自制素材根本没有 _o 差分，
     // 结果就是打了半天字画面毫无变化，反而显得像卡住了。
     std::vector<std::wstring> cands;
@@ -16083,11 +15541,10 @@ Image* Renderer::CharPortrait(const CharDef* def) {
         // 他只会觉得"我配的卡面没生效"，根本想不到是名字打错了。
         return GetImage(def->portrait, kImgExt);
     }
-
-    // 2. 没配卡面 → 用该角色的【默认造型】
+    // 2. 没配卡面 → 用该角色的默认造型
     //
-    // 【这里原来是 SpriteBase() + "_normal"】
-    // 对"平静.png""生气.png"这种【无前缀、按造型命名】的素材必然落空——
+    // 这里
+    // 对"平静.png""生气.png"这种无前缀、按造型命名的素材必然落空
     // 于是选角卡片永远走占位分支，显示名字首字（"常""布""绫"）。
     // 看得见角色是谁，却看不见脸，等于卡片上最有辨识度的部分没了。
     // 造型是扫描得来的，必须走 GetCharImage 才能命中真实文件。
@@ -16108,30 +15565,27 @@ Image* Renderer::TitleArt(const CharDef* def) {
         Image* img = GetImage(key, kImgExt);
         if (img) return img;
     }
-    // 2. 卡面 —— 跟选角卡片、角色卡「头像」页【同一张】。
+    // 2. 卡面 —— 跟选角卡片、角色卡「头像」页同一张。
     //
-    //    【原来这里直接退回立绘，所以主页显示的常常是另一张脸】：
-    //    玩家在头像页配好了卡面，选角卡片变了，主页右侧却还是老样子，
-    //    看着就像"程序随便挑了一张立绘放上去"。
-    //    这里改成调用 CharPortrait 而不是自己再拼一遍路径——
-    //    两处走同一个函数，以后怎么改都不会再分叉。
+    // 玩家在头像页配好了卡面，选角卡片变了，主页右侧却还是老样子，
+    // 看着就像"程序随便挑了一张立绘放上去"。
+    // 这里改成调用 CharPortrait 而不是自己再拼一遍路径
+    // 两处走同一个函数，以后怎么改都不会再分叉。
     if (Image* img = CharPortrait(def)) return img;
-
     // 3. 最后才退回立绘，没画插画也不至于空一大块。
     //
-    //    【这里原来是 GetCharImage(def, L"", def->DefaultPose(), def->outfitDefault)】
-    //    参数位是 (def, fallbackKey, emote, outfit, pose)——
-    //    造型名被塞进了 emote 位，pose 位空着，
-    //    于是走的不是"造型优先"那条路，而是 outfit × emote 的降级链。
-    //    降级链会拿造型名去拼 <base>_<服装>_<造型>，跟真实文件名对不上就一路往下掉，
-    //    最后落到哪张全看包里恰好有哪些文件——这就是"好像随机选的"的来源。
+    // 这里
+    // 参数位是 (def, fallbackKey, emote, outfit, pose)
+    // 造型名被塞进了 emote 位，pose 位空着，
+    // 于是走的不是"造型优先"那条路，而是 outfit × emote 的降级链。
+    // 降级链会拿造型名去拼 <base>_<服装>_<造型>，跟真实文件名对不上就一路往下掉，
+    // 最后落到哪张全看包里恰好有哪些文件
     return GetCharImage(def, L"", L"", L"", def->DefaultPose());
 }
-
 // 独立于角色包的标题插画（assets\title\主页插画.png）。
 //
-// 【为什么必须单独一个目录，不能直接放进 assets\bg】
-// assets\bg 会被 ScanVisibleAssets 扫进"可选背景"清单——
+// 为什么必须单独一个目录，不能直接放进 assets\bg
+// assets\bg 会被 ScanVisibleAssets 扫进"可选背景"清单
 // 一张标题用的构图（带标题感的全身/场景图）混进去，
 // 她某天就会"带他去"这张图，画面瞬间变成标题画面。
 // 而且这类错误不报错，只会让人觉得"她怎么突然跑到这么奇怪的地方"。
@@ -16157,14 +15611,13 @@ int Renderer::HitChoice(const ck::VmView& view, const RenderState& st, int x, in
     }
     return -1;
 }
-
-// 【可选话术】"现在该不该显示"的【唯一判据】。
+// 可选话术"现在该不该显示"的唯一判据。
 //
-//  渲染和命中必须【调同一个函数】。
-//  原来 CanDo 画在选项那条 else if 链里，而命中这边看不到那条链——
-//  于是"前面某个分支成立"时会变成【没画出来却能点到】，
-//  也就是本项目最典型的那类 bug：画在这里、点在那里。
-//  判据收口成一处，两边就不可能对不上。
+// 渲染和命中必须调同一个函数。
+// 原来 CanDo 画在选项那条 else if 链里，而命中这边看不到那条链
+// 于是"前面某个分支成立"时会变成没画出来却能点到，
+// ★ 绘制与命中必须共用同一个公式。
+// 判据收口成一处，两边就不可能对不上。
 static bool CanDoVisible(const RenderState& st) {
     // 【判据收口】展开与否只有 InputExpanded 一个答案，
     // 这里不再自己写一遍 inputMode && !inputCollapsed。
@@ -16173,7 +15626,7 @@ static bool CanDoVisible(const RenderState& st) {
 }
 
 // 【可选话术】的命中测试。
-// 布局公式必须跟渲染那处【逐字一致】——这个项目栽过太多次"画在这里、点在那里"。
+// ★ 布局公式必须与渲染逐字一致。
 int Renderer::HitCanDo(const RenderState& st, int x, int y) const {
     if (!CanDoVisible(st)) return -1;
     int n = (int)st.candoOpts.size();
@@ -16214,10 +15667,10 @@ bool Renderer::HitNextDay(const RenderState& st, int x, int y) const {
 bool Renderer::HitInputPanel(const RenderState& st, int lx, int ly) const {
     if (!InputExpanded(st)) return false;
     //
-    // 【为什么要单独一条判据】
-    // 输入框以前压在对话框里面（550..670 属于 460..688），
+    // 为什么要单独一条判据
+    // 输入框早期版本压在对话框里面（550..670 属于 460..688），
     // 点在它的边框上会被 HitDialogBox 认成"点在对话框里"，于是维持展开。
-    // 现在它挪到了对话框【下面】（622..708），
+    // 现在它挪到了对话框下面（622..708），
     // 再按老判据就会被当成"点画面别处"，玩家点一下输入框边框
     // 输入框反而收起来了——点了想打字的地方却打不了字。
     // 所以引导语带和输入框外框整体算作输入区，点它们维持展开。
@@ -16227,10 +15680,10 @@ bool Renderer::HitInputPanel(const RenderState& st, int lx, int ly) const {
 }
 
 bool Renderer::HitDialogBox(const RenderState& st, int lx, int ly) const {
-    // 名字牌凸出在框外上方 34px，也算"对话框"的一部分——
+    // 名字牌凸出在框外上方 34px，也算"对话框"的一部分
     // 玩家点名字牌时，他的意图显然是想跟这个对话框交互。
     //
-    // 【高度必须走 DialogBoxH】
+    // 高度必须走 DialogBoxH
     // 展开等着打字时对话框压矮到 460..578，下面那截是输入框的地盘。
     // 这里还按全高 688 判的话，点在输入框上会被当成"点在对话框里"，
     // 于是一次收起/呼出的判断整个反过来。
@@ -16254,7 +15707,6 @@ void FillRoundRect(Graphics& g, const Rect& r, int radius, ARGB fill, ARGB borde
     Pen p(border, bw);
     g.DrawPath(&p, &path);
 }
-
 // 纯 1:1 绘制：传进来的 dst 尺寸必须已经跟 img 的实际像素尺寸一致。
 //
 // 缩放不在这里做——调用方先用 Renderer::PrepareScaled 拿到预缩放好的图。
@@ -16264,11 +15716,10 @@ void DrawContain(Graphics& g, Image* img, const RectF& dst) {
     if (img->GetWidth() <= 0 || img->GetHeight() <= 0) return;
     g.DrawImage(img, dst);
 }
-
 // 按构图模式算目标矩形。
-//   cover    填满并裁掉溢出（默认）。横屏大图用这个，画面永远是满的。
-//   contain  完整放进去，两侧留边。竖图 / 像素图用这个，主体不会被切。
-//   stretch  强行拉满。会变形，但素材尺寸乱七八糟时是最省事的兜底。
+// cover 填满并裁掉溢出（默认）。横屏大图用这个，画面永远是满的。
+// contain 完整放进去，两侧留边。竖图 / 像素图用这个，主体不会被切。
+// stretch 强行拉满。会变形，但素材尺寸乱七八糟时是最省事的兜底。
 static RectF FitRect(Image* img, int w, int h, const std::wstring& fit) {
     float iw = (float)img->GetWidth(), ih = (float)img->GetHeight();
     if (iw <= 0 || ih <= 0) return RectF(0, 0, (float)w, (float)h);
@@ -16278,11 +15729,10 @@ static RectF FitRect(Image* img, int w, int h, const std::wstring& fit) {
     float dw = iw * s, dh = ih * s;
     return RectF(((float)w - dw) / 2, ((float)h - dh) / 2, dw, dh);
 }
-
 // 画一层背景，alpha 用于转场（1 = 不透明）。
 // GDI+ 没有直接的 DrawImage alpha 参数，得走 ColorMatrix 缩放 alpha 通道。
 // dst 是已经算好的、跟 img 像素尺寸一致的目标矩形（可能超出屏幕，靠 clip 裁掉）。
-// alpha 只在转场那 0.8 秒里小于 1，其余时间走不带 ImageAttributes 的快路径——
+// alpha 只在转场那 0.8 秒里小于 1，其余时间走不带 ImageAttributes 的快路径
 // 传了 ImageAttributes 哪怕内容是默认的，GDI+ 也会切到慢速合成路径。
 static void DrawBgLayer(Graphics& g, Image* img, const RectF& dst,
                         int W, int H, float alpha) {
@@ -16314,11 +15764,10 @@ void DrawCenterText(Graphics& g, const std::wstring& s, Font& f, const Rect& r, 
     RectF rf((float)r.X, (float)r.Y, (float)r.Width, (float)r.Height);
     g.DrawString(s.c_str(), (int)s.size(), &f, rf, &sf, &b);
 }
-
 //
-// 单行居中：整条【只占一行】，塞不下就自动缩字号，绝不换行。
+// 单行居中：整条只占一行，塞不下就自动缩字号，绝不换行。
 //
-// 【选择题的选项为什么必须单行】
+// 选择题的选项为什么必须单行
 // 选项是代码片段（`void swap(int *a, int *b) { int t = *a; ... }`），
 // 一换行就断在半句话上：上一行是 `void swap(int`，下一行是 `*a, int *b)`，
 // 玩家得在脑子里把它拼回去才能读懂——按钮本来就是让人一眼扫完的。
@@ -16328,7 +15777,7 @@ void DrawCenterText(Graphics& g, const std::wstring& s, Font& f, const Rect& r, 
 // 直到整行塞得进按钮内边距。选项本身很短（一行代码 / 一句话），
 // 正常字号就够；真写长了也只是字变小，不会把排版撑坏。
 //
-// 【不裁剪、不加省略号】
+// 不裁剪、不加省略号
 // 选项被截掉尾巴比字小更糟——他会以为自己看漏了，而正确答案可能
 // 正好在看不见的那半截里。宁可字小到看不清，也不能少字。
 void DrawCenterTextOneLine(Graphics& g, const std::wstring& s,
@@ -16357,15 +15806,12 @@ void DrawCenterTextOneLine(Graphics& g, const std::wstring& s,
 }
 
 } // namespace
-
-// ============================================================================
-//  立绘的"有像素区域"（内容包围盒）
-// ============================================================================
+// 立绘的"有像素区域"（内容包围盒）
 //
 // 人物在画布里的位置取决于画师习惯：有人贴边画满，有人只画中间一小团。
 // 按整张画布缩放会让后者小得像图标，换表情还会忽大忽小。
 //
-// 所以扫 alpha 通道取"有内容"的矩形（bbox），一律按 bbox 缩放——
+// 所以扫 alpha 通道取"有内容"的矩形（bbox），一律按 bbox 缩放
 // 无论留白多少，人物实际大小都一致。
 //
 // 先画到 kProbeW 宽的小图再扫：直接扫原图要读上百万像素、一张几十毫秒，
@@ -16455,11 +15901,10 @@ const Gdiplus::Rect* Renderer::ContentBounds(Gdiplus::Image* img, const std::wst
     bbox_[key] = Rect(bx, by, bx2 - bx, by2 - by);
     return &bbox_[key];
 }
-
 // ---- 回想面板几何。绘制和滚动共用同一份，改一处即可。
 // 回想面板：尽量做大。
 //
-// 【为什么加大】面板高度决定"一屏能看几行"。原来 580px 高、字号 18，
+// 为什么加大面板高度决定"一屏能看几行"。原来 580px 高、字号 18，
 // 一屏只有约 17 行——她一次讲透一个知识点轻松超过 20 行，
 // 玩家打开回想看到的必然是半截，要靠滚才能拼出完整的话。
 // 回想存在的意义就是"完整回看"，不能让它比对话框还局促。
@@ -16475,13 +15920,12 @@ namespace {
     const int kHistGap     = 10;    // 条与条之间
     // 一条最多显示几行正文。
     //
-    // 【原来是 3，这是"回想里看不到完整回答"的直接原因】
     // 放开教学权限后她一句能讲 3~8 句，折行后轻松超过 3 行，
-    // 于是回想里每条都被砍到 3 行再补个省略号——
+    // 于是回想里每条都被砍到 3 行再补个省略号
     // 玩家翻遍整个回想，看到的还是半截话。
     //
     // 回想面板存在的意义就是"完整回看"，截断它等于这功能废了一半。
-    // 布局已经是按【实测行高】算的（CalcHistLayout），
+    // 布局已经是按实测行高算的（CalcHistLayout），
     // 条有多高就占多高、滚动范围跟着算，所以放开了也不会错位或翻不到。
     //
     // 60 行是安全上限：1500 字 ÷ 每行约 50 字 ≈ 30 行，
@@ -16518,10 +15962,9 @@ void Renderer::CalcHistLayout(const std::vector<HistLine>& hist, HistLayout& out
     out.maxScroll = out.total - out.viewH;
     if (out.maxScroll < 0) out.maxScroll = 0;
 }
-
 // ---- 记忆面板几何。绘制和滚动共用同一份，改一处即可。
 //
-// 【面板比原来大】原来 Rect(200,90,880,540) 配 32px 固定行高，
+// 面板比原来大原来 Rect(200,90,880,540) 配 32px 固定行高，
 // 一屏塞 14 行就到底了，而记忆常常超过 14 条。
 // 现在条目按实测行高排、能滚动，面板做大只是让一屏多看几条。
 const int kMemX = 180;
@@ -16559,7 +16002,7 @@ void Renderer::CalcMemLayout(const std::vector<std::wstring>& lines, MemLayout& 
         std::vector<std::wstring> wrapped;
         // 前缀"· "也一起参与测量：绘制处同样拼了它。
         // 两边宽度算法必须一致，否则布局算窄了、画出来又宽一点，
-        // 最后几个字就压到面板边框上——这也是"重叠"的一类。
+        // 最后几个字就压到面板边框上
         //
         // WrapText 会先按 \n 切段再按宽度折行。
         // 记忆条目里带换行（她记的是整段对话），不折行就会画到面板外。
@@ -16590,7 +16033,6 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         SolidBrush bg(Color::MakeARGB(255, 16, 14, 22));
         lg.FillRectangle(&bg, 0, 0, W, H);
     }
-
     // ---- 背景（带转场）
     //
     // 转场时两层叠着画：旧图按 (1-fade) 淡出、新图按 fade 淡入。
@@ -16601,9 +16043,9 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         // st.bgPath 是解析后的路径（角色包可能自带一套背景）。
         // 没解析过（比如没挂角色库）就退回"assets/bg/剧本里写的名字"。
         //
-        // 【导演模式下绝不能退化到 view.bg】
-        // view.bg 是剧本字段，导演模式下剧本没在跑，它的值是【上一局残留】。
-        // 而 bgPath 为空只发生在"这一轮的背景还没解析到文件"——
+        // 导演模式下绝不能退化到 view.bg
+        // view.bg 是剧本字段，导演模式下剧本没在跑，它的值是上一局残留。
+        // 而 bgPath 为空只发生在"这一轮的背景还没解析到文件"
         // 原样退化就会把上一局那张旧图（比如「乡村的小道」）画出来，
         // 玩家的调试行却写着这一轮的「上课期间的课室」。
         // 两边各说各话，而且每次都是同一张旧图——因为它就是残留值。
@@ -16614,18 +16056,15 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         std::wstring curFit  = st.bgFit.empty() ? view.bgFit : st.bgFit;
         Image* bgi = curPath.empty() ? nullptr : GetImage(curPath, kImgExt);
         Image* prev = st.bgPrevPath.empty() ? nullptr : GetImage(st.bgPrevPath, kImgExt);
-
-        // 【判据只看 bgi，不再看 prev】
+        // 判据只看 bgi，不再看 prev
         //
-        // 原来写的是 (!bgi && !prev)：只有两层都没有才垫渐变。
         // 于是"切到一张不存在的背景"时会这样：
-        //   · bgi 取不到（文件没有），prev 还在（上一张图）
-        //   · 条件不成立 → 渐变不画
-        //   · 旧图按 (1-fade) 从 1 淡到 0 —— 画面逐渐变成【纯黑】
-        //   · 转场结束（0.8 秒）后 bgPrevPath 被清掉，渐变才突然冒出来
-        // 玩家看到的是："她说了句'我们换个地方'，背景先黑了，然后闪出紫色渐变"。
+        // · bgi 取不到（文件没有），prev 还在（上一张图）
+        // · 条件不成立 → 渐变不画
+        // · 旧图按 (1-fade) 从 1 淡到 0 —— 画面逐渐变成纯黑
+        // · 转场结束（0.8 秒）后 bgPrevPath 被清掉，渐变才突然冒出来
         //
-        // 正确做法是把它当成【底层】：新图不在就垫上，
+        // 正确做法是把它当成底层：新图不在就垫上，
         // 旧图在它上面淡出，露出来的就是渐变而不是黑块。
         if (!bgi) {
             LinearGradientBrush gb(Point(0, 0), Point(0, H),
@@ -16651,30 +16090,28 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             }
         }
     }
-
     // ---- 立绘（静态，无呼吸、无口型）
     //
-    // ★ 这里【刻意不做任何动画】。原来有呼吸起伏（sin 上下 3px）和打字口型，
-    //   实测在一个以"读文字"为主的界面里，持续运动的元素会抢注意力，
-    //   而且立绘每帧位置都在变，缩放缓存也命中不了。静态图反而更耐看。
+    // ★ 这里刻意不做任何动画。
+    // 实测在一个以"读文字"为主的界面里，持续运动的元素会抢注意力，
+    // 而且立绘每帧位置都在变，缩放缓存也命中不了。静态图反而更耐看。
     //
     // ---- CG 演出已随"CG 收集玩法"一起移除
     //
-    // 原来这里会先取 cg\xxx.png，取到了就收起立绘、铺满整屏。收集玩法删掉之后，
     // CG 只剩"结局时放一张图"，而这个项目的剧情由大模型自由展开，
     // 根本没有"通关奖励图"的时机。
     // ★ 留着它反而带来一个坑：剧本里 @cg 写了但图没放 →
-    //   立绘被收起、CG 也没画出来 → 画面整个空掉。现在立绘【无条件】画。
+    // 立绘被收起、CG 也没画出来 → 画面整个空掉。现在立绘无条件画。
     //
-    // ---- 【判据必须分两种模式，不能共用】
+    // ---- 判据必须分两种模式，不能共用
     //
-    // ★ 原来写的是 `!view.ch.empty()`。view.ch 是【剧本字段】，只有 Vm 跑 @ch 指令
-    //   时才会被填上（FillViewFrom，全是剧本模式那几条路）；而导演模式下剧本
-    //   【根本没在跑】——它从头到尾是空的。于是这一整段立绘代码在导演模式下
-    //   从来没进过：pose / posePath / recentPoses 那一整套都在算，画面上却一个人都没有。
-    //   导演模式该看的是 poseReady（她开口了没有）+ posePath（解析到文件没有），
-    //   那本来就是为导演模式专门做的开关。
-    //   剧本模式保持原判据不变（@ch 为空 = 场上没人，这是剧本的语义）。
+    // ★
+    // 时才会被填上（FillViewFrom，全是剧本模式那几条路）；而导演模式下剧本
+    // 根本没在跑——它从头到尾是空的。于是这一整段立绘代码在导演模式下
+    // 从来没进过：pose / posePath / recentPoses 那一整套都在算，画面上却一个人都没有。
+    // 导演模式该看的是 poseReady（她开口了没有）+ posePath（解析到文件没有），
+    // 那本来就是为导演模式专门做的开关。
+    // 剧本模式保持原判据不变（@ch 为空 = 场上没人，这是剧本的语义）。
     {
         const bool wantSprite = !st.codeMode &&
             (st.dirMode ? st.poseReady : !view.ch.empty());
@@ -16682,13 +16119,13 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         //
         // ---- 立绘对齐：解析好的路径优先，绝不再走降级链
         //
-        // 【为什么要这么改】
+        // 为什么要这么改
         // 音乐从来不会放错，是因为 ResolveBgmFor 返回一个确定文件，
         // 播放器原样播它，找不到就播不出来——不会"换一首差不多的"。
-        // 立绘原来给的是【名字】，渲染层自己拿它去猜文件，
+        // 立绘原来给的是名字，渲染层自己拿它去猜文件，
         // 猜错了就从 6 段降级链里挑一张别的——于是画面跟调试行对不上。
         //
-        // 现在决策时已经把名字解析成了路径，这里【原样画】。
+        // 现在决策时已经把名字解析成了路径，这里原样画。
         // 画不出来就是素材缺失，宁可空着并报警，也不画成另一张脸。
         std::wstring hitName;
         Image* chi = nullptr;
@@ -16708,24 +16145,22 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             double sc = st.spriteDef ? st.spriteDef->spriteScale : 1.0;
             int ox = st.spriteDef ? st.spriteDef->offsetX : 0;
             int oy = st.spriteDef ? st.spriteDef->offsetY : 0;
-
             // 内容包围盒：只取"有像素"的那一块。
             //
-            // 【不这么做的话，立绘大小完全取决于画师留了多少透明边】
-            // A 的画师贴着画布边缘画，B 的画师在同样大的画布里只画中间一小团——
+            // 不这么做的话，立绘大小完全取决于画师留了多少透明边
+            // A 的画师贴着画布边缘画，B 的画师在同样大的画布里只画中间一小团
             // 按整张画布缩放，B 的角色会比 A 小一大截，
             // 换表情（同一套图）还会因为某一张留白多而突然缩一下。
-            // 按 bbox 缩放之后，所有立绘的【人物本身】都是一样大的。
+            // 按 bbox 缩放之后，所有立绘的人物本身都是一样大的。
             std::wstring spriteKey = st.spriteDef ? st.spriteDef->id : view.ch;
             //
             // ---- 缩放缓存的 key 必须是"实际命中的图片"
             //
-            // 【这是"状态是平静、画面却是叹气"的真凶】
+            // 这是"状态是平静、画面却是叹气"的真凶
             // MakeScaled 的缓存 key 是 srcKey + 尺寸 + crop 参数。
-            // 原来这里传的是 spriteKey —— 也就是【角色 id】，跟表情无关。
             // 于是"平静"和"叹气"算出来的 key 完全一样：
-            //     角色A#440x660#crop0_0_600_1000
-            // 缓存里存的是【第一次】画出来的那张位图，之后一律命中它。
+            // 角色A#440x660#crop0_0_600_1000
+            // 缓存里存的是第一次画出来的那张位图，之后一律命中它。
             // 谁先画谁就永远占着——画面于是定格在第一次的表情上。
             //
             // 这解释了为什么 bg / bgm 修好之后立绘还是错：
@@ -16735,35 +16170,32 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             // hitName 是降级链真正命中的素材路径，天然唯一，且已用于包围盒。
             std::wstring imgKey = hitName.empty() ? spriteKey : hitName;
             //
-            // 【包围盒的缓存 key 必须是"实际命中的图片"，不能用请求参数】
+            // 包围盒的缓存 key 必须是"实际命中的图片"，不能用请求参数
             // 原来用 spriteKey|view.ch|st.pose。pose 为空时（剧本模式、
-            // 或模型这轮没给 pose）所有表情都算成同一个 key ——
+            // 或模型这轮没给 pose）所有表情都算成同一个 key
             // 于是"平静"那张图算出来的包围盒被套用到"开心"那张图上。
             // 两张图构图不同时，裁出来的可能正好是透明区域，
-            // 立绘就【凭空消失】了，而且只在特定表情组合下出现，极难复现。
+            // 立绘就凭空消失了，而且只在特定表情组合下出现，极难复现。
             //
             // hitName 是降级链真正命中的素材路径，天然唯一。
             const Rect* box = ContentBounds(chi, imgKey);
             Rect srcRect(0, 0, (int)chi->GetWidth(), (int)chi->GetHeight());
             if (box && box->Width > 0 && box->Height > 0) srcRect = *box;
-
             // 锚定底部（脚踩在画面下方），这样缩放时立绘是"长高"而不是"飘起来"
             //
-            // ---- 【脚底必须贴着窗口下沿，不能留一条缝】
+            // ---- 脚底必须贴着窗口下沿，不能留一条缝
             //
-            // 原来是 700，而画面高 720——底下空出 20 像素。
             // 那条缝在深色背景上几乎看不见，但人物看着就是"浮在半空"：
             // 脚底下有一道说不清的空隙，像是被托起来而不是站在地上。
             // 720 = CK_BASE_H，脚底正好压在窗口边缘上，人物才"落地"。
             //
             // 注意：ContentBounds 取的是"有像素"的那一块，
             // 所以这里的底边就是人物真正的脚底，不是画布边缘
-            //（画师留的透明边不会把人物顶上去）。
+            // （画师留的透明边不会把人物顶上去）。
             const int kFeet = CK_BASE_H;
             const int maxW = (int)(640 * sc);
             const int wantH = (int)(660 * sc);
-
-            // 【按内容高度统一缩放】——这是"大小一致"的关键。
+            // 按内容高度统一缩放
             // 高度定死，宽度按内容比例推出来；
             // 只有内容特别宽（横构图、张开双臂）时才反过来按宽度收一下，
             // 免得超出画面。
@@ -16783,8 +16215,8 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                                             RectF((float)cx, (float)cy, (float)dw, (float)dh), dst);
             DrawContain(lg, draw, dst);
             //
-            // 【回填"这一帧实际画的是哪张图"】
-            // 调试行打的是【请求】的 pose，画面用的是【降级链命中】的图。
+            // 回填"这一帧实际画的是哪张图"
+            // 调试行打的是请求的 pose，画面用的是降级链命中的图。
             // 两者不一致时（文件缺失、降级、缓存错配）光看请求值一切正常，
             // 必须把实际路径也显示出来，否则这类问题永远只能靠猜。
             st.spritePath = hitName;
@@ -16798,14 +16230,13 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
 
     // ---- 当前说话人的主题色。
     // 后面所有"描边/高亮/名字牌"都用它，整个界面的色调跟着说话人走。
-    // 没有角色定义（没建 assets/char/）就退回默认粉色，视觉上跟以前一致。
+    // 没有角色定义（没建 assets/char/）就退回默认粉色，视觉上跟早期版本一致。
     ARGB accent = RndAccent, boxBorder = kBoxBorder, nameFill = kNameFill;
     ARGB choiceHot = kChoiceHot;
-
-    // ---- 玩家回显：整套换成【冷色】
+    // ---- 玩家回显：整套换成冷色
     //
     // 角色的主题色都是暖色系（粉 / 绿 / 紫 / 橙），玩家用青蓝能一眼分开：
-    // 看到冷色名字牌就知道"这句是我说的"，不用去看文字内容判断。
+    // 看到冷色名字牌就知道"这句是
     // 用同一个色系只改深浅是分不出来的——玩家扫一眼根本注意不到。
     if (st.playerEcho) {
         accent    = Color::MakeARGB(255, 110, 200, 235);
@@ -16821,11 +16252,9 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         unsigned r = (accent >> 16) & 0xFF, g = (accent >> 8) & 0xFF, b = accent & 0xFF;
         choiceHot = Color::MakeARGB(240, (unsigned)(r * 0.35), (unsigned)(g * 0.30), (unsigned)(b * 0.42));
     }
-
     // ---- 代码编辑区（只在做题时出现）
     //
-    // 【只画"多出来的那块"，其余交给下面的对话框】
-    // 原来这里是一整套独立的面板：全屏遮罩、自己的配色、左侧 16 行小字题面、
+    // 只画"多出来的那块"，其余交给下面的对话框
     // 贴着面板边缘的按钮。现在遮罩去掉（背景照常可见）、
     // 题面交给对话框、按钮居中，跟对话界面重合度最大化。
     if (st.codeMode) {
@@ -16835,7 +16264,6 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         // 白色编辑框压在深色界面上很扎眼，而代码区本来就该跟界面同色。
         Rect ed(kEditorX - 6, kEditorY - 6, kEditorW + 12, kEditorH + 12);
         FillRoundRect(lg, ed, 10, kPanelFill, accent, 2.5f);
-
         // 左上角标一下这是写代码的地方；右上角放剩余次数
         //
         // 文案不再写"F5 运行"——本机不跑编译了，按 F5 是把代码交给她看。
@@ -16906,11 +16334,10 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 DrawCenterText(lg, label, fc, r, kTextMain);
             }
         }
-
         //
         // ---- 选择题的选项
         //
-        // 【跟剧本选项用同一个位置、同一套配色、同一个悬停态】
+        // 跟剧本选项用同一个位置、同一套配色、同一个悬停态
         // 玩家已经熟悉剧本里那个"对话框上方一排按钮"的样子，
         // 选择题照搬过来，不用重新学。而且命中测试也用同一个公式，
         // 不会出现"画在这里、点在那里"。
@@ -16926,24 +16353,23 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 DrawCenterTextOneLine(lg, label, L"Microsoft YaHei", 18, r, kTextMain);
             }
         }
-
-        // ---- 【可选话术】：剧情模式里"你可以这么说"的几个方向
+        // ---- 可选话术：剧情模式里"
         //
-        //  跟选择题同一个位置、同一套命中公式（画在这里，就点在这里）。
+        // 跟选择题同一个位置、同一套命中公式（画在这里，就点在这里）。
         //
-        //  【只在自由输入时画】
-        //  做题、看台词的时候画出来会盖住内容，而且那时候点了也没用——
-        //  输入框是隐藏的，填进去也看不见。收起时同样不画：
-        //  收起的目的是把正文露出一大片，压一排按钮上去就白收了。
+        // 只在自由输入时画
+        // 做题、看台词的时候画出来会盖住内容，而且
+        // 输入框是隐藏的，填进去也看不见。收起时同样不画：
+        // 收起的目的是把正文露出一大片，压一排按钮上去就白收了。
         //
-        //  【点一下 = 填进输入框，不是发送】
-        //  他要能改、能删、能干脆不打。做成直接发送就变成选择肢了，
-        //  自由度是这个项目最值钱的东西，不能因为"推不动"就把它换掉。
+        // 点一下 = 填进输入框，不是发送
+        // 他要能改、能删、能干脆不打。做成直接发送就变成选择肢了，
+        // 自由度是这份设计最要紧的东西，不能因为"推不动"就把它换掉。
         //
-        //  【不挂在上面那条 else if 链上】
-        //  链的前两档是剧本选项和选择题，命中测试看不到那条链——
-        //  挂在链上就会出现"这一档没画、却仍然能点到"。
-        //  所以独立成一个 if，判据用 CanDoVisible（命中那边用的是同一个）。
+        // 不挂在上面那条 else if 链上
+        // 链的前两档是剧本选项和选择题，命中测试看不到那条链
+        // 挂在链上就会出现"这一档没画、却仍然能点到"。
+        // 所以独立成一个 if，判据用 CanDoVisible（命中那边用的是同一个）。
         if (CanDoVisible(st)) {
             int n = (int)st.candoOpts.size();
             for (int i = 0; i < n; ++i) {
@@ -16957,20 +16383,19 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 DrawCenterTextOneLine(lg, label, L"Microsoft YaHei", 18, r, kTextMain);
             }
         }
-
         // ---- 自由输入模式的引导语
         //
-        // 画在输入框上方：告诉玩家"现在轮到你说话、可以聊什么"。
+        // 画在输入框上方：告诉玩家"现在轮到
         // 之前带话题的 @free 直接让 LLM 替玩家说话，玩家全程没有输入机会，
-        // 而且画面上完全看不出"该我说话了"——这是"没有对话入口"最直观的表现。
+        // 而且画面上完全看不出"该
         // 收起时不画：这条带子压在正文区里（512..546），
         // 收起的目的就是"把正文整段露出来"，留着它就白收了。
         //
-        // 【剧情模式不画这一条】
-        //  那一幕的话术（CanDo）已经整排列在对话框上方了，
-        //  再挂一条"随便聊两句吧"是重复——而且两条提示叠着，
-        //  话术那排会被往下挤，玩家第一眼看到的反而是更没用的那条。
-        //  课程模式照旧画：那里没有 CanDo，没有它玩家真的不知道说什么。
+        // 剧情模式不画这一条
+        // 那一幕的话术（CanDo）已经整排列在对话框上方了，
+        // 再挂一条"随便聊两句吧"是重复——而且两条提示叠着，
+        // 话术那排会被往下挤，玩家第一眼看到的反而是更没用的那条。
+        // 课程模式照旧画：那里没有 CanDo，没有它玩家真的不知道说什么。
         if (InputExpanded(st) && !st.inputGuide.empty() && !st.storyMode) {
             // 【原来压在 512..546，正好盖住正文第 2~3 行】
             // 现在整条带子挪到压矮后的对话框下面（584..618），不再压任何文字。
@@ -16980,26 +16405,24 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             std::wstring tip = L"▸ " + st.inputGuide;
             DrawCenterText(lg, tip, fg2, gr, RndTextDim);
         }
-
         // ---- 自由输入：画一个明确的"输入框"外框
         //
         // 真正的输入是 EDIT 子窗口（要能吃 IME 中文、能选区、能右键菜单），
-        // 它白底不透明，会盖住这里画的东西。这个框的作用是【兜底和定位】：
-        //   · 万一 EDIT 创建失败，玩家至少看到"这里该打字"；
-        //   · 框比 EDIT 大一圈，露出的这圈边就是输入框的视觉描边，
-        //     否则白色编辑框直接压在深色对话框上，边界很生硬。
-        // 尺寸必须和 LayoutEdit() 里 InputFree 分支的 100,560,1080,100 对齐，
+        // 它白底不透明，会盖住这里画的东西。这个框的作用是兜底和定位：
+        // · 万一 EDIT 创建失败，玩家至少看到"这里该打字"；
+        // · 框比 EDIT 大一圈，露出的这圈边就是输入框的视觉描边，
+        // 否则白色编辑框直接压在深色对话框上，边界很生硬。
+        // 尺寸必须和 LayoutEdit 里 InputFree 分支的 100,560,1080,100 对齐，
         // 改了一边忘了另一边就会错位。
         if (InputExpanded(st)) {
             // 622..708，编辑框占 634..698（见 LayoutEdit 的 InputFree 分支），
             // 上方这 12px 是留给下面这个标签的。
             //
-            // 【原来是 550..670，整块压在对话框 460..688 里面】
             // 于是"空对话框 + 引导语 + 输入框 + 白色编辑框"四层圆角框叠在一起，
             // 而她的对话框空着还挂在那儿——正是"好几个框重叠"的观感。
             // 现在三者上下排开，谁也不压谁。
             //
-            // 【外框上方那 12px 原来画着「输入」两个字，现在不画了】
+            // 外框上方那 12px 原来画着「输入」两个字，现在不画了
             // 编辑框（白底不透明）从 634 起，标签基线在 624 附近，
             // 于是它只露出上半截——看着像被切了一半的脏字。
             // 而且"这里该打字"这件事，白底编辑框本身已经说清楚了，
@@ -17007,7 +16430,6 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             Rect ir(kBoxX - 10, InputBoxYIn(st), kBoxW + 20, kInputHIn);
             FillRoundRect(lg, ir, 12, Color::MakeARGB(235, 18, 16, 26), accent, 2.5f);
         }
-
         // ---- 收起态：给一个明确的"怎么叫回来"的入口
         //
         // 位置放在右下角、正文之下（正文 484..654，框底 688），
@@ -17042,7 +16464,6 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         // 【输入态压矮】让出下面那一截给引导语和输入框，见上面那组常量。
         Rect box(kBoxX, kBoxY, kBoxW, DialogBoxH(st));
         FillRoundRect(lg, box, 18, kBoxFill, boxBorder, 2.5f);
-
         // 名字牌
         //
         // 做题时说话人可能为空（出题不是"说"出来的），
@@ -17060,15 +16481,14 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             FillRoundRect(lg, np, 10, nameFill, boxBorder, 2.0f);
             DrawCenterText(lg, spk, fName, np, Color::MakeARGB(255, 40, 24, 38));
         }
-
         // ---- 她在思考：显示"她在想…"，不画正文
         //
-        // 【这是"思考时对话框出现带 {} 的原始文本"的显示侧修复】
+        // 这是"思考时对话框出现带 {} 的原始文本"的显示侧修复
         // 逻辑层那边已经不再把流式缓冲塞进 body，这里再补一道：
         // 万一还有别的路径让 body 里存着机器原文，思考期间也不会画出来。
         //
         // 用三个圆点做动画：静止的"她在想…"容易被当成卡死。
-        // 玩家回显（playerEcho）时【不】走这里——那句话是玩家自己刚说的，
+        // 玩家回显（playerEcho）时不走这里——那句话是玩家自己刚说的，
         // 必须看得见，否则他不知道自己发出去了没有。
         if (st.thinking && !st.playerEcho && !st.inputMode) {
             std::wstring dots;
@@ -17080,18 +16500,16 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             std::wstring s = L"她在想… " + dots;
             lg.DrawString(s.c_str(), (int)s.size(), &ft, pt, &tb2);
         }
-
         // 正文（打字机：只画前 textShown 个字符）
         //
         // 自由输入模式下不画：编辑框正压在这块区域上，画了也看不见，
         // 而且它显示的是 @free 的话题原文，跟上方引导语重复。
-        // 玩家回显（playerEcho）时【必须画】——那正是要给他看的内容。
+        // 玩家回显（playerEcho）时必须画——那正是要给他看的内容。
         //
         // 思考期间不画：见上面的 thinking 分支。
-        // 收起时也画：收起的目的就是"把正文露出来让我看着她上一句再回答"。
+        // 收起时也画：收起的目的就是"把正文露出来让
         //
-        // ---- 【输入态现在也画】
-        // 原来写着 !st.inputMode，于是展开等着打字时对话框是【整片空白】的——
+        // ---- 输入态现在也画
         // 玩家一边打字一边看不见她上一句说了什么，而那块空白下面
         // 还压着引导语和输入框两层框，看着就是"好几个框叠在一起"。
         // 现在输入框挪到对话框下面了，正文区（现在两行）不再被遮，
@@ -17099,16 +16517,15 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         if (!(st.thinking && !st.playerEcho)) {
             // ---- 长台词分页
             //
-            // 【之前写死只画 3 行，等于把模型的话砍掉一截】
+            // 之前写死只画 3 行，等于把模型的话砍掉一截
             // 放开教学权限后她一句能讲 3~8 句，3 行根本装不下，
-            // 玩家看到的永远是"说到一半"。
             //
             // 改成按页显示：一页 4 行，点一下翻到下一页，
             // 全部显示完才出现"下一句"的三角。这是 Galgame 处理长台词的标准做法。
             // ---- 正文字体 / 行高 / 每页行数
             //
             // 做题时题面一页放不下就自动换小字号密排。
-            // 【必须整段可见，不能靠翻页】
+            // 必须整段可见，不能靠翻页
             // 编辑器是模态的：方向键被它吃掉，点击画面也被
             // AdvanceClick 里的 codeMode 保护挡掉，玩家根本没有翻页的手段。
             // 题目是参考资料（要反复看），截掉后半段等于没给全题。
@@ -17120,20 +16537,20 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             bool  inExp   = InputExpanded(st);
 
             std::vector<std::wstring> lines;
-            // 做题时正文是【题面】，用同一套折行 / 分页，
+            // 做题时正文是题面，用同一套折行 / 分页，
             // 不再另起一块 16 行小字的题面区。
             //
-            // ---- 【最后一道闸】绘制前再判一次机器格式
+            // ---- 最后一道闸绘制前再判一次机器格式
             //
             // 对话框里出现 {"say":...} 是最刺眼的一类 bug。
             // 前面在"流式提取"和"完整解析"两处都判过了，但那两处只管自己那条路：
             // 只要还有第三个赋值点（剧本注入、兜底原文、读档残留…）漏判，
             // 机器格式照样会进 view.body。
             //
-            // 所以在【真正画出来之前】统一再拦一次——这里是唯一的出口，
+            // 所以在真正画出来之前统一再拦一次
             // 拦住它就等于拦住了所有路径。
             // 不显示只是空白一下（状态栏有"她在想…"），显示出来就是事故。
-            // 做题和选择题，对话框里放的都是【题面】而不是台词。
+            // 做题和选择题，对话框里放的都是题面而不是台词。
             // 抽一个名字出来：这两处判据必须一致，分开写迟早漏一处。
             const bool showTaskStmt = (st.codeMode || st.quizMode);
             std::wstring bodyText = showTaskStmt ? st.taskStmt : view.body;
@@ -17152,22 +16569,21 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                     lines = l2; bf = &fBodySmall; lh = 24.0f; perPage = 8;
                 }
             }
-
             //
-            // ---- 【她随手写的分隔线不要画到对话框里】
+            // ---- 她随手写的分隔线不要画到对话框里
             //
-            // 【这是"拿 --- 当切脸节拍"之后新冒出来的问题】
+            // 这是"拿 --- 当切脸节拍"之后新冒出来的问题
             // 切页点用她自己写的「---」当叙事节拍，这个设计是对的；
-            // 可「---」本来只是她随手写的分隔符，渲染层照画不误——
+            // 可「---」本来只是她随手写的分隔符，渲染层照画不误
             // 于是对话框里真会出现孤零零一行「---」。
-            // 切脸的标记变成玩家看得见的乱码，等于把内部机制漏在屏幕上。
+            // 切脸的标记变成
             //
-            // 分页和打字机的字符区间【全都按 lines 算】：
+            // 分页和打字机的字符区间全都按 lines 算：
             // totalPages、pageStart、textTotalChars 都是遍历它累加出来的。
             // 所以在这里抽掉一行，下面整套自动跟着变，不用改别处。
             //
-            // sepMarkLine 记的是"分隔线后面那一行"在抽完之后的下标——
-            // 抽掉分隔线时它还没被 push 进去，那一刻 kept.size() 正好就是它。
+            // sepMarkLine 记的是"分隔线后面那一行"在抽完之后的下标
+            // 抽掉分隔线时它还没被 push 进去，那一刻 kept.size 正好就是它。
             int sepMarkLine = -1;
             if (!st.codeMode) {
                 std::vector<std::wstring> kept;
@@ -17196,14 +16612,13 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
 
             int totalPages = (int)((lines.size() + perPage - 1) / perPage);
             if (totalPages < 1) totalPages = 1;
-
             //
-            // ---- 【切第二个表情的那一页，必须用【折行后】的行号】
+            // ---- 切第二个表情的那一页，必须用【折行后的行号】
             //
-            // 【这是"脸换早了"的成因】
-            // pose2MarkerLine 是落槽时按【源码里的 \n】数出来的：
+            // 这是"脸换早了"的成因
+            // pose2MarkerLine 是落槽时按源码里的 \n数出来的：
             // 她写 10 行、分隔线在第 3 行，记下来的就是 3。
-            // 可分页用的是 WrapText 折行之后的行数——
+            // 可分页用的是 WrapText 折行之后的行数
             // 只要任何一行长到被折成两行，这两个数就对不上。
             //
             // 实际后果：她明明在第三段才转场（"---\n\n（走在石板路上）"），
@@ -17229,14 +16644,14 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 }
                 g_app.pose2MarkerLine = mk;
                 //
-                // ---- 【单页台词也要能切第二个表情】
+                // ---- 单页台词也要能切第二个表情
                 //
                 // 翻页是切脸的唯一触发点，而 Pose2SwitchPage 在
                 // pages <= 1 时直接返回 -1（"一页装得下，不切"）。
                 // 于是短台词（尤其是开场那句寒暄）的 pose2 永远用不上：
                 // 她填了、日志也记了，玩家从头到尾只看到第一张脸。
                 //
-                // 所以这里额外记一个【字符偏移】：她的分隔线在折行后
+                // 所以这里额外记一个字符偏移：她的分隔线在折行后
                 // 落在第几个字符。打字机推进到那儿就切——不需要翻页。
                 // mk < 0（她没写分隔线）时保持 0，单页就不切，
                 // 免得在一句话中途毫无理由地变脸。
@@ -17256,10 +16671,9 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             int page = st.textPage;
             if (page >= totalPages) page = totalPages - 1;
             if (page < 0) page = 0;
-
             // ---- 本页在整段里的字符区间
             //
-            // textShown 是【整段】的游标，不是"本页第几个字"。
+            // textShown 是整段的游标，不是"本页第几个字"。
             // 之前按页内计数，页与页之间要重置，一重置就容易出错
             // （自增完又被清零 = 点了不翻页）。
             // 改成全局游标后它是单调的，翻页只需改页号，不用动游标。
@@ -17271,12 +16685,11 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                  k < (int)lines.size() && k < page * perPage + perPage; ++k)
                 pageEnd += lines[k].size();
             st.textPageEndChar = pageEnd;
-
-            // 【整段可显示字符数】
+            // 整段可显示字符数
             // 打字机的推进上限必须是"所有行的字符数之和"，
-            // 不能是 view.body.size() —— 规范化换行之后两者不相等
+            // 不能是 view.body.size —— 规范化换行之后两者不相等
             // （body 里的 \n 被并掉了，行里不含它）。
-            // 用 body.size() 当上限会让游标跑过头，末页显示不全；
+            // 用 body.size 当上限会让游标跑过头，末页显示不全；
             // 用行数之和则跟下面的 cursor 完全同一套基准。
             size_t total = 0;
             for (size_t k = 0; k < lines.size(); ++k) total += lines[k].size();
@@ -17300,7 +16713,7 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 if (shown == 0) break;
                 std::wstring draw = ln.substr(0, shown);
                 //
-                // ---- 【输入态末尾补省略号】
+                // ---- 输入态末尾补省略号
                 // 输入态只显示前两行，而点一下是"收起/呼出输入框"、翻不了页，
                 // 所以不能用页码提示（写了「▼ 点击继续」点了也没反应）。
                 // 给个「…」至少让他知道后面还有，收起就能看全。
@@ -17312,11 +16725,10 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 cursor += ln.size();
                 if (shown < ln.size()) break;
             }
-
-            // 还有下一页：画"▼ 还有更多"，并且【不】画"下一句"三角——
+            // 还有下一页：画"▼ 还有更多"，并且不画"下一句"三角
             // 两个提示同时出现会让玩家不知道点一下是翻页还是推进剧情。
             //
-            // 【页码 + 回看提示】
+            // 页码 + 回看提示
             // 原来只在"还有下一页"时画一行提示，玩家不知道自己读到第几页、
             // 一共几页，也不知道能不能往回看——翻过头就只能靠回想面板，
             // 而回想是另一个界面，很多人压根想不到去那里找刚说过的话。
@@ -17345,10 +16757,8 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 lg.DrawString(more.c_str(), (int)more.size(), &fSmall, mr, nullptr, &mb);
             }
         }
-
         // 下一句提示：一个上下浮动的小三角
         // 最后一页才画"下一句"三角。分页没看完就画它，
-        // 玩家会以为点一下就推进剧情了，结果只是翻页。
         // 做题时不画：点了不会推进剧情（编辑器是模态的），
         // 三角会暗示"点一下有下文"，结果毫无反应。
         if (st.textDone && st.textPageAtEnd && !view.showChoices &&
@@ -17371,45 +16781,28 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         RectF hr(W - 330, 14, 310, 30);
         lg.DrawString(st.hud.c_str(), (int)st.hud.size(), &fh, hr, &sfR, &hb);
     }
-
     // ---- 右上角「明天见」/「今天就到这里」
     //
     // 画在 HUD 下面。它是玩家推进剧情的入口，不是她的台词，
     // 所以样式要跟"界面按钮"一致（圆角 + 悬停高亮），别做成台词气泡。
     //
-    // 【两个文案是同一枚按钮的两种状态】
-    // 还有下一章时写「明天见」——点了是第二天的课；
-    // 最后一章写「今天就到这里」——没有下一章了，点了就回主页。
-    // 不分开做成两个按钮：出口只有一个，玩家不需要在"结束"这件事上做选择题。
+    // 只有一枚按钮
+    // 文案随阶段、是否最后一章变化，全部由契约层的 LabelOf 给出，
+    // 这里不写死任何一句。出口只有一个，玩家不需要在"结束"这件事上做选择题。
     if (st.showNextDay) {
         Rect b(kNextDayX, kNextDayY, kNextDayW, kNextDayH);
         //
-        // ---- 【画出来就是亮的：不再有"正在打字所以灰着"这一态】
-        //
-        // ★ 原来 canPress 里带 !nextDayBlocked（对话框展开着就画灰），
-        //   而"轮到你说话"时输入框是默认展开的（见 EnterInputMode）——
-        //   章间日常几乎每一刻都在等他打字，按钮于是【几乎永远是灰的】。
-        //   玩家看到的是"她都说明天见了、按钮迟迟不亮"，
-        //   还分不清那是"还没到时候"还是"程序没画出来"。
-        //
-        // 灰态的初衷是挡住"按明天见会卡死"，现在那个根因在推进入口
-        // 治掉了（DirGoNextDay 里 LeaveInputMode），灰态就没有存在理由了。
-        //
-        // 【为什么不再靠灰态表达"她还没说可以走了"】
-        // 她准没准备好已经不是门槛（见 Director::CanGoNextDay），
-        // 画成灰的却点得动，就是"画着能点的样子却说不能点"——
-        // 那正是玩家最难自查的一类失效。现在画出来 = 能点。
-        const bool canPress = st.nextDayReady;
-        ARGB fill = !canPress ? Color::MakeARGB(140, 46, 42, 62)
-                  : (st.hoverNextDay ? kBtnHot : kBtnFill);
-        ARGB edge = canPress ? accent : Color::MakeARGB(160, 90, 90, 110);
+        // ★ showNextDay 就是 ready，没有第二套"能不能点"的状态。
+        //   输入框展开时也能直接走，状态清理由推进入口 DirGoNextDay 负责；
+        //   在这里另加灰态会重新变成"画着却点不动"。
+        ARGB fill = st.hoverNextDay ? kBtnHot : kBtnFill;
+        ARGB edge = accent;
         FillRoundRect(lg, b, 10, fill, edge, 2.0f);
         // 最后一章那句长一点（6 字），17 号字 * 6 = 102px，框宽 150 放得下。
         // 真要再长，DrawCenterText 会缩字号而不是裁掉——选项/按钮都不能截断。
         Font fn(L"Microsoft YaHei", 17);
-        // 文案由逻辑层算好送进来（NextDayLabelOf），画的和点的是同一个答案。
-        DrawCenterText(lg, st.nextDayLabel.empty() ? L"明天见" : st.nextDayLabel,
-                       fn, b, canPress ? kTextMain : kTextDim);
+        // 文案由逻辑层算好送进来（契约里的 LabelOf），画的和点的是同一个答案。
+        DrawCenterText(lg, st.nextDayLabel, fn, b, kTextMain);
     }
 
     // ---- 顶部状态条（判题 / 大模型状态）
@@ -17423,15 +16816,38 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         SolidBrush tb(accent);
         lg.DrawString(st.status.c_str(), (int)st.status.size(), &fs, sr, &sfL, &tb);
     }
-
+    // ---- 出口状态常驻一行（就绪 / 未就绪都显示）
+    //
+    // ★ 文案只来自 Progress.reason，渲染层不另算一次，也不在这里再判
+    // showNextDay —— 那等于把判据写第二遍。
+    // 常驻而不是"只在未就绪时提示"，是因为这枚按钮的判据对玩家不可见：
+    // 她说了「晚安」就能走，没说的话要再聊几轮。
+    // 「按钮时有时无」就会被当成卡顿。就绪时写明「点哪里收掉」，
+    // 未就绪时写明「还差什么」，同一句话两种口吻。
+    //
+    // 与顶部 status 互斥同一行：status 是瞬时事件（判题结果、模型状态），
+    // 优先级更高；它非空时先让位，避免两条黑底提示上下叠着看不清。
+    // 只要这一幕有玩家出口（nextDayWait>=0），status 消失后这行会立刻补回来。
+    if (st.nextDayWait >= 0 && !st.nextDayWhy.empty() && st.status.empty()) {
+        Font fs2(L"Microsoft YaHei", 14);
+        StringFormat sf2; sf2.SetAlignment(StringAlignmentNear);
+        sf2.SetLineAlignment(StringAlignmentCenter);
+        const float tipW = (float)(st.nextDayWhy.size() * 15 + 26);
+        RectF r2(20.0f, 48.0f, std::min(tipW, 760.0f), 26.0f);
+        const bool hot = st.showNextDay;      // 就绪：亮口吻；未就绪：淡口吻
+        SolidBrush bg2(Color::MakeARGB(hot ? 150 : 110, 10, 10, 16));
+        lg.FillRectangle(&bg2, 14.0f, 46.0f, std::min(tipW, 770.0f), 24.0f);
+        SolidBrush tb2(Color::MakeARGB(hot ? 250 : 200, 240, 236, 250));
+        lg.DrawString(st.nextDayWhy.c_str(), (int)st.nextDayWhy.size(),
+                      &fs2, r2, &sf2, &tb2);
+    }
     // ---- 记忆面板（覆盖层）
     //
-    // 【改成可滚动，跟文本回想同一套】
-    // 原来是"画 14 行、每行固定 32px、不折行"：
-    //   · 记忆条目常常是一整段对话（她把"他叫什么 + 当时说了什么"一起记住），
-    //     不折行就一路画到面板外面去；
-    //   · 第 13、14 条正好压在底部那行提示上 —— 这就是玩家看到的"字符重叠"；
-    //   · 超过 14 条的干脆不画，看着像"她只记得这些"。
+    // 改成可滚动，跟文本回想同一套
+    // · 记忆条目常常是一整段对话（她把"他叫什么 + 当时说了什么"一起记住），
+    // 不折行就一路画到面板外面去；
+    // · 第 13、14 条正好压在底部那行提示上
+    // · 超过 14 条的干脆不画，看着像"她只记得这些"。
     // 现在：WrapText 实测行高 → 布局与绘制共用 → 裁剪 + 滚动 + 滚动条。
     if (st.showMemory) {
         SolidBrush veil(Color::MakeARGB(180, 6, 6, 12));
@@ -17508,11 +16924,10 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         RectF tir((float)kMemX, (float)(kMemY + kMemH - 36), (float)kMemW, 30.f);
         lg.DrawString(tip.c_str(), (int)tip.size(), &fSmall, tir, &sfC, &tipb);
     }
-
     // ---- 文本回想面板（覆盖层）
     //
     // 滚轮上滑打开，面板里可以一直往回翻到最早的一条。
-    // Galgame 的标准功能，但本项目尤其需要：玩法是【打字对话推进剧情】，
+    // Galgame 的标准功能，但本项目尤其需要：玩法是打字对话推进剧情，
     // 玩家自己说过的话没有第二处可看，不提供回想就等于"说过就忘了"。
     if (st.histOpen) {
         SolidBrush veil(Color::MakeARGB(200, 6, 6, 12));
@@ -17539,7 +16954,7 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             std::wstring s = L"（还没有对话记录）";
             lg.DrawString(s.c_str(), (int)s.size(), &fSmall, er, &sfC, &lb);
         } else {
-            // ---- 用【实测行高】布局，不再假设"一行 34px"
+            // ---- 用实测行高布局，不再假设"一行 34px"
             //
             // 之前的 bug：绘制按 名字行 + 最多 2 行正文 排（折行后普遍 80px 上下），
             // 滚动却按固定 34px 算"能放 13 行"。两边数字对不上，
@@ -17585,12 +17000,12 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                     //
                     // ---- 右侧标出这一句的时刻
                     //
-                    // 【这是为了跟 素材调用日志.txt 对上号】
+                    // 这是为了跟 素材调用日志.txt 对上号
                     // 那份日志每轮带时间，回想面板原本没有，
                     // 玩家想核"这句台词当时用了什么立绘"只能靠数顺序。
                     // 标上时刻，截图发来排查时也能直接对上。
                     //
-                    // 只画在名字行右端，不新增一整行——
+                    // 只画在名字行右端，不新增一整行
                     // 加行就要改 CalcHistLayout 的高度计算，
                     // 而那边的数字跟滚动逻辑共用，动错一处就是翻不到底。
                     if (!hl.ts.empty()) {
@@ -17621,7 +17036,6 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
                 y += rh;
             }
             lg.ResetClip();
-
             // ---- 滚动条：让玩家知道"还有多少没看到"
             //
             // 没有它的话，玩家翻不动时会以为是到底了（其实是 bug 或还没到底），
@@ -17643,9 +17057,8 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             SolidBrush tipb(RndTextDim);
             RectF tir((float)kHistX, (float)(kHistY + kHistH - 36), (float)kHistW, 30.f);
             //
-            // 【"已到最新"会误导玩家以为这就是全部】
+            // "已到最新"会误导
             // 它表示的是"滚到了历史末尾"，不是"这段话说完了"。
-            // 玩家看到它就不往上滚了，于是更早的内容永远看不到——
             // 这正是"回想里看不到完整回答"最容易让人误会的地方。
             // 改成始终显示"↑ 往上滚看更早"，并给出当前位置。
             std::wstring tip = (scroll >= lay.maxScroll)
@@ -17655,7 +17068,6 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
             lg.DrawString(tip.c_str(), (int)tip.size(), &fSmall, tir, &sfC, &tipb);
         }
     }
-
     // ---- 把逻辑画面拉伸到实际窗口
     //
     // 缩放 100%（默认）时逻辑尺寸和客户区完全一致，这时候指定目标宽高
@@ -17669,13 +17081,10 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         out.DrawImage(&logic, 0, 0, w_, h_);
     }
 }
-
-// ============================================================================
-//  模块：子界面 —— 标题 / 设置 / 剧本 / 角色卡等
+// 模块：子界面 —— 标题 / 设置 / 剧本 / 角色卡等
 //
-//  布局全部按 1280x720 的逻辑坐标写死，跟 render.cpp 一个套路：
-//  换缩放时只改最后一步的拉伸，布局代码一行不动。
-
+// 布局全部按 1280x720 的逻辑坐标写死，跟 render.cpp 一个套路：
+// 换缩放时只改最后一步的拉伸，布局代码一行不动。
 // 背景导入要用系统文件对话框。GetOpenFileNameW / OPENFILENAMEW / OFN_* 都在这个头里，
 // 不在 windows.h —— 漏了会报"未声明的标识符"。
 // comdlg32 是 Windows 系统组件，跟已在用的 gdiplus / xaudio2 / winhttp 同类，
@@ -17711,12 +17120,11 @@ static Gdiplus::RectF FitRectFor(Image* img, const Gdiplus::Rect& box) {
     return Gdiplus::RectF((float)box.X + ((float)box.Width - dw) / 2,
                           (float)box.Y + ((float)box.Height - dh) / 2, dw, dh);
 }
-
-// 算一张图以 contain 方式【完整】放进容器时的目标矩形（不变形、不裁切）
+// 算一张图以 contain 方式完整放进容器时的目标矩形（不变形、不裁切）
 //
-// 【为什么素材管理页必须用 contain】
-// cover（FitRectFor）是"铺满并裁掉溢出"，用在选角卡片上是对的——
-// 那里面要的是脸大、看得清。但素材管理页是给作者【辨认素材】用的：
+// 为什么素材管理页必须用 contain
+// cover（FitRectFor）是"铺满并裁掉溢出"，用在选角卡片上是对的
+// 那里面要的是脸大、看得清。但素材管理页是给作者辨认素材用的：
 // 裁掉一半之后，「惊讶」和「坏笑」这种只有嘴角/眉毛差别的图根本分不出来，
 // 看着像"图没加载全"。所以这里反过来，整张完整显示。
 static Gdiplus::RectF FitRectInside(Gdiplus::Image* img, const Gdiplus::Rect& box) {
@@ -17742,10 +17150,9 @@ void RR(Gdiplus::Graphics& g, const Gdiplus::Rect& r, int rad, ARGB fill, ARGB b
     Gdiplus::Pen pen(border, bw);
     g.DrawPath(&pen, &p);
 }
-
-// 把一张立绘"铺满裁切"进给定矩形，纵向【偏上】取景。
+// 把一张立绘"铺满裁切"进给定矩形，纵向偏上取景。
 //
-// 【为什么不能用 contain（完整放进去）】
+// 为什么不能用 contain（完整放进去）
 // 立绘是全身竖图（常见 600x1000 上下），而卡片头像区是 260x196 的扁框。
 // contain 会把整张图缩到能塞进高度为止——结果人物只有 100 来像素宽，
 // 缩在框中间一大片空白里，脸根本看不清。这就是"图片被压缩后很不美观"。
@@ -17753,7 +17160,7 @@ void RR(Gdiplus::Graphics& g, const Gdiplus::Rect& r, int rad, ARGB fill, ARGB b
 // cover 反过来：按"铺满"缩放，再裁掉溢出的部分。人物占满整个框，
 // 比例完全不变，只是切掉了身体下段——而选角要看的正是脸。
 //
-// 【为什么纵向偏上】
+// 为什么纵向偏上
 // 居中裁切会切到腰和腿，脸跑到框外。立绘的构图基本都是头在上半部分，
 // 所以取景窗口从顶部往下偏移一点点（kFaceAnchor）开始，
 // 既能避开最顶端的发梢留白，又能框住头肩。
@@ -17784,15 +17191,14 @@ static void DrawCoverTop(Gdiplus::Graphics& g, Gdiplus::Image* img,
     g.SetInterpolationMode(Gdiplus::InterpolationModeDefault);
     g.ResetClip();
 }
-
 // 居中画一行字。这是全项目用得最多的绘制原语（20+ 处）。
 //
 // 三个重载只是入参形式不同，都走同一份 DrawCentered：
-//  · Center  —— 传 Font 对象（调用方要复用同一个字体时）
-//  · CenterF —— 传 RectF + 字号（矩形本来就是浮点时，省掉一次转换）
-//  · CenterB —— 带粗体
+// · Center —— 传 Font 对象（调用方要复用同一个字体时）
+// · CenterF —— 传 RectF + 字号（矩形本来就是浮点时，省掉一次转换）
+// · CenterB —— 带粗体
 //
-// 【原来每个调用点自己写 StringFormat 三件套】
+// 原来每个调用点自己写 StringFormat 三件套
 // 抄漏 SetLineAlignment 就会出现"水平居中但垂直靠上"，
 // 而且那种偏差只有 1~2 像素，肉眼很难发现、测试也测不出来。
 static void DrawCentered(Gdiplus::Graphics& g, const std::wstring& s, Gdiplus::Font& f,
@@ -17827,7 +17233,6 @@ void Left(Gdiplus::Graphics& g, const std::wstring& s, Gdiplus::Font& f,
     Gdiplus::PointF pt((float)x, (float)y);
     g.DrawString(s.c_str(), (int)s.size(), &f, pt, &b);
 }
-
 // 给标题字描一圈暗边：往 8 个方向各偏移一点，各画一次。
 //
 // 为什么需要：插画铺满整个画面之后，标题可能正好压在图最亮的地方
@@ -17842,13 +17247,12 @@ void LeftOutline(Gdiplus::Graphics& g, const std::wstring& s, Gdiplus::Font& f,
         for (int dy = -d; dy <= d; ++dy)
             if (dx || dy) Left(g, s, f, x + dx, y + dy, c);
 }
-
 // 背景：所有界面共用的一张"夜色渐变 + 光斑"，没有素材时也不会是死黑
 // ---------------------------------------------------------------- 主页配色
 // 门面（冷启动 / 这局还没进过故事）那屏可以单独配一套色，跟角色主页分开。
 //
 // 为什么需要它：主页插画常常是暖色调的黄昏 / 樱花场景，而引擎默认底色是
-// 冷紫黑。冷暖直接对冲的时候，图的四条边会像贴纸一样硬切在背景上——
+// 冷紫黑。冷暖直接对冲的时候，图的四条边会像贴纸一样硬切在背景上
 // 不是"不好看"，是"一眼看出是拼上去的"。给门面一套暮色暖底 + 暖褐压暗
 // + 四边羽化，图就融进页面了。
 //
@@ -17865,10 +17269,10 @@ struct TitlePalette {
     //
     // 角色主页（进过故事之后那屏）也铺这张门面插画。
     //
-    // 【默认开】两屏底图统一成同一张插画：门面是"还没选人"的樱花道，
-    // 角色主页是同一条路 + 她站在上面。底图既然一样，配色也就一样——
+    // 默认开两屏底图统一成同一张插画：门面是"还没选人"的樱花道，
+    // 角色主页是同一条路 + 她站在上面。底图既然一样，配色也就一样
     // 一边暖黄樱花、一边冷紫底，切过去会像换了个游戏。
-    // "她是谁"靠【叠加在上面的立绘 + 菜单竖条 + 右下角署名】表达，
+    // "她是谁"靠叠加在上面的立绘 + 菜单竖条 + 右下角署名表达，
     // 不用靠底色。设 0 会退回老做法：角色主页是冷紫底 + 只有她的立绘。
     bool alsoChar = true;
     //
@@ -17876,29 +17280,27 @@ struct TitlePalette {
     // 立绘是透明底的半身像，脚直接切在路面/花屑上会有一条硬边，
     // 压一层从下往上淡出的暗色就当是影子，衔接自然。
     int  footFade = 80;
-
-    // ---- 左侧延伸 + 菜单虚化 ----
+    // ---- 左侧延伸 + 菜单虚化
     //
     // 插画只画在菜单右边那一块时，图和左栏之间是一条竖直硬边，
     // 看着像"右边贴了张画"。让横幅插画铺满整个画面（一直延伸到最左边），
     // 再把菜单压着的那一片虚化，边界就没了，文字也照样清楚。
     bool full     = true;        // 门面插画铺满整个画面（含左侧菜单区）
     //
-    // 【默认关掉】虚化会让菜单那一片糊成一团色块，横幅樱花图上尤其明显——
+    // 默认关掉虚化会让菜单那一片糊成一团色块，横幅樱花图上尤其明显
     // 花瓣和路面糊掉之后，"图在延伸"这件事反而看不出来了。
-    // 去掉虚化之后靠【更实的卡片底 + 更大的字】保证可读：卡片自己是一块
+    // 去掉虚化之后靠更实的卡片底 + 更大的字保证可读：卡片自己是一块
     // 暗板，缝隙里才露出图，比整片压暗干净，也不会在暖调图上蒙出脏色。
     // 想要虚化就在 ini 里把「菜单虚化」设回 1。
     bool blurOn   = false;       // 菜单覆盖的那一片虚化
     int  blurW    = 470;         // 完全虚化的宽度
     int  blurFea  = 300;         // 从"全模糊"渐变到"全清晰"的宽度
     int  blurDown = 20;          // 模糊强度：缩到 1/N 再放大。越大越糊
-
-    // ---- 入场动画（每次回到主页都重演一遍）----
-    //   1) 插画淡入          0ms 起，artDur
-    //   2) 菜单从左弹出      menuDelay 起，menuDur，每一项再错开 menuStagger
-    //   3) 立绘从下升起      whoDelay 起，whoDur
-    // 三段是【错开】而不是排队：插画还没全显菜单就出发了，中间不空档。
+    // ---- 入场动画（每次回到主页都重演一遍）
+    // 1) 插画淡入 0ms 起，artDur
+    // 2) 菜单从左弹出 menuDelay 起，menuDur，每一项再错开 menuStagger
+    // 3) 立绘从下升起 whoDelay 起，whoDur
+    // 三段是错开而不是排队：插画还没全显菜单就出发了，中间不空档。
     bool animOn      = true;
     int  artDur      = 460;      // 插画淡入时长
     int  menuDelay   = 200;      // 菜单出发时间
@@ -17909,10 +17311,10 @@ struct TitlePalette {
     int  whoRise     = 90;       // 立绘起始高度：从画面下沿外面升上来
     //
     // 回弹强度（0~100）。0 = 纯缓出、到点就停；越大越"弹"。
-    // 实测过冲幅度：0=0%　45≈2%　70≈5%　100≈10%（100 就是标准 back 缓动）。
+    // 实测过冲幅度：0=0% 45≈2% 70≈5% 100≈10%（100 就是标准 back 缓动）。
     // 默认 70：菜单那一列行程 394px，会冲过头约 21px 再退回来，
     // 一眼看得出是"弹"出来的；100 在这张安静的樱花图上偏跳。
-    // 立绘行程只有 90px，同样比例下过冲约 5px，比菜单含蓄得多——
+    // 立绘行程只有 90px，同样比例下过冲约 5px，比菜单含蓄得多
     // 它是"升上来"，本来也不需要像菜单那样有力度。
     int  back        = 70;
 };
@@ -18031,10 +17433,9 @@ const TitlePalette& TitlePalFor(const App& a) {
     }
     return g_titlePal;
 }
-
-// pal 非空 = 门面那屏走专属配色；nullptr = 原来的冷紫黑（角色主页）。
+// pal 非空 = 门面那屏走专属配色；nullptr =
 //
-// glow = false 时【只铺底色渐变，不画那三团光晕】。
+// glow = false 时只铺底色渐变，不画那三团光晕。
 //
 // 光晕是主页上最贵的一笔：三支 PathGradientBrush，每支都是直径 500px 以上的
 // 椭圆径向渐变，30FPS 下每帧三遍全屏量级的逐像素插值。
@@ -18090,7 +17491,7 @@ void DrawBack(Gdiplus::Graphics& g, bool hot) {
 // 子界面统一开场：铺背景 + 画返回按钮。原来 5 个子界面各写一遍，
 // 抄漏一处就是"这个界面点了返回没反应"。
 void DrawBackdropBack(Gdiplus::Graphics& g, const App& a) {
-    // 【这里原来写成了 DrawBackdropBack(g, a) —— 自己调自己】
+    // 这里
     // 抽函数时把函数体写成调用自身，等于无限递归：
     // 一进任何子界面（设置/背景库/存档/剧本）就立刻栈溢出。
     // MSVC 的 C4717「如递归所有控件路径，函数将导致运行时堆栈溢出」
@@ -18102,54 +17503,48 @@ void DrawBackdropBack(Gdiplus::Graphics& g, const App& a) {
 }
 
 } // namespace
-
-// ============================================================================
-//  标题
-// ============================================================================
-
+// 标题
 // ---- 主页显示谁的素材：门面（通用）还是角色
 //
-//  冷启动（刚开程序 / 清除数据后）→ 门面：assets\title 下的曲子和插画。
-//  从游戏里退出存档回到主页 → 换成那个角色的主页曲 + 立绘。
-//  关掉程序重开 → 又回到门面（本次会话没进过任何故事）。
+// 冷启动（刚开程序 / 清除数据后）→ 门面：assets\title 下的曲子和插画。
+// 从游戏里退出存档回到主页 → 换成那个角色的主页曲 + 立绘。
+// 关掉程序重开 → 又回到门面（本次会话没进过任何故事）。
 //
-// 【为什么要分这两个阶段】
+// 为什么要分这两个阶段
 // 主页素材原来只挂在角色包下，于是"没装包 / 刚清除数据"时
 // 主页是一块空白加一片安静——看着像坏了，其实只是没素材可用。
 // 而进过故事之后换成那个角色，是因为主页此时承担的是
 // "刚才是跟她在一起"的延续感，这是这台引擎最该有的东西。
 //
-// 【只在进程内记，不写进 config】
+// 只在进程内记，不写进 config
 // 它描述的是"这次运行有没有进过故事"，不是玩家的偏好。
 // 写进 config 的话下次开程序会直接跳到角色主页，"门面"就没了。
 //
-// 【为什么放在文件作用域，而不是后面那些匿名 namespace 里】
+// 为什么放在文件作用域，而不是后面那些匿名 namespace 里
 // 置位点在 BeginStory / LoadFromSlot（进故事的两条路，在全局作用域），
 // 读取点在 DrawTitleScreen 和 RefreshTitleBgm（都在匿名 namespace 里）。
 // 放进 namespace 的话置位点就看不见它了。
 static bool g_titleUseChar = false;
-
 // 主页该用角色素材吗：本次会话进过故事 + 真的有角色。
 //
-// 【为什么还要看"有没有角色"】
-// 进过故事之后把角色包删了（或者清空了 AppData），a.Def() 会返回 nullptr，
+// 为什么还要看"有没有角色"
+// 进过故事之后把角色包删了（或者清空了 AppData），a.Def 会返回 nullptr，
 // 这时继续用角色素材等于什么都没有——又变回那块空白。所以一律走门面。
 static bool TitleUseChar(const App& a) {
     return g_titleUseChar && a.Def() != nullptr;
 }
 
 namespace {
-
 // 标题菜单项：下标即 hover 含义
-// 【这里原来写 kTitleItems = 7，但下面两个数组只有 6 个初始化器 —— 必崩】
+// 这里
 //
-// 数组声明 7 个、只给 6 个初始值，第 7 个被值初始化成【空指针】。
+// 数组声明 7 个、只给 6 个初始值，第 7 个被值初始化成空指针。
 // 绘制循环 `for (i = 0; i < kTitleItems; ++i)` 跑到 i=6 时把 nullptr 传给
 // DrawString，CRT 的 strlen 读地址 0 → 0xC0000005，崩在 ucrtbased.dll。
 // 症状是"启动后白屏闪退"，因为标题页是第一帧就画的界面。
 //
 // 根因是删 CG 回想菜单项时只删了中文标签，没同步改常量和副标题数组。
-// 所以这里不再手写数量，改成【由数组自己算】——少一个多一个都自动跟上。
+// 所以这里不再手写数量，改成由数组自己算——少一个多一个都自动跟上。
 const wchar_t* const kTitleLabels[] = {
     // 第一项按玩家要求从「开始新故事」改成「新的故事」。
     // 少一个字，主标签这栏（卡片内宽的 56%）和右边那行拉丁小字之间
@@ -18173,17 +17568,16 @@ static_assert(sizeof(kTitleLabels) / sizeof(kTitleLabels[0]) ==
               sizeof(kTitleSub)    / sizeof(kTitleSub[0]),
               "标题菜单：中文标签与拉丁小字数量不一致");
 const int kTitleItems = (int)(sizeof(kTitleLabels) / sizeof(kTitleLabels[0]));
-
 // ---------------------------------------------------------------- 分栏
 //
-//  参考商业视觉小说的标题画面：菜单竖排在左，角色插画占满右侧。
+// 参考商业视觉小说的标题画面：菜单竖排在左，角色插画占满右侧。
 //
-//  为什么菜单在左而不是居中：阅读顺序从左到右，视线自然先落到菜单上，
-//  操作最顺手；插画作为"氛围"占大面积，且不会压住任何可点区域。
-//  之前那版菜单居中，结果是两边都不靠——插画没地方放，菜单也不够醒目。
+// 为什么菜单在左而不是居中：阅读顺序从左到右，视线自然先落到菜单上，
+// 操作最顺手；插画作为"氛围"占大面积，且不会压住任何可点区域。
+// 之前那版菜单居中，结果是两边都不靠——插画没地方放，菜单也不够醒目。
 const int kMenuX   = 64;
 //
-// 【放大过一版】原来 302x46 / 间距 8 / 字号 19，在铺满全屏的插画上显得太小，
+// 放大过一版原来 302x46 / 间距 8 / 字号 19，在铺满全屏的插画上显得太小，
 // 尤其是去掉虚化之后——图完整清晰、细节多，小字压不住。
 // 现在 330x58 / 间距 10 / 主标签 23 / 拉丁小字 12。
 //
@@ -18237,7 +17631,6 @@ void DrawArtContain(Gdiplus::Graphics& g, Gdiplus::Image* img, const Gdiplus::Re
     float dy = (float)(box.Y + box.Height) - dh;
     g.DrawImage(img, Gdiplus::RectF(dx, dy, dw, dh));
 }
-
 // 铺满裁切：缩到刚好盖满整个框，多出来的部分裁掉，四周不留白。
 //
 // 和 DrawArtContain 的区别：contain 是"整张图都看得见"，适合全身立绘
@@ -18260,7 +17653,6 @@ void DrawArtCover(Gdiplus::Graphics& g, Gdiplus::Image* img, const Gdiplus::Rect
     g.DrawImage(img, Gdiplus::RectF(dx, dy, dw, dh));
     g.ResetClip();
 }
-
 // 四边羽化：让插画的边融进背景，而不是硬切一刀。
 //
 // 上下用背景的顶 / 底色，正好接得上那道纵向渐变；左右只能用中间色的近似
@@ -18296,10 +17688,9 @@ void DrawArtFeather(Gdiplus::Graphics& g, const Gdiplus::Rect& box,
         Color::MakeARGB(0,    mr, mg, mb));
       g.FillRectangle(&gb, R - w, T, w, box.Height); }
 }
-
 // 叠加在插画上的角色立绘：脚底下压一层从下往上淡出的暗色，当作影子。
 //
-// 立绘是透明底的半身像，脚直接切在路面 / 花屑上会留一条硬边——
+// 立绘是透明底的半身像，脚直接切在路面 / 花屑上会留一条硬边
 // 尤其是底图铺满的时候，那条边正好落在画面中央，很显眼。
 // 压一层跟背景底色同色系的渐隐就当是地面上的投影，衔接自然，
 // 也不会像描边那样把人物框起来。
@@ -18319,11 +17710,10 @@ void DrawFootFade(Gdiplus::Graphics& g, const Gdiplus::Rect& box,
         Color::MakeARGB(0, cr, cg, cb));
     g.FillRectangle(&gb, box.X, T, box.Width, h);
 }
-
 // ---------------------------------------------------------------- 左侧延伸 + 虚化
 //
 // 插画铺满整个画面之后，菜单就压在图上。图太亮（黄昏天空、樱花）时文字
-// 会被吃掉，所以把菜单那一片【虚化】：字照样读得清，又不会像压暗层那样
+// 会被吃掉，所以把菜单那一片虚化：字照样读得清，又不会像压暗层那样
 // 在暖调图上蒙出一片脏色——虚化留下的是图自己的颜色和氛围。
 //
 // GDI+ 没有高斯模糊（1.1 的 Blur 要额外链接、兼容性也不稳），
@@ -18347,7 +17737,6 @@ struct ArtBlurCache {
     void Drop() { delete bmp; bmp = nullptr; src = nullptr; }
 };
 static ArtBlurCache g_artBlur;
-
 // 生成"清晰底 + 左侧渐隐虚化"的整张图。
 // 这层是静态的（图不变、参数不变，结果就不变），所以缓存一整张，
 // 之后每帧只 DrawImage 一次——每帧重做（缩放两次 + 几十次小 DrawImage）
@@ -18412,7 +17801,6 @@ static Gdiplus::Bitmap* BuildArtBlurLayer(Gdiplus::Image* art, const TitlePalett
     }
     return out;
 }
-
 // 左侧压暗：从背景色渐变到透明。
 // 没有它，浅色插画（白裙、雪景那类）会把菜单文字直接吃掉。
 //
@@ -18448,27 +17836,24 @@ void DrawArtPlaceholder(Gdiplus::Graphics& g, const Gdiplus::Rect& box,
     int cnt = 1;
     pb.SetSurroundColors(edges, &cnt);
     g.FillPath(&pb, &p);
-
-    // 【一个角色包都没有时显示 ?，不显示引擎名的首字母】
-    // 原来这里回填的是引擎名（CodeSenpai -> "C"），于是标题页插画上
+    // 一个角色包都没有时显示 ?，不显示引擎名的首字母
     // 顶着一个跟角色毫无关系的大写字母；改名会把它换成新名字的首字母，
     // 等于把 bug 换个皮留着。这里画的是"角色占位"，跟引擎叫什么无关。
     std::wstring nm = def ? def->DisplayName() : std::wstring();
     std::wstring ch = nm.empty() ? L"?" : nm.substr(0, 1);
     CenterB(g, ch, 96, Gdiplus::RectF(cx - 150.f, cy - 120.f, 300.f, 240.f), Color::MakeARGB(140, ct.GetR(), ct.GetG(), ct.GetB()));
 }
-
 // ---------------------------------------------------------------- 入场动画小工具
 //
-// 三段动画的进度先归一化到 0~1，再用缓动把"线性时间"变成"先快后慢"——
+// 三段动画的进度先归一化到 0~1，再用缓动把"线性时间"变成"先快后慢"
 // 匀速位移看着像机器在推，缓出才像自己滑到位、停得自然。
 static float Clamp01F(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 // 三次缓出：起步快、收尾慢
 static float EaseOut3(float p) { float q = 1.f - Clamp01F(p); return 1.f - q * q * q; }
 //
-// 带回弹的缓出：快到位时【冲过头一点点】再退回来——这就是"弹出"和"滑到"
+// 带回弹的缓出：快到位时冲过头一点点再退回来
 // 的区别。s 越大冲得越远（标准值 1.70158 约冲 10%，主页用不上那么跳）。
-// 注意返回值【可能大于 1】，用它当透明度前必须先 clamp，
+// 注意返回值可能大于 1，用它当透明度前必须先 clamp，
 // 只有当位移量时才直接用。
 static float EaseBackOut(float p, float s) {
     float t = Clamp01F(p) - 1.f;
@@ -18524,11 +17909,10 @@ static void DrawArtContainA(Gdiplus::Graphics& g, Gdiplus::Image* img,
     SetImgAlpha(ia, alpha);
     g.DrawImage(img, dest, 0.f, 0.f, iw, ih, Gdiplus::UnitPixel, &ia);
 }
-
 // 把"标题页插画"这一层单独画出来（底图，不含她的立绘）。
 //
-// 抽成函数是为了入场淡入时能把它画到离屏位图上、整块按 alpha 合成——
-// 直接在主画面上改 alpha，得同时改【铺满 / 铺满+羽化 / contain】三条分支，
+// 抽成函数是为了入场淡入时能把它画到离屏位图上、整块按 alpha 合成
+// 直接在主画面上改 alpha，得同时改铺满 / 铺满+羽化 / contain三条分支，
 // 还有虚化缓存；漏一条就是"图淡进来了、边上的羽化还留在原地"。
 static void DrawTitleIllustration(Gdiplus::Graphics& g, Gdiplus::Image* generic,
                                   const TitlePalette* pal,
@@ -18559,18 +17943,17 @@ static void DrawTitleIllustration(Gdiplus::Graphics& g, Gdiplus::Image* generic,
         DrawArtContain(g, generic, box);
     }
 }
-
 // ---------------------------------------------------------------- 标题插画缓存
 //
-// 【主页卡顿的主因就在这一层】原来每一帧都要做三件重活：
-//   1) DrawArtCover：把 1900px 级的原图缩放画到 1280x720。
-//      一次双线性重采样是百万像素量级的逐像素运算，几毫秒就没了；
-//   2) 入场淡入期间还要【每帧新建一张全屏离屏位图】再整块合成——
-//      1280×720×4 ≈ 3.6MB，每帧分配一次、每帧扔一次；
-//   3) 菜单虚化那条路更狠：每帧缩一次再放一次（虽然结果已被 g_artBlur 缓存，
-//      但清晰底那次重采样照样跑）。
+// 主页卡顿的主因就在这一层原来每一帧都要做三件重活：
+// 1) DrawArtCover：把 1900px 级的原图缩放画到 1280x720。
+// 一次双线性重采样是百万像素量级的逐像素运算，几毫秒就没了；
+// 2) 入场淡入期间还要每帧新建一张全屏离屏位图再整块合成
+// 1280×720×4 ≈ 3.6MB，每帧分配一次、每帧扔一次；
+// 3) 菜单虚化那条路更狠：每帧缩一次再放一次（虽然结果已被 g_artBlur 缓存，
+// 但清晰底那次重采样照样跑）。
 //
-// 可这一层是【静态】的：图不变、参数不变，画出来的像素就一模一样。
+// 可这一层是静态的：图不变、参数不变，画出来的像素就一模一样。
 // 30FPS 下反复重算同一张图，是纯粹的浪费。
 //
 // 所以整层缓存成一张位图，之后每帧只 DrawImage 一次——不缩放、不重采样、
@@ -18643,18 +18026,17 @@ const CharDef* TitleLeadDef(const App& a) {
 
 void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
     //
-    // 【两屏共用同一张底图，差别只在"上面有没有她"】
-    // 门面（还没进过故事）  = 门面插画（assets\title 那张）
+    // 两屏共用同一张底图，差别只在"上面有没有她"
+    // 门面（还没进过故事） = 门面插画（assets\title 那张）
     // 角色主页（退出存档回来）= 同一张插画 + 上次那个角色叠在上面
     //
     // 原来角色主页是冷紫底 + 一张立绘，跟门面那张暖黄樱花完全是两种画面，
     // 退出存档回到主页时像换了游戏。现在底图统一，"她是谁"改由
-    // 【叠加的立绘 + 菜单 hover 竖条 + 右下角署名】三处表达，
+    // 叠加的立绘 + 菜单 hover 竖条 + 右下角署名三处表达，
     // 不靠底色区分——底色是氛围，不是身份。
     const bool gate = TitleUseChar(a);
     const TitlePalette& tp = TitlePalFor(a);
-
-    // 【不管哪个阶段，角色都先算出来】
+    // 不管哪个阶段，角色都先算出来
     // 门面阶段不显示它，只是显示层面的事（右下角署名、菜单 hover 的主题色）；
     // 但门面素材没配齐时还得拿它兜底——否则主页就是一块空白，
     // 那是从"有图"倒退成"没图"，比不做这个功能还糟。
@@ -18675,13 +18057,12 @@ void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
     // 而它们恰好是主页最贵的一笔——三支大椭圆径向渐变。这里直接跳过。
     const bool coverFull = showGeneric && pal && pal->cover && pal->full;
     DrawBackdrop(g, a.rs.tick, pal, !coverFull);
-
     //
-    // ---- 【入场动画：三段，各自算进度】
-    //   1) 插画淡入      0ms 起，460ms
-    //   2) 菜单从左弹出  200ms 起，420ms（在插画还没全显时就出发，衔接不空档）
-    //   3) 立绘从下升起  380ms 起，520ms（等菜单出来了她才上来）
-    // 进度都按"进入标题页到现在过了多少毫秒"算，所以【每次回到主页都会重演】
+    // ---- 入场动画：三段，各自算进度
+    // 1) 插画淡入 0ms 起，460ms
+    // 2) 菜单从左弹出 200ms 起，420ms（在插画还没全显时就出发，衔接不空档）
+    // 3) 立绘从下升起 380ms 起，520ms（等菜单出来了她才上来）
+    // 进度都按"进入标题页到现在过了多少毫秒"算，所以每次回到主页都会重演
     // （GoScreen 里每次切进 Title 都重记 titleEnterMs）。
     // 用 long long 做减法：el 比 delay 小时，unsigned 会下溢成一个天文数字，
     // 一除再一 clamp 就变成 1（"还没开始"被算成"已经结束"）——必须先转有符号。
@@ -18697,9 +18078,8 @@ void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
                                  : 1.f;
     const float whoP = tp.animOn ? AnimP(el, tp.whoDelay, tp.whoDur, bs) : 1.f;
     // 菜单每一项的进度在下面的循环里按序号算（每一项错开一点）
-
     // ---- 底图 + 叠加
-    // 先画底图，再叠她的立绘，最后才盖左侧压暗层——
+    // 先画底图，再叠她的立绘，最后才盖左侧压暗层
     // 顺序反了的话压暗会挡住底图的左半边。
     {
         Gdiplus::Rect box = TitleArtBox();
@@ -18713,7 +18093,7 @@ void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
                                        ? Gdiplus::Rect(0, 0, kScreenW, kScreenH)
                                        : box;
             //
-            // 【整层缓存，每帧只 DrawImage 一次】
+            // 整层缓存，每帧只 DrawImage 一次
             // 这一层是静态的（图不变、参数不变，像素就一模一样），
             // 而重画它要做一次 1900px→1280px 的重采样——30FPS 下这一笔
             // 就吃掉大半帧，入场动画自然就"顿"。
@@ -18742,25 +18122,24 @@ void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
                 DrawTitleIllustration(g, generic, pal, box);   // 建不出来就退回直画
             }
         }
-
         // 2) 叠加：她的立绘（只有角色主页才有；门面那条路是空的）
         //
-        //    用 contain 而不是 cover：立绘是半身像，硬铺满等于把脸放大到
-        //    只剩中间一块。底部对齐让脚落地——居中会让人"浮在半空"。
+        // 用 contain 而不是 cover：立绘是半身像，硬铺满等于把脸放大到
+        // 只剩中间一块。底部对齐让脚落地——居中会让人"浮在半空"。
         Gdiplus::Image* who = (gate && lead) ? r.TitleArt(lead) : nullptr;
         if (!who && !showGeneric && anyLead) who = r.TitleArt(anyLead);  // 没底图时的兜底
         if (who) {
             //
-            // 【立绘：从下方升起 + 淡入】
+            // 立绘：从下方升起 + 淡入
             // 位移和透明度挂在同一个进度上，影子（脚底那层）跟着一起动、
             // 一起淡——人已经上来了、影子还留在原地会更假。
             // 90px 的起始高度刚好让它"从画面下沿外面"进来，又不会飘太远。
             float dyWho = (1.f - whoP) * (float)(tp.whoRise > 0 ? tp.whoRise : 0);
             g.TranslateTransform(0.f, dyWho);
             //
-            // 【回弹时 whoP 会大于 1，透明度必须先夹回 1】
+            // 回弹时 whoP 会大于 1，透明度必须先夹回 1
             // 直接把 1.05 塞进 ColorMatrix 的 m[3][3]（alpha 自乘系数），
-            // 画出来的是"图像整体变亮发白"，不是"更不透明"——
+            // 画出来的是"图像整体变亮发白"，不是"更不透明"
             // 而且只在回弹那几十毫秒里出现，特别像闪了一下。
             DrawArtContainA(g, who, box, Clamp01F(whoP));
             DrawFootFade(g, box, pal, pal ? pal->footFade : 0, Clamp01F(whoP));
@@ -18770,18 +18149,17 @@ void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
     }
 
     DrawMenuScrim(g, pal);
-
     //
-    // ---- 【菜单（连同标题字）从左侧弹出】
+    // ---- 菜单（连同标题字）从左侧弹出
     // 位移量取整个左栏的宽度（kMenuX + kMenuW）：
     // 进度 0 时它完全停在画面左边界外面，进度 1 时正好归位。
     // 标题字跟着一起走——它是"菜单这一列"的抬头，单独留在原地会散。
     // 只平移、不淡入：字跟着滑进来已经够，再叠一层淡入反而糊。
     //
-    // 【每一项各自算进度】（0 = 标题字那组，1..N = 菜单项）：
-    // 后一项比前一项晚出发 menuStagger 毫秒，于是整列是【依次弹出】，
+    // 每一项各自算进度（0 = 标题字那组，1..N = 菜单项）：
+    // 后一项比前一项晚出发 menuStagger 毫秒，于是整列是依次弹出，
     // 而不是一整块一起滑进来——整块一起滑会显得像贴了一张贴纸。
-    // 注意 TranslateTransform 是【累加】的，所以每次都要先 Reset 再平移，
+    // 注意 TranslateTransform 是累加的，所以每次都要先 Reset 再平移，
     // 否则第二项的位移会叠在第一项上，越往下越往右偏。
     const float kMenuSlide = (float)(kMenuX + kMenuW);
     auto itemP = [&](int idx) -> float {
@@ -18822,12 +18200,12 @@ void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
 
         Gdiplus::Rect r = TitleItemRect(i);
         //
-        // 卡片底【做得更实】：alpha 从 148 提到 212，颜色从紫黑改成暖褐。
+        // 卡片底做得更实：alpha 从 148 提到 212，颜色从紫黑改成暖褐。
         // 去掉虚化之后，字的清晰度全靠这块板——它是一块实的暗底，
         // 卡片之间的缝隙（10px）才露出插画，所以图仍然在"延伸"，
         // 而不是整条左栏被压暗层糊住（那样在暖黄图上会发脏）。
         // hover 时也换成暖调（kCardHot 是紫的，压在黄昏图上会跳）：
-        // 主题色靠【边框 + 左侧竖条】表达，那才是"她是谁"的信号，
+        // 主题色靠边框 + 左侧竖条表达，那才是"她是谁"的信号，
         // 填充只要负责"亮起来一点"就够了。
         ARGB fill = disabled ? kLocked
                              : (hot ? Color::MakeARGB(255, 82, 62, 56)
@@ -18880,7 +18258,6 @@ void DrawTitleScreen(Gdiplus::Graphics& g, const App& a) {
     // 有没有装 VS 跟能不能玩毫无关系，提示它只会让人以为缺了什么。
     Left(g, l1, fInfo, kMenuX + 2, 604, kTextDim);
 }
-
 // 主页入场动画放完了吗？
 //
 // 放完之后主页上就再没有东西在动：插画是静态的（已缓存），铺满时连光晕
@@ -18981,11 +18358,10 @@ void DrawCharSelect(Graphics& g, App& a) {
         Gdiplus::ARGB border = picked ? d.theme : (hot ? kAccent : Color::MakeARGB(140, 90, 88, 112));
         Gdiplus::ARGB fill = picked ? kCardHot : (hot ? kCard : Gdiplus::Color::MakeARGB(225, 28, 24, 34));
         RR(g, r, 16, fill, border, picked ? 3.5f : 1.5f);
-
         // ---- 头像
         //
         // 框子做成 260x196：比原来窄一点、高一点，比例更接近人像，
-        // 铺满裁切之后脸占的面积更大。原来是 290x180 的扁框，
+        // 铺满裁切之后脸占的面积更大。
         // 全身立绘塞进去只剩一条，怎么看都像被压扁了。
         Gdiplus::Rect face(r.X + 35, r.Y + 16, r.Width - 70, 196);
         Image* img = a.rend.CharPortrait(&d);
@@ -19015,14 +18391,12 @@ void DrawCharSelect(Graphics& g, App& a) {
                d.theme, 1.0f);
             Center(g, d.tag, ft, tagR, Gdiplus::Color::MakeARGB(255, 30, 26, 34));
         }
-
         // ---- 简介（自动折行，最多两行，超了截断）
         //
-        // 【最多两行，不能再多】
+        // 最多两行，不能再多
         // 卡片高 400，按钮占 354..392。原来允许三行、行距 24：
-        // 第三行落在 352..372，正好压进按钮那一块——
+        // 第三行落在 352..372，正好压进按钮那一块
         // 于是「点击选择」/「开始 →」这几个字骑在简介最后一行上，
-        // 玩家看到的是两段字叠在一起。
         // 现在两行（302 / 325，行距 23），末行底部约 345，离按钮还有 9px。
         if (!d.desc.empty()) {
             Gdiplus::Font fd(L"Microsoft YaHei", 15);
@@ -19051,16 +18425,13 @@ void DrawCharSelect(Graphics& g, App& a) {
             Center(g, L"点击选择", fb, btnR, kTextDim);
         }
     }
-
-    // 【原来这里有一整条"服装胶囊 + 表情小卡"预览带】
     // 已按需求移除：选角界面的职责是"挑人"，不是"试穿"。
     // 服装和表情都交给大模型在对话里按素材名自行调用，
     // 在这里手工选一套反而会被固化成开局默认值，跟那个设计冲突。
     // 移除后卡片下方留白，底部那条"她的说法"示例保持不变。
-
-    // 底部：显示已选角色的【自称 / 对称】，让差异在开玩之前就看得见。
+    // 底部：显示已选角色的自称 / 对称，让差异在开玩之前就看得见。
     //
-    // 【这里曾经用 ApplyTone 渲染一句"她的说法"示例】——那是个误导：
+    // 这里曾经用 ApplyTone 渲染一句"她的说法"示例——那是个误导：
     // ApplyTone 只处理 [Tone] 里的 Ending / Exclaim / Rewrite，
     // 而导演模式的台词走的是大模型直出，根本不经过 ApplyTone
     // （全文只有剧本 VM 和这里两个调用点）。
@@ -19086,56 +18457,52 @@ void DrawCharSelect(Graphics& g, App& a) {
         g.DrawString(line.c_str(), (int)line.size(), &f, rf, &sf, &b);
     }
 }
-
 // ---------------------------------------------------------------- 设置
 // 行的含义：0~3 是文本输入，后面是点击切换的项
 //
-// ---- 【离线模式 / 回复长度 / Token 预算 三行已移除】
+// ---- 离线模式 / 回复长度 / Token 预算 三行已移除
 //
 // 离线模式移除的理由见 LlmConfig 的注释：它把真正的网络故障
-// 伪装成"设置没调对"，玩家会一直查设置。
+// 伪装成"设置没调对"，
 // 回复长度与 Token 预算移除的理由是玩家不缺 token，
 // 输出一律不限制（不发送 max_tokens），上下文不裁剪、记忆全带。
 //
 // 现在是 7 行：3 行文本（地址 / 模型 / Key）+ 音量 / 窗口 / 打字速度 + 清空记录。
 //
-// 【「你的名字」那一行为什么删了】
+// 「
 // 玩家不再自己起名——进剧情就是角色包 [Player] 里写的那个人（续集设定）。
 // 留着这一行的话，玩家填的名字和角色包里的男主名会打架，
-// 她到底该叫他将臣还是"小明"就没有答案了。
+// 她到底该叫他设定里的名字还是"小明"就没有答案了。
 const int kSetRows = 7;
 const wchar_t* const kSetLabels[kSetRows] = {
     L"接口地址", L"模型", L"API Key",
     L"音量", L"窗口大小", L"打字速度", L"清空所有记录"
 };
-
 // 前 3 行是文本行（可点开编辑），后面是滑杆 / 按钮。
 //
-// 【这个数字原来是 4】那时第 0 行是"你的名字"。名字行删掉后如果还写 4，
+// 这个数字
 // 点「音量」就会弹出一个空编辑框——UiEditValue 根本没有 case 3 可返回，
 // 玩家改了也不会生效。所以单独拎成常量，别再散着写死数字。
 const int kSetTextRows = 3;
-
 // 非文本行的行号也别散着写死。
 //
-// 【为什么必须抽出来】这几行的编号原本是按"有你的名字那一行"排的。
+// 为什么必须抽出来这几行的编号原本是按"有
 // 名字行删掉后，如果只改了标签和取值、忘了改点击处理，
-// 后果是：点「清空所有记录」实际执行的是「打字速度 +20」——
+// 后果是：点「清空所有记录」实际执行的是「打字速度 +20」
 // 想清档的玩家清不掉，而清档功能就此失效，且没有任何报错。
 const int kSetRowVolume = 3;   // 音量：点击循环
 const int kSetRowZoom   = 4;   // 窗口大小：点击切换
 const int kSetRowSpeed  = 5;   // 打字速度：点击调速
 const int kSetRowClear  = 6;   // 清空所有记录（= kSetRows - 1，破坏性，标红）
-
 //
 // ---- 行距从 58 压到 50、行高从 48 压到 44
 //
-// 行距 / 行高按【实际行数 kSetRows = 7】算：
+// 行距 / 行高按实际行数 kSetRows = 7算：
 // 100 + 7*50 = 450，行底 494；底部提示 656 —— 留得下，不重叠。
 //
 // （这里曾经写过"加了「Token 预算」这一行之后共有 11 行"，
-//  那一行早已整体移除，行数也回到 8。旧注释会让人以为还有第 9~11 行要排，
-//  按 11 行去算行距反而会把最后一行挤出画布 —— 所以按 kSetRows 对齐。）
+// 那一行早已整体移除，行数也回到 8。旧注释会让人以为还有第 9~11 行要排，
+// 按 11 行去算行距反而会把最后一行挤出画布 —— 所以按 kSetRows 对齐。）
 Gdiplus::Rect SetRowRect(int i) { return Gdiplus::Rect(180, 100 + i * 50, 920, 44); }
 
 void DrawSettings(Gdiplus::Graphics& g, const App& a) {
@@ -19224,20 +18591,14 @@ void DrawSettings(Gdiplus::Graphics& g, const App& a) {
     std::wstring tip = L"改完会自动写回 " + a.appDir + L"\\config.ini　|　文本行回车确认，Esc 取消";
     g.DrawString(tip.c_str(), (int)tip.size(), &fp, rp, &sfC, &pb);
 }
-
-// ============================================================================
-//  角色卡 —— 素材增删 + 注释编辑 + 人设编辑
-// ============================================================================
-//  视觉小说的"场景感"几乎全靠背景撑起来。但项目不可能自带素材（版权 + 体积），
-//  所以得让玩家能把自己的图变成背景——这就是这个界面的全部意义。
+// 角色卡 —— 素材增删 + 注释编辑 + 人设编辑
+// 视觉小说的"场景感"几乎全靠背景撑起来。但项目不可能自带素材（版权 + 体积），
+// 所以得让玩家能把自己的图变成背景
 //
-//  导入是【拷贝】而不是【记路径】：素材统一躺在 assets\bg 下，
-//  剧本里写名字就能用，不用管原图在哪、会不会被删。
-// ============================================================================
-//  （沿用上面已打开的匿名 namespace，不再嵌套一层）
-
+// 导入是拷贝而不是记路径：素材统一躺在 assets\bg 下，
+// 剧本里写名字就能用，不用管原图在哪、会不会被删。
+// （沿用上面已打开的匿名 namespace，不再嵌套一层）
 // ---- 全屏预览：把选中的背景铺满整个界面
-
 } // namespace
 
 // ============================================================================
@@ -19247,22 +18608,18 @@ void UiTip(App& a, const std::wstring& text, int seconds) {
     a.ui.tipText = text;
     a.ui.tipTimer = 30 * seconds;
 }
-
-// ============================================================================
-//  存档槽列表
+// 存档槽列表
 //
-//  参考商业 VN 的读档界面：左边一列槽位卡片，右边是选中槽的详情。
-//  不要做成 9 个一模一样的小格子——那样只看得到编号，
-//  玩家得一个个点进去才知道哪个是自己想读的。
+// 参考商业 VN 的读档界面：左边一列槽位卡片，右边是选中槽的详情。
+// 不要做成 9 个一模一样的小格子——那样只看得到编号，
+// 玩家得一个个点进去才知道哪个是自己想读的。
 //
-//  槽位是全局的（不按角色分），所以每张卡片必须显示【是谁】，
-//  否则槽1角色A、槽2角色B混在一起根本分不清。
-// ============================================================================
+// 槽位是全局的（不按角色分），所以每张卡片必须显示是谁，
+// 否则槽1角色A、槽2角色B混在一起根本分不清。
 namespace {
-
 // 9 张卡片必须全部落在按钮上方：
-//   可用高度 = (kScreenH - 88) - kSlotY0 = 632 - 118 = 514
-//   9*46 + 8*6 = 414 + 48 = 462  ≤ 514  ✓
+// 可用高度 = (kScreenH - 88) - kSlotY0 = 632 - 118 = 514
+// 9*46 + 8*6 = 414 + 48 = 462 ≤ 514 ✓
 // 之前用 52/8 时最后一张底部到 650，按钮顶部 632 —— 重叠 18px，
 // 第 9 个槽会被按钮压住一截，点不到也看不全。
 const int kSlotX    = 96;
@@ -19281,39 +18638,34 @@ Gdiplus::Rect SlotBtnRect(int i) {   // 0 = 读取/保存, 1 = 删除, 2 = 回�
 }
 int SlotHit(int i)      { return i; }              // 0..8
 int SlotBtnHit(int i)   { return 100 + i; }
-
 // 「切到别的角色的存档」按钮（存档页底部空档，最多 3 个）。
 //
-// 【为什么必须有这个按钮，光写一句话不够】
-//  存档是 data\<角色> 分目录放的，而存档页只扫【当前角色】那一个目录。
-//  于是"磁盘上明明有档、界面上一个都没有"最常见的原因就是：
-//  档在 data\角色A 里，而这次启动选中的是角色B。
-//  原来只在那行提示里写「角色A那边还有 3 份，去角色卡切成她就能看到」——
-//  可玩家这时根本不在角色卡，为了看一眼存档要退出去、切角色、再回来，
-//  而"切角色"这一步还要求该角色没被解绑。等于给了线索却没给门。
-//  所以直接做成按钮：点一下切过去、重扫、当场显示。
+// 为什么必须有这个按钮，光写一句话不够
+// 存档是 data\<角色> 分目录放的，而存档页只扫当前角色那一个目录。
+// 于是"磁盘上明明有档、界面上一个都没有"最常见的原因就是：
+// 档在 data\角色A 里，而这次启动选中的是角色B。
+// 原来只在那行提示里写「角色A那边还有 3 份，去角色卡切成她就能看到」
+// 可玩家这时根本不在角色卡，为了看一眼存档要退出去、切角色、再回来，
+// 而"切角色"这一步还要求该角色没被解绑。等于给了线索却没给门。
+// 所以直接做成按钮：点一下切过去、重扫、当场显示。
 //
-// 【位置】槽列表底部 574、操作按钮顶部 632，中间这 58px 是唯一的空档。
-//  再往下就压住按钮了。
+// 位置槽列表底部 574、操作按钮顶部 632，中间这 58px 是唯一的空档。
+// 再往下就压住按钮了。
 Gdiplus::Rect SlotSwitchRect(int i) { return Gdiplus::Rect(kSlotX + i * 160, 576, 150, 30); }
 int SlotSwitchHit(int i) { return -30 - i; }
 const int kSlotSwitchMax = 3;
 
 } // namespace
-
-// ============================================================================
-//  流程图
+// 流程图
 //
-// 【它画的是"走过的路径"，不是"剧本目录"】
-// 两者在单线时看起来一样，区别只在有分支之后才显出来——
+// 它画的是"走过的路径"，不是"剧本目录"
+// 两者在单线时看起来一样，区别只在有分支之后才显出来
 // 但地基必须是路径：画目录的话，流程图永远显示"全部章节"，
-// 玩家看不出自己跳过/没走过哪一章，也就失去了"先去体验后面"的意义。
 //
-// 【为什么放在读档页而不是游戏里】
+// 为什么放在读档页而不是游戏里
 // 它要做的事是"把某个存档读到某一章"，本来就绑在一个槽上。
 // 放在游戏里就得先选槽再选章，两步变三步；放在读档页，
 // 选槽和选章在同一个界面里完成。
-// ============================================================================
 // 流程图盖在存档页上面，所以先画存档页；它在后面才定义，先声明。
 static void DrawSaveLoad(Graphics& g, App& a);
 
@@ -19473,10 +18825,9 @@ static void DrawFlowChart(Graphics& g, App& a) {
              pr.Y + pr.Height - 34, kTextDim);
     }
 }
-
 // 一个目录里有几份存档（只看 save_sN.json）。
 //
-// 【为什么要单拿出来】存档按角色分目录之后，"档在隔壁角色的文件夹里"
+// 为什么要单拿出来存档按角色分目录之后，"档在隔壁角色的文件夹里"
 // 成了"读不到存档"最常见的原因——磁盘上好好的，界面上却一个都没有。
 // 判断"到底在哪儿"最快的依据就是这个数字，启动诊断和存档页都要用它，
 // 所以放到一处，免得两边各数一遍、将来改文件名又只改一处。
@@ -19491,14 +18842,13 @@ static int CountSaveFilesIn(const std::wstring& dir) {
 // 【前置声明】SafeDirNameOf 定义在下面"存档目录"那一块，而这里（存档页 +
 // 启动日志）要用。不声明的话 Linux 下直接编译不过。
 static std::wstring SafeDirNameOf(const std::wstring& id);
-
-// 启动日志里给每个存档目录再补一句"这个目录的角色现在是什么状态"。
+// 启动运行时给每个存档目录再补一句"这个目录的角色现在是什么状态"。
 //
-// 【为什么要补这一句】
-//  「目录 角色A：有 3 份」只说明磁盘上有文件，说明不了为什么读不到它。
-//  真正卡住的地方往往是角色侧：这个目录对应的角色包被解绑了（于是
-//  根本不会被扫到、也切不过去），或者压根没有对应的角色包（目录是
-//  手动建的 / 角色包被删了）。这两种的下一步完全不同，日志必须分开写。
+// 为什么要补这一句
+// 「目录 角色A：有 3 份」只说明磁盘上有文件，说明不了为什么读不到它。
+// 真正卡住的地方往往是角色侧：这个目录对应的角色包被解绑了（于是
+// 根本不会被扫到、也切不过去），或者压根没有对应的角色包（目录是
+// 手动建的 / 角色包被删了）。这两种的下一步完全不同，日志必须分开写。
 static std::wstring DirCharState(const std::wstring& dirName) {
     App& a = g_app;
     std::vector<const CharDef*> all = a.chars.Selectable();
@@ -19518,14 +18868,13 @@ static std::wstring DirCharState(const std::wstring& dirName) {
                        : L"";
     return L"　（没找到对应的角色包：把包放回 assets\\char\\ 下）";
 }
-
 // 别的角色目录里还躺着几份存档。给存档页那个"切过去"按钮用。
 //
-// 【为什么从目录出发，而不是从角色库出发】
-//  目录名是 SafeDirNameOf(id) 洗过的，跟 id 不一定逐字相同
-//  （id 里带 反斜杠 / : 这类字符时会被替换）。从角色库出发去拼目录，
-//  拼出来要是跟磁盘上的对不上，就会出现"按钮列着她、点过去却是空的"。
-//  从目录出发反过来找角色，看到什么就是什么。
+// 为什么从目录出发，而不是从角色库出发
+// 目录名是 SafeDirNameOf(id) 洗过的，跟 id 不一定逐字相同
+// （id 里带 反斜杠 / : 这类字符时会被替换）。从角色库出发去拼目录，
+// 拼出来要是跟磁盘上的对不上，就会出现"按钮列着她、点过去却是空的"。
+// 从目录出发反过来找角色，看到什么就是什么。
 struct OtherSaveEntry {
     std::wstring id;        // 空 = 这个目录对不上任何角色包（点了也读不了）
     std::wstring name;
@@ -19636,10 +18985,9 @@ static void DrawSaveLoad(Graphics& g, App& a) {
                          &fSm, rf, &sf, &b);
         }
         Left(g, si.charName, fNm, r.X + 96, r.Y + 5, si.used ? kText : kTextDim);
-
         // 第二行：章节 · 最后一句
         //
-        // 【读不了的档直接标出来，别让它混在能读的里面】
+        // 读不了的档直接标出来，别让它混在能读的里面
         // 它们卡片长得一样，玩家点一下才知道读不了——白骗一次点击。
         std::wstring l2;
         if (!si.reject.empty()) l2 = L"读不了（原因见右侧）";
@@ -19661,12 +19009,12 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         Left(g, L"No. " + WFromInt(si.index), fNo, dr.X + 24, y, kTextDim); y += 30;
         Left(g, si.charName, fNm, dr.X + 24, y, kText); y += 34;
         //
-        // ---- 【读不了时把原因整段写出来】
+        // ---- 读不了时把原因整段写出来
         //
-        //  这些档在玩家眼里跟别的档长得一模一样。不写明原因，
-        //  他只会反复点"读取"然后反复失败——而原因其实一句话就能说清：
-        //  "这是旧版本存的" / "它躺在别人的目录里" / "它记的那本剧本没了"。
-        //  知道坏在哪，才知道该去补文件还是开新局。
+        // 这些档在玩家眼里跟别的档长得一模一样。不写明原因，
+        // 他只会反复点"读取"然后反复失败——而原因其实一句话就能说清：
+        // "这是旧版本存的" / "它躺在别人的目录里" / "它记的那本剧本没了"。
+        // 知道坏在哪，才知道该去补文件还是开新局。
         if (!si.reject.empty()) {
             const ARGB warn = Color::MakeARGB(240, 240, 178, 96);
             Left(g, L"这份存档读不了：", fSm, dr.X + 24, y, warn); y += 24;
@@ -19682,19 +19030,18 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         }
         if (!si.chapter.empty()) { Left(g, si.chapter, fSm, dr.X + 24, y, kTextDim); y += 26; }
         Left(g, FormatStamp(si.ts), fSm, dr.X + 24, y, kTextDim); y += 34;
-
         // 最后一句台词。读档前能回想"聊到哪了"，比只看章节数字有用得多。
         //
-        // 【这里原来有"字符重叠"的 bug，三层原因叠在一起】
+        // 这里
         // 1) 存档里的 preview 是她最后一句话的原文，自带 \n\n。
-        //    GDI+ 的 DrawString 会把 \n 当真换行，于是一次就画出好几行；
-        //    而循环只按 22px 往下挪，后一段整片压在前一段上 —— 这就是重叠。
+        // GDI+ 的 DrawString 会把 \n 当真换行，于是一次就画出好几行；
+        // 而循环只按 22px 往下挪，后一段整片压在前一段上
         // 2) 按"26 个字一段"硬切，中英混排时宽度差别很大，
-        //    英文长的那行会冲出详情面板。
+        // 英文长的那行会冲出详情面板。
         // 3) 每一段都套一对「」，读起来像好几句话，其实是一句。
         //
         // 现在：先把换行归一成空格（折行交给 WrapText 按实测宽度做），
-        //      再按宽度折行、只保留一对引号、并限制不超过面板底部。
+        // 再按宽度折行、只保留一对引号、并限制不超过面板底部。
         if (!si.preview.empty()) {
             Left(g, L"最后她说：", fSm, dr.X + 24, y, kTextDim); y += 24;
 
@@ -19729,11 +19076,10 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         Center(g, loadMode ? L"选一个槽" : L"选一个槽保存",
                fSm, Gdiplus::Rect(dr.X, dr.Y, dr.Width, 80), kTextDim);
     }
-
     // ---- 操作按钮
     //
-    // 【这里原来有个会骗到人的 bug】
-    // 读档模式的第 2 个按钮功能是【删除】，标签却显示成"保存到此槽"——
+    // 这里
+    // 读档模式的第 2 个按钮功能是删除，标签却显示成"保存到此槽"
     // 因为标签数组是按存档模式的顺序写的，读档模式直接复用就串位了。
     // 玩家点"保存"结果把存档删了，这种错最伤。
     //
@@ -19742,7 +19088,7 @@ static void DrawSaveLoad(Graphics& g, App& a) {
     //
     // ---- 读档模式现在是三个按钮：读取 / 流程图 / 删除
     //
-    // 【"流程图"为什么放在这里】
+    // "流程图"为什么放在这里
     // 它要做的是"把某个存档读到某一章"，本来就得先有一个槽。
     // 放在读档页，选槽和选章在同一个界面里完成；
     // 放到游戏里就得先选槽再选章，两步变三步。
@@ -19781,15 +19127,14 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         else             t = L"读取";
         Center(g, t, fSm, r, disabled ? kTextDim : kText);
     }
-
     // ---- 这份清单属于谁
     //
-    // 【为什么不写清楚就会被当成"档没了"】
-    //  存档是 data\<角色> 分开放的，存档页只显示【当前角色】的那几份。
-    //  最常见的"读不到存档"其实是：档在角色A目录下，而这次选中的是角色B——
-    //  磁盘上好好的，界面上却一个都没有，而且没有任何提示，只能靠猜。
-    //  所以这里写明"你现在看的是谁的"；别处有档就直接点出来，
-    //  玩家不用去翻启动日志就知道该去哪儿找。
+    // 为什么不写清楚就会被当成"档没了"
+    // 存档是 data\<角色> 分开放的，存档页只显示当前角色的那几份。
+    // 最常见的"读不到存档"其实是：档在角色A目录下，而这次选中的是角色B
+    // 磁盘上好好的，界面上却一个都没有，而且没有任何提示，只能靠猜。
+    // 所以这里写明"
+    // 玩家不用去翻启动日志就知道该去哪儿找。
     {
         const CharDef* cd = a.chars.Find(a.curChar);
         std::wstring who = cd ? cd->name : a.curChar;
@@ -19816,13 +19161,12 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         // 唯一还剩的空档就是 606~632 这一条，写在这里不会压到任何东西。
         Left(g, line, fWho, kSlotX, 610, kTextDim);
     }
-
     // ---- 别的角色那边还有存档：直接给能点的按钮
     //
-    // 【光提示不够】
-    //  原来只写「角色A那边还有 3 份，去角色卡切成她就能看到」——可玩家这时
-    //  在存档页，为了看一眼要退出去、切角色、再回来；而"切角色"那一步还
-    //  要求她没被解绑。等于给了线索却没给门，于是表现为"读不到档"。
+    // 光提示不够
+    // 原来只写「角色A那边还有 3 份，去角色卡切成她就能看到」——可玩家这时
+    // 在存档页，为了看一眼要退出去、切角色、再回来；而"切角色"那一步还
+    // 要求她没被解绑。等于给了线索却没给门，于是表现为"读不到档"。
     {
         std::vector<OtherSaveEntry> others = OtherCharsWithSaves(a);
         const int nBtn = (int)others.size() < kSlotSwitchMax ? (int)others.size() : kSlotSwitchMax;
@@ -20011,17 +19355,16 @@ Gdiplus::Rect CardItemRect(int i) {
     return Gdiplus::Rect(kCdX0 + c * (kCdCW + kCdGX),
                          kCdY0 + r * (kCdCH + kCdGY), kCdCW, kCdCH);
 }
-
 //
 // 角色卡列表页的按钮：0=装包 1=解绑 2=已解绑(N)
 //
-// 【命中值为什么另起一段（-100 起）】
-// 这一页的卡片用的是【非负下标】0,1,2...（命中测试直接返回 idx）。
+// 命中值为什么另起一段（-100 起）
+// 这一页的卡片用的是非负下标0,1,2...（命中测试直接返回 idx）。
 // 按钮若也用正数就会跟卡片撞号——点第 0 张卡和点第 0 个按钮没法区分。
 // 素材页那套 -3-i 已经被素材按钮占了，这里从 -100 起，互不干扰。
 // 角色卡页顶部按钮的个数。
 //
-// 【绘制、命中测试、点击处理三处都必须用这个常量】
+// 绘制、命中测试、点击处理三处都必须用这个常量
 // 各写一遍数字的话，加减一个按钮时漏改一处就会出事：
 // 画着五个却去测第六个的位置（点在空白处也可能命中一个不存在的按钮），
 // 或者反过来——第五个按钮画着、点下去没反应。
@@ -20042,10 +19385,9 @@ Gdiplus::Rect ChCardNameBoxRect() { return Gdiplus::Rect(340, 250, 600, 100); }
 Gdiplus::Rect ChCardNameBtnRect(int i) { return Gdiplus::Rect(390 + i * 240, 380, 210, 56); }
 int ChCardNameBtnHit(int i) { return -110 - i; }   // -110 创建 / -111 取消
 int ChCardNameBoxHit() { return -112; }
-
 // 角色卡页顶部按钮灰掉不灰掉。
 //
-// 【只写这一处】——绘制（画成灰的）和命中测试（灰的不响应）都读它。
+// 只写这一处——绘制（画成灰的）和命中测试（灰的不响应）都读它。
 // 两边各写一遍的话，改了一处忘另一处就会出现"画着能点的样子、
 // 点了却没反应"，或者反过来"画着灰的、却真的能点中"。
 static bool ChCardBtnDisabled(const App& a, int i) {
@@ -20060,10 +19402,8 @@ static bool ChCardBtnDisabled(const App& a, int i) {
 // 素材页Tab：0=立绘 1=背景 2=音乐
 Gdiplus::Rect CardTabRect(int i) { return Gdiplus::Rect(200 + i * 146, 96, 136, 42); }
 int CardTabHit(int i) { return -10 - i; }
-
 // 素材页按钮：0=导入 1=删除 2=改注释
 // 四个按钮并排，右边就是「头像 / 编辑人设」那一组（最左到 x=790）。
-// 原来是 168 间距 × 158 宽，只放得下三个：第 4 个右边缘到 862，
 // 会压到头像按钮上——两个按钮叠在一起，点哪个全看谁画在后面。
 // 收紧成 142 × 134 之后，第 4 个右边缘 760，离 790 还有余量。
 // 三个操作按钮。宽度回到 168（加第 4 个时收窄成 134 是为了不压到「头像」，
@@ -20078,19 +19418,16 @@ int CardPersonaBtnHit() { return -20; }
 // 素材页右上角"头像"：卡面是选角卡片上那张脸，单独一页配
 Gdiplus::Rect CardAvatarBtnRect() { return Gdiplus::Rect(kScreenW - 90 - 190 - 210, 152, 190, 44); }
 int CardAvatarBtnHit() { return -22; }
-
 // 返回。
 //
-// 【这里原来自己画了一个 (40,40,118,44) 的返回按钮】
-// 而 DrawBackdropBack 已经画过全局那一个 BackRect()=(28,20,128,46)，
+// 这里原来自己画了一个 (40,40,118,44) 的返回按钮
+// 而 DrawBackdropBack 已经画过全局那一个 BackRect=(28,20,128,46)，
 // 两个框大部分重叠 —— 左上角就出现了两个「← 返回」叠在一起。
 // 现在直接复用全局那个：位置、热区、高亮全是同一份，不会再对不上。
 Gdiplus::Rect CardBackRect() { return BackRect(); }
 int CardBackHit() { return -2; }
-
 // 网格：3 列 × 2 行。
 //
-// 【原来是 4 列 × 2 行、格子 252x152，缩略图区只有 240x94 的扁条】
 // 全身立绘塞进扁条只能靠裁切——于是每张卡都只显示腰以上，
 // 看上去像"图没加载完"。现在格子放大成 350x224，
 // 缩略图区改成 132x194 的竖框（比例接近立绘本身），
@@ -20168,28 +19505,24 @@ Gdiplus::Rect CardAvGridRect(int idx) {
 // 按钮：0 = 用这张当头像，1 = 清除配置（退回默认造型）
 Gdiplus::Rect CardAvBtnRect(int i) { return Gdiplus::Rect(440 + i * 232, 546, 212, 52); }
 int CardAvBtnHit(int i) { return -30 - i; }
-
-// ============================================================================
-//   剧本包 —— assets\syllabus 下每份一个，点选切换 / 删除 / 打开目录
-// ============================================================================
+// 剧本包 —— assets\syllabus 下每份一个，点选切换 / 删除 / 打开目录
 //
-//  【为什么剧本要独立成"包"】
-//  角色决定"谁来教"，剧本决定"教什么"。这两件事本来就是正交的：
-//  同一个人可以教 C 语言也可以教数据结构，同一套课也能换个人来讲。
-//  原来剧本焊死在 assets\syllabus.ini 一个路径上，换角色不换课，
-//  "角色包可更换"就只做了一半。
+// 为什么剧本要独立成"包"
+// 角色决定"谁来教"，剧本决定"教什么"。这两件事本来就是正交的：
+// 同一个人可以教 C 语言也可以教数据结构，同一套课也能换个人来讲。
+// 原来剧本焊死在 assets\syllabus.ini 一个路径上，换角色不换课，
+// "角色包可更换"就只做了一半。
 //
-//  【为什么不在界面里新建剧本】
-//  写大纲是改几十行 ini（章节目标、题目、选项），本来就得在编辑器里写。
-//  界面只负责"选哪一份、删哪一份、目录在哪"，新建交给文件系统——
-//  真要能新建，做出来也只是个"复制当前这份再改"的按钮，用处有限。
+// 为什么不在界面里新建剧本
+// 写大纲是改几十行 ini（章节目标、题目、选项），本来就得在编辑器里写。
+// 界面只负责"选哪一份、删哪一份、目录在哪"，新建交给文件系统
+// 真要能新建，做出来也只是个"复制当前这份再改"的按钮，用处有限。
 //
-//  【删除为什么分两种】
-//  目录式包（assets\syllabus\<名字>\）整目录删，因为里面可能有备注、
-//  素材、README 之类跟这份大纲配套的东西；单文件包只删那一个 .ini。
-//  旧的那份 assets\syllabus.ini 不给删——删了就一份都不剩，
-//  dirMode 会静默退回老剧本模式，玩家只会觉得"游戏突然变味了"。
-
+// 删除为什么分两种
+// 目录式包（assets\syllabus\<名字>\）整目录删，因为里面可能有备注、
+// 素材、README 之类跟这份大纲配套的东西；单文件包只删那一个 .ini。
+// 旧的那份 assets\syllabus.ini 不给删——删了就一份都不剩，
+// dirMode 会静默退回老剧本模式，玩家只会觉得"游戏突然变味了"。
 const int kSyX0 = 120, kSyY0 = 132, kSyW = 1040;
 const int kSyRowH = 82, kSyGap = 10, kSyRows = 5;
 
@@ -20198,7 +19531,7 @@ Gdiplus::Rect SyRowRect(int i) {
 }
 // 按钮：0 = 编辑章节，1 = 打开目录，2 = 删除
 //
-// 【「编辑章节」排在最左】它是这个页面最常用的动作——
+// 「编辑章节」排在最左它是这个页面最常用的动作
 // 作者点进剧本页多半就是为了改内容，而不是为了删。
 // 删除放最右，且要二次确认，误触成本最高的放最远。
 Gdiplus::Rect SyBtnRect(int i) { return Gdiplus::Rect(400 + i * 240, 620, 220, 52); }
@@ -20249,13 +19582,12 @@ static void DrawSyllabus(Graphics& g, App& a) {
             Gdiplus::Rect cr(r.X + r.Width - 150, r.Y + 16, 120, 26);
             Center(g, L"当前使用", fc, cr, kAccent);
         }
-
         //
         // ---- 「通用」/「角色B特化」标签
         //
-        //  选了特化剧本之后开始游戏就只能选那个角色，所以这个标签
-        //  必须在【点之前】就能看见——否则玩家选完了才发现角色被锁，
-        //  只会以为是程序不让他选人。
+        // 选了特化剧本之后开始游戏就只能选那个角色，所以这个标签
+        // 必须在点之前就能看见——否则玩家选完了才发现角色被锁，
+        // 只会以为是程序不让他选人。
         {
             const bool spec = !p.charId.empty();
             std::wstring tag = spec ? (p.charId + L"特化") : L"通用";
@@ -20355,29 +19687,24 @@ static bool SyDelete(App& a) {
     AppLog(L"已删除剧本：%s", p.id.c_str());
     return true;
 }
-
-// ============================================================================
-//   剧本编辑 —— 章节增删 + 每章的标题/目标/题干/选项/答案
-// ============================================================================
+// 剧本编辑 —— 章节增删 + 每章的标题/目标/题干/选项/答案
 //
-//  【为什么剧本必须能在游戏里编】
-//   〔章数〕原来写死在代码里（`Chapter ch[8]` 是编译期常量），
-//   于是"这游戏只能有 5 章"——想做 12 章要改代码重新编译，
-//   想做 3 章的小品，槽位空着但"最后一章"仍按数组走。
-//   现在章数由 ini 里写了几个 [N] 决定，1 章也行，100 章也行。
-//   这一页就是它的界面：加一章 = 加一个段，删一章 = 段整体前移。
+// 为什么剧本必须能在游戏里编
+// 〔章数〕
+// 于是"这游戏只能有 5 章"——想做 12 章要改代码重新编译，
+// 想做 3 章的小品，槽位空着但"最后一章"仍按数组走。
+// 现在章数由 ini 里写了几个 [N] 决定，1 章也行，100 章也行。
+// 这一页就是它的界面：加一章 = 加一个段，删一章 = 段整体前移。
 //
-//  【编辑的是副本，不是正在玩的那一份】
-//   a.syllabus（Director 里那份）是【正在玩】的剧本。编辑页改的是 sylEd——
-//   一份独立加载的副本。直接改 a.syllabus 会出这种事：
-//   你正在第 3 章玩着，顺手把第 3 章删了，下一秒引擎就拿到一个不存在的章号。
-//   副本改完点保存才写盘；写盘后如果它就是当前在用的那份，重新加载一次。
+// 编辑的是副本，不是正在玩的那一份
+// a.syllabus（Director 里那份）是正在玩的剧本。编辑页改的是 sylEd
+// 一份独立加载的副本。直接改 a.syllabus 会出这种事：
+// 副本改完点保存才写盘；写盘后如果它就是当前在用的那份，重新加载一次。
 //
-//  【布局】左栏章节列表，右栏"选中那章的字段"。
-//   右栏做成一条扁平的字段列表（而不是每字段一个固定位置），
-//   是因为选项数量是变的（3 个也行 6 个也行），写死 4 个位置就得留空行，
-//   而"空行"跟"这一项没配"在界面上长得一模一样，看不出来。
-
+// 布局左栏章节列表，右栏"选中那章的字段"。
+// 右栏做成一条扁平的字段列表（而不是每字段一个固定位置），
+// 是因为选项数量是变的（3 个也行 6 个也行），写死 4 个位置就得留空行，
+// 而"空行"跟"这一项没配"在界面上长得一模一样，看不出来。
 const int kSylEdChX = 90,  kSylEdChY = 130, kSylEdChW = 330;
 const int kSylEdChH = 46,  kSylEdChGap = 8, kSylEdChRows = 8;
 const int kSylEdFdX = 452, kSylEdFdY = 130, kSylEdFdW = 738;
@@ -20451,11 +19778,10 @@ static void SylEdCommitField(App& a) {
     std::wstring s((size_t)(n > 0 ? n : 0), L'\0');
     if (n > 0) GetWindowTextW(a.hEdit, &s[0], n + 1);
     s = Trim(s);
-
     //
-    // ---- 【这里原来只查了 r（编辑行），没查 sylEdCh（选中的章）】
-    //  删掉一章之后 sylEdCh 可能还停在那个已经不存在的下标上，
-    //  此时在编辑框里回车就是 vector subscript out of range。
+    // ---- 这里原来只查了 r（编辑行），没查 sylEdCh（选中的章）
+    // 删掉一章之后 sylEdCh 可能还停在那个已经不存在的下标上，
+    // 此时在编辑框里回车就是 vector subscript out of range。
     if (a.ui.sylEdCh < 0 || a.ui.sylEdCh >= (int)a.sylEd.chapters.size()) return;
     SyllabusChapter& c = a.sylEd.chapters[(size_t)a.ui.sylEdCh];
     const std::wstring& key = v[(size_t)r].key;
@@ -20480,10 +19806,9 @@ static void SylEdCommitField(App& a) {
         if (idx >= 0 && idx < (int)c.task.opts.size()) c.task.opts[(size_t)idx] = s;
     }
 }
-
 // 两条路径是不是同一个文件。
 // 不能直接比字符串：一份可能来自扫描（拼出来的），一份来自 config（存进去的），
-// 大小写和斜杠方向都可能不同，比出来不相等就会漏掉那次重新加载——
+// 大小写和斜杠方向都可能不同，比出来不相等就会漏掉那次重新加载
 // 于是"保存成功"但游戏里跑的还是旧大纲。
 static bool PathEq(const std::wstring& p, const std::wstring& q) {
     if (p.empty() || q.empty()) return false;
@@ -20532,12 +19857,12 @@ static bool SylEdSave(App& a) {
     IniSetStr(path, L"Course", L"Title", a.sylEd.title);
     IniSetStr(path, L"Course", L"Chapters", WFromInt((int)a.sylEd.chapters.size()));
     //
-    // ---- 【课程名和两张词表必须原样写回】
+    // ---- 课程名和两张词表必须原样写回
     //
-    //  编辑页目前只能改章节，改不到这三样，但它们【在文件里】——
-    //  不写回就等于保存一次把整门课抹掉：下次读进来 CodeWords 为空，
-    //  退回内置的 C 语言那套，作者的 Python 词表凭空消失，
-    //  而界面上看不出任何变化（章数没变、标题没变）。
+    // 编辑页目前只能改章节，改不到这三样，但它们在文件里
+    // 不写回就等于保存一次把整门课抹掉：下次读进来 CodeWords 为空，
+    // 退回内置的 C 语言那套，作者的 Python 词表凭空消失，
+    // 而界面上看不出任何变化（章数没变、标题没变）。
     IniSetStr(path, L"Course", L"Subject", a.sylEd.subject);
     IniSetStr(path, L"Course", L"CodeWords",  EscapeIni(JoinLines(a.sylEd.codeWords)));
     IniSetStr(path, L"Course", L"TeachWords", EscapeIni(JoinLines(a.sylEd.teachWords)));
@@ -20559,9 +19884,9 @@ static bool SylEdSave(App& a) {
         IniSetStr(path, sec.c_str(), L"Tries", WFromInt(c.task.tries));
         IniSetStr(path, sec.c_str(), L"Answer", WFromInt(c.task.answer));
         //
-        // 【选项必须先删多余的再写】
+        // 选项必须先删多余的再写
         // Opt 是"读空即停"的：把 4 个减到 3 个时只改前 3 个不够，
-        // 留下来的 Opt4 会让下一次读到的还是 4 个——
+        // 留下来的 Opt4 会让下一次读到的还是 4 个
         // 界面上明明删掉了，加载回来又冒出来。所以按最大条数先清一遍。
         for (int o = 1; o <= 6; ++o) {
             std::wstring k = L"Opt" + WFromInt(o);
@@ -20580,12 +19905,10 @@ static bool SylEdSave(App& a) {
         if (probe.empty()) break;                 // 后面没有了
         IniDelSec(path, sec);
     }
-
     // 改的正好是正在用的那份 -> 重新加载，让改动立刻生效。
     // 不重新加载的话，界面提示"已保存"而游戏里还在跑旧大纲，
-    // 玩家会以为保存坏了。
     //
-    // 【走 LoadSyllabus()，不要直接改 a.dir 里那份大纲】
+    // 走 LoadSyllabus，不要直接改 a.dir 里那份大纲
     // 重新加载要同时刷新 packs / id / dirSyllabus / Director 四处，
     // 自己赋值只改得了一处，漏掉的那些会在下一局又冒出来旧的。
     IniInvalidate(path);
@@ -20822,21 +20145,18 @@ void UiWheel(App& a, int delta) {
     // 不清掉的话鼠标不动时高亮会停在上一页那个位置，看着像"选错了"。
     if (a.ui.scroll != old) a.ui.hover = -1;
 }
-
-// ============================================================================
-//   左上角「← 返回」—— 去哪儿，只在这一处定义
-// ============================================================================
+// 左上角「← 返回」—— 去哪儿，只在这一处定义
 //
-//  【为什么必须集中】
-//   原来每个子界面在自己的 `hit == -2` 分支里写返回目标（素材页回角色卡、
-//   人设页回素材页……），而点击处理最前面有个通用拦截：
-//       if (hit == -2) { ...GoScreen(Screen::Title); return 0; }
-//   它先命中并 return，于是那些分支【一行都执行不到】——
-//   玩家从素材页点返回，直接回到主页，而不是回到上一层的角色卡。
-//   分散写 + 前面有拦截 = 写了等于没写，而且看代码看不出来。
+// 为什么必须集中
+// 原来每个子界面在自己的 `hit == -2` 分支里写返回目标（素材页回角色卡、
+// 人设页回素材页……），而点击处理最前面有个通用拦截：
+// if (hit == -2) { ...GoScreen(Screen::Title); return 0; }
+// 它先命中并 return，于是那些分支一行都执行不到
+// 玩家从素材页点返回，直接回到主页，而不是回到上一层的角色卡。
+// 分散写 + 前面有拦截 = 写了等于没写，而且看代码看不出来。
 //
-//   现在目标只在这张表里写一遍，离开时的清场也只做一次。
-//   加新界面时改这里就行，不用再复制一段 -2 分支。
+// 现在目标只在这张表里写一遍，离开时的清场也只做一次。
+// 加新界面时改这里就行，不用再复制一段 -2 分支。
 static Screen BackTargetFor(const App& a) {
     switch (a.ui.screen) {
     // 角色卡这条链：标题 -> 角色卡 -> 素材页 -> {人设页 -> 人设全文/前世记忆, 头像页}
@@ -20868,33 +20188,28 @@ static void LeaveScreenCleanup(App& a) {
     a.ui.memRow          = -1;
     a.ui.sylEdRow        = -1;
 }
-
-// ============================================================================
-//   角色卡 —— 素材增删 + 注释编辑 + 人设编辑
-// ============================================================================
-//  【为什么要有这套界面，而不是留着原来的背景库】
-//   核心玩法是"角色包可更换、素材随意增删"。而旧的背景库只管 bg 一类，
-//   pose / bgm 想加想删只能去资源管理器手工丢文件——换包这件事缺了一大半。
-//   另外它有个"通用"系列（素材不属于任何角色），跟角色包可更换直接冲突：
-//   换包时那些通用素材就成了孤儿。
+// 角色卡 —— 素材增删 + 注释编辑 + 人设编辑
+// 为什么要有这套界面，而不是留着
+// 核心玩法是"角色包可更换、素材随意增删"。而旧的背景库只管 bg 一类，
+// pose / bgm 想加想删只能去资源管理器手工丢文件——换包这件事缺了一大半。
+// 另外它有个"通用"系列（素材不属于任何角色），跟角色包可更换直接冲突：
+// 换包时那些通用素材就成了孤儿。
 //
-//  【导入和注释必须是同一步】
-//   分开做会留下一个窗口期：素材进了目录、白名单已经扫到它、模型每轮都能选它，
-//   而它没有注解。模型看到一堆没说明的选项只能瞎猜——
-//   "神社夜晚被当成适合正式对话"就是这么来的。
-//   所以导入完直接进注释编辑，中间态不存在。
-//   批量导入时逐个弹，能跳、能中途退出；退出后剩下的仍在"缺注解"列表里，
-//   不会无声无息地漏掉。
+// 导入和注释必须是同一步
+// 分开做会留下一个窗口期：素材进了目录、白名单已经扫到它、模型每轮都能选它，
+// 而它没有注解。模型看到一堆没说明的选项只能瞎猜
+// "神社夜晚被当成适合正式对话"就是这么来的。
+// 所以导入完直接进注释编辑，中间态不存在。
+// 批量导入时逐个弹，能跳、能中途退出；退出后剩下的仍在"缺注解"列表里，
+// 不会无声无息地漏掉。
 //
-//  【注释为什么三类共用一套代码】
-//   char.ini 的 [AssetMood] 是"素材名 -> 一句话说明"，三类素材混在同一张表里，
-//   靠名字区分。所以编辑逻辑只有一份，不必按类别各写一遍。
+// 注释为什么三类共用一套代码
+// char.ini 的 [AssetMood] 是"素材名 -> 一句话说明"，三类素材混在同一张表里，
+// 靠名字区分。所以编辑逻辑只有一份，不必按类别各写一遍。
 //
-//  【只能在标题页未开局时编辑】
-//   局内 chapterBg_ 可能正指向你要删的那张图、笔记是旧的、正在跑的一句台词
-//   会突然换素材。局内编辑要做全套失效处理，风险高收益低，索性不给入口。
-// ============================================================================
-
+// 只能在标题页未开局时编辑
+// 局内 chapterBg_ 可能正指向
+// 会突然换素材。局内编辑要做全套失效处理，风险高收益低，索性不给入口。
 // 编辑框字号重算，定义在文件后部（跟布局/字体那块在一起），这里先声明。
 static void UpdateEditFont(bool code);
 
@@ -21016,31 +20331,30 @@ static std::wstring CardThumbPath(const App& a, const std::wstring& name) {
     if (a.ui.assetKind == 0) return CardPoseFile(a, name);
     return PathJoin(CardDir(a), name);
 }
-
 // 这个素材的注解可能写在哪些键名下。
 //
-// 【为什么要多个候选】
+// 为什么要多个候选
 // 立绘那一路，界面/模型用的是"服装_表情"（校服_平静），
 // 而作者手写的注解很可能只写了表情名（平静）—— 两边都是合理的写法。
-// 删除素材时只拿其中一个名字去删，找不到就【静默失败】：
+// 删除素材时只拿其中一个名字去删，找不到就静默失败：
 // 图删了、char.ini 里那一行还在，作者看到的就是"删了素材注解不同步"。
 // 所以两个名字都试一遍，试到哪个删哪个。
 //
-// 【两个方向都要试，只试一个方向会漏】
+// 两个方向都要试，只试一个方向会漏
 //
-//   · 正向  列表名"校服_平静" -> 也找"平静"（复合名 -> 表情名）
-//   · 反向  列表名"平静"     -> 也找"校服_平静"（表情名 -> 复合名）
+// · 正向 列表名"校服_平静" -> 也找"平静"（复合名 -> 表情名）
+// · 反向 列表名"平静" -> 也找"校服_平静"（表情名 -> 复合名）
 //
-//  反向这条原来没有，而它恰恰是更常见的那一侧：
-//  多套服装时 ScanVisibleAssets 交给模型的是【表情】（pose = faceOrder，
-//  服装归 outfit 单独走），于是界面列表里显示的是"平静"；
-//  而作者按文件全名写的注解是"校服_平静"。
-//  只试正向的话，读到空、删不掉、写一条又变成两条并存。
+// 反向这条原来没有，而它恰恰是更常见的那一侧：
+// 多套服装时 ScanVisibleAssets 交给模型的是表情（pose = faceOrder，
+// 服装归 outfit 单独走），于是界面列表里显示的是"平静"；
+// 而作者按文件全名写的注解是"校服_平静"。
+// 只试正向的话，读到空、删不掉、写一条又变成两条并存。
 //
-// 【反向靠扫 ini 实现，不靠拼名字】
-//  服装名叫什么只有文件知道（校服/忍者服/私服……），拼不出来。
-//  所以直接枚举 [AssetMood] 已有的键，凡是"以 _<name> 结尾"、
-//  或"下划线后面那截正好等于 name"的，都算同一张脸。
+// 反向靠扫 ini 实现，不靠拼名字
+// 服装名叫什么只有文件知道（校服/忍者服/私服……），拼不出来。
+// 所以直接枚举 [AssetMood] 已有的键，凡是"以 _<name> 结尾"、
+// 或"下划线后面那截正好等于 name"的，都算同一张脸。
 static std::vector<std::wstring> CardNoteKeysFor(const App& a, const std::wstring& name) {
     std::vector<std::wstring> out;
     if (name.empty()) return out;
@@ -21076,10 +20390,9 @@ static std::vector<std::wstring> CardNoteKeysFor(const App& a, const std::wstrin
     }
     return out;
 }
-
 // 读注解也要走候选，不能只按列表名精确查。
 //
-// 【只按 name 查的后果】
+// 只按 name 查的后果
 // 列表显示"平静"、注解写在"校服_平静"下 —— 精确查返回空，
 // 界面显示"这个素材还没写注解"。作者于是写一条，写到"平静"下，
 // 于是同一张脸出现两条注解：一条模型读得到（在清单名下的那条未必），
@@ -21099,16 +20412,16 @@ static bool CardNoteSet(const App& a, const std::wstring& name, const std::wstri
     if (!CardWritable(a)) return false;
     std::wstring ini = CardIni(a);
     //
-    // ---- 【清空注解必须真的删掉这一行，不能只把值写空】
+    // ---- 清空注解必须真的删掉这一行，不能只把值写空
     //
     // IniSetStr(..., L"") 留下的是 `名字 = ` —— 一个值为空的键。
     // 它仍会出现在 [AssetMood] 的枚举结果里，于是：
-    //   · 删了素材之后，char.ini 里永久留着一行指向不存在素材的空注解
-    //     （日志里那三条带时间戳的截图名就是这么留下来的）；
-    //   · 作者改素材时看到一堆"明明删了怎么还在"的键，以为同步坏了。
+    // · 删了素材之后，char.ini 里永久留着一行指向不存在素材的空注解
+    // （截图文件名里带时间，便于按轮次对照）；
+    // · 作者改素材时看到一堆"明明删了怎么还在"的键，以为同步坏了。
     // 值空 == 没注解，所以直接删键，效果一样、文件更干净。
     //
-    // 【返回值 = 写盘成功】删/写失败必须传出去，让界面能说出"没保存成"，
+    // 返回值 = 写盘成功删/写失败必须传出去，让界面能说出"没保存成"，
     // 而不是一律提示"已保存"——那种提示比不提示更糟，它会让人以为文件是对的。
     bool ok = true;
     std::vector<std::wstring> keys = CardNoteKeysFor(a, name);
@@ -21118,8 +20431,8 @@ static bool CardNoteSet(const App& a, const std::wstring& name, const std::wstri
                 if (!IniDelKey(ini, L"AssetMood", keys[i].c_str())) ok = false;
     } else {
         //
-        // ---- 【写之前先把同一张脸的其他键名删掉】
-        // 注解写在"校服_平静"下、作者改的是列表里的"平静"——
+        // ---- 写之前先把同一张脸的其他键名删掉
+        // 注解写在"校服_平静"下、作者改的是列表里的"平静"
         // 直接写会变成两条并存：一条模型读得到、一条读不到，
         // 改哪条要看运气，删素材时又只删得掉一条。
         // 所以写新值前把候选里除 name 以外的都清掉，保证一个素材只有一条。
@@ -21131,7 +20444,7 @@ static bool CardNoteSet(const App& a, const std::wstring& name, const std::wstri
         if (!IniSetStr(ini, L"AssetMood", name.c_str(), text)) ok = false;
     }
     //
-    // ---- 【内存里那份也要跟着改】
+    // ---- 内存里那份也要跟着改
     // ScanVisibleAssets 是拿 def->assetMood 去填 v.mood 的。只写 ini 不动内存，
     // 重扫之后白名单里的说明还是旧的那句——界面显示"已保存"，
     // 模型看到的却是改之前的内容。
@@ -21143,52 +20456,46 @@ static bool CardNoteSet(const App& a, const std::wstring& name, const std::wstri
     }
     return ok;
 }
-
 // 改完素材或注释必须让白名单失效，否则界面改了、游戏里还是旧的。
 //
-// 【光设 whitelistReady=false 还不够】
-// EnsureWhitelist 比对的是【文件名指纹】，只改注释的话指纹不变，
+// 光设 whitelistReady=false 还不够
+// EnsureWhitelist 比对的是文件名指纹，只改注释的话指纹不变，
 // 会判定"没动过"直接返回——白名单里的说明还是旧的。
 // 连 stamp 一起清才能真正重建。
 static void CardInvalidateAssets() {
     g_app.whitelistReady = false;
     g_app.whitelistStamp.clear();
 }
-
-// ============================================================================
-//   孤儿素材注解清理
-// ============================================================================
+// 孤儿素材注解清理
 //
 // 判定只看"素材在不在"，不看注解写没写：
-//   ① 有素材、没注解 -> 保留。空注解 = 还没写说明，作者随时会补
-//   ② 没素材、有注解 -> 清。素材不在，这段说明没有任何读者
-//   ③ 没素材、没注解 -> 清
+// ① 有素材、没注解 -> 保留。空注解 = 还没写说明，作者随时会补
+// ② 没素材、有注解 -> 清。素材不在，这段说明没有任何读者
+// ③ 没素材、没注解 -> 清
 //
-// ★ 按"值空"去清会把刚导入的一批图连同位置一起清掉，而且不报错——
-//   作者只会发现"注解怎么都写不住"。
+// ★ 按"值空"去清会把刚导入的一批图连同位置一起清掉，而且不报错
+// 作者只会发现"注解怎么都写不住"。
 // ★ 删掉的是作者亲手写过的字，所以分两步：打开素材页只列出待清的名字，
-//   再进一次才真的删。中间这一次机会也是【改名错误唯一的暴露点】——
-//   素材名打错一个字，注解立刻变孤儿，而且完全不报错：她只是再也不去那个地方。
+// 再进一次才真的删。中间这一次机会也是改名错误唯一的暴露点
+// 素材名打错一个字，注解立刻变孤儿，而且完全不报错：她只是再也不去那个地方。
 // ★ 三类清单全空 = 目录没扫到（包没装好、路径配错）。这时"所有名字都不在清单里"
-//   会把整段注解清空，那是灾难。扫不到就当没看见，宁可留着。
+// 会把整段注解清空，那是灾难。扫不到就当没看见，宁可留着。
 //
 // 名字会打进日志：char.ini 是纯文本，真清掉了还能照着日志把名字补回来。
 //
 // commit=false：每次刷新都走一遍，只点名、不动手（供提示显示）。
 // commit=true ：进素材页时、且已经提醒过一次，才真的删。
-// ============================================================================
-
 // 一条注解的键名，到底指不指向一个真实存在的素材。
 //
-// 【只按精确名字比的后果：注解写在"校服_平静"下会被当成孤儿清掉】
-//   多套服装时 ScanVisibleAssets 交给模型/界面的是【表情】（pose = faceOrder，
-//   服装归 outfit 单独走），所以清单里只有"平静"；而作者按文件全名写的注解
-//   是"校服_平静"。精确比对两边都不相等 —— 于是这条注解被判成孤儿删掉。
-//   图明明在、说明也明明是作者刚写的，却被清得悄无声息。
-//   所以比对要顺着"服装 × 表情 = 真实文件"这张真值表走一遍。
+// 只按精确名字比的后果：注解写在"校服_平静"下会被当成孤儿清掉
+// 多套服装时 ScanVisibleAssets 交给模型/界面的是表情（pose = faceOrder，
+// 服装归 outfit 单独走），所以清单里只有"平静"；而作者按文件全名写的注解
+// 是"校服_平静"。精确比对两边都不相等 —— 于是这条注解被判成孤儿删掉。
+// 图明明在、说明也明明是作者刚写的，却被清得悄无声息。
+// 所以比对要顺着"服装 × 表情 = 真实文件"这张真值表走一遍。
 //
-// 【只对立绘做下划线拆分】
-//   背景名里的下划线是时段的正当用法（穗织的街道_白天），拆开就全乱了。
+// 只对立绘做下划线拆分
+// 背景名里的下划线是时段的正当用法（镇上的街道_白天），拆开就全乱了。
 static bool AssetNoteKeyIsLive(const std::wstring& key, const VisibleAssets& v) {
     if (key.empty()) return false;
     for (size_t i = 0; i < v.pose.size(); ++i) if (v.pose[i] == key) return true;
@@ -21355,13 +20662,12 @@ static bool CardDelete(App& a) {
             lastErr = GetLastError();
         }
     }
-
-    // ---- 【注解要在重扫之前就知道"有没有这条"】
+    // ---- 注解要在重扫之前就知道"有没有这条"
     // CardRefresh 会重扫目录，扫完这一条就成了孤儿。
     // 先问一次"ini 里到底有没有它的注解"，才能区分两种情况：
-    //   有 -> 删掉了（成功）
-    //   没有 -> 注解键名跟素材名对不上，下面那条孤儿清理也救不了它
-    //          （它写着内容，被当成"作者先写好、图还没导入"保护起来了）
+    // 有 -> 删掉了（成功）
+    // 没有 -> 注解键名跟素材名对不上，下面那条孤儿清理也救不了它
+    // （它写着内容，被当成"作者先写好、图还没导入"保护起来了）
     // 这两种结果给作者的提示完全不同，混成一句"已删除"就永远查不出键名写错了。
     std::wstring ini = CardIni(a);
     bool hadNote = false;
@@ -21378,7 +20684,7 @@ static bool CardDelete(App& a) {
         // 注释一起清掉：留着一条指向不存在素材的说明，白名单不会显示它，
         // 但作者改素材时会困惑——"明明删了怎么还在"。
         //
-        // 【保存失败要说出来】CardNoteSet 现在返回写盘结果。
+        // 保存失败要说出来CardNoteSet 现在返回写盘结果。
         // 文件只读/被编辑器独占时写不进去，一律提示"已删除"会让人以为同步好了。
         bool noteOk = true;
         if (CardWritable(a)) noteOk = CardNoteSet(a, name, L"");
@@ -21395,7 +20701,6 @@ static bool CardDelete(App& a) {
     }
     return done;
 }
-
 // ---------------------------------------------------------------- 绘制
 // 返回按钮不再各页自己画——DrawBackdropBack 已经画了全局那一个，
 // 再画一个就是左上角两个「← 返回」重叠（见 CardBackRect 的注释）。
@@ -21403,33 +20708,30 @@ static bool CardDelete(App& a) {
 //
 // 没有"装角色包"这一步了：加角色只有「＋ 新建角色」和「打开包目录手动放」两条路，
 // 都直接作用在 assets\char 下——见上面「角色包」那一段的说明。
-// ============================================================================
-//  新建角色卡 —— 在 assets\char\<名字> 下建一个跟角色B / 角色A同结构的空包
-// ============================================================================
+// 新建角色卡 —— 在 assets\char\<名字> 下建一个跟角色B / 角色A同结构的空包
 //
-//  【为什么要有这个入口，而不是只留"装 .ckchar"】
-//  原来作者想加一个角色只有两条路：
-//    1. 手动复制 _模板 目录 → 改名 → 改 char.ini → 手动打成 zip 改成 .ckchar
-//    2. 把 .ckchar 拖进窗口
-//  第 1 条没人会做：_模板 躺在 assets\char 里，作者根本不知道有这个东西，
-//  而且它要求先知道"一个角色包该长什么样"——正是要教的那件事。
-//  第 2 条要先有 .ckchar，而做出 .ckchar 的唯一办法就是第 1 条。
-//  两条路互为前提，于是【装包这个功能从头到尾没有任何人能用上】。
+// 为什么要有这个入口，而不是只留"装 .ckchar"
+// 原来作者想加一个角色只有两条路：
+// 1. 手动复制 _模板 目录 → 改名 → 改 char.ini → 手动打成 zip 改成 .ckchar
+// 2. 把 .ckchar 拖进窗口
+// 第 1 条没人会做：_模板 躺在 assets\char 里，作者根本不知道有这个东西，
+// 而且它要求先知道"一个角色包该长什么样"——正是要教的那件事。
+// 第 2 条要先有 .ckchar，而做出 .ckchar 的唯一办法就是第 1 条。
+// 两条路互为前提，于是装包这个功能从头到尾没有任何人能用上。
 //
-//  这个入口把死锁打开：点一下，目录和 char.ini 照着现成包的样子建好，
-//  作者只需要往 sprite / bg / bgm 里丢素材、在游戏里写注解。
-//  分享 / 备份也一样：整个目录拷给别人，对方放进 assets\char 再点重新扫描，
-//  不需要打包成任何格式。
+// 这个入口把死锁打开：点一下，目录和 char.ini 照着现成包的样子建好，
+// 作者只需要往 sprite / bg / bgm 里丢素材、在游戏里写注解。
+// 分享 / 备份也一样：整个目录拷给别人，对方放进 assets\char 再点重新扫描，
+// 不需要打包成任何格式。
 struct NewPackResult {
     bool ok = false;
     std::wstring id;        // 建出来的角色 id（= 目录名）
     std::wstring err;       // 失败原因（人话）
 };
-
 // 名字里不能出现的字符。
-//  前 9 个是 Windows 文件名非法字符；控制字符一并挡掉。
-//  '=' 也挡：名字会写进 [Char] Name = <名字>，值里的等号会让 ini 解析
-//  把后半截当成别的东西；'[', ']' 同理（会被认成段名）。
+// 前 9 个是 Windows 文件名非法字符；控制字符一并挡掉。
+// '=' 也挡：名字会写进 [Char] Name = <名字>，值里的等号会让 ini 解析
+// 把后半截当成别的东西；'[', ']' 同理（会被认成段名）。
 static bool NewPackBadChar(wchar_t c) {
     return c == L'\\' || c == L'/' || c == L':' || c == L'*' || c == L'?'
         || c == L'"'  || c == L'<' || c == L'>' || c == L'|' || c == L'='
@@ -21558,7 +20860,7 @@ NewPackResult CreateNewCharPack(const std::wstring& rootDir, const std::wstring&
     if (clean.size() > 40) { r.err = L"名字太长了（最多 40 个字）"; return r; }
 
     // ---- 重名：目录已经存在就直接挡下。
-    //  不自动加后缀——"梓" 和 "梓2" 是两个角色，作者会以为是建失败了。
+    //  不自动加后缀——"角色A" 和 "角色A2" 是两个角色，作者会以为是建失败了。
     std::wstring pack = PathJoin(rootDir, clean);
     if (FileExists(pack)) {
         r.err = L"已经有叫「" + clean + L"」的角色了（assets\\char\\ 下有同名文件夹）";
@@ -21598,18 +20900,17 @@ NewPackResult CreateNewCharPack(const std::wstring& rootDir, const std::wstring&
         L"音乐（wav）放这里。例：主题.wav\n"
         L"除了主页曲以外的都会进她的可选清单，她按情绪挑。\n"
         L"不用在 char.ini 里登记。\n");
-
     //
-    // ---- 【story.ini：跟角色B / 角色A一样，包里也有这一份】
+    // ---- story.ini：跟角色B / 角色A一样，包里也有这一份
     //
-    //  它是【剧情模式】专用的大纲，课程模式用不到，
-    //  所以里面全是注释——不写 Acts（或写 0），剧本页就不会列出这本，
-    //  新角色不会凭空多出一个空剧本。
+    // 它是剧情模式专用的大纲，课程模式用不到，
+    // 所以里面全是注释——不写 Acts（或写 0），剧本页就不会列出这本，
+    // 新角色不会凭空多出一个空剧本。
     //
-    //  【为什么还是要建这个文件】
-    //  结构跟现成的包一模一样，作者照着角色B那份抄就有处可抄；
-    //  而"包里没有这个文件"会被理解成"这个角色不支持剧情模式"——
-    //  其实只是还没写。
+    // 为什么还是要建这个文件
+    // 结构跟现成的包一模一样，作者照着角色B那份抄就有处可抄；
+    // 而"包里没有这个文件"会被理解成"这个角色不支持剧情模式"
+    // 其实只是还没写。
     WriteTextFile(PathJoin(pack, L"story.ini"),
         L"; ============================================================\n"
         L";  剧情大纲（感情曲线）—— 只有做「剧情模式」才需要\n"
@@ -21661,7 +20962,6 @@ NewPackResult CreateNewCharPack(const std::wstring& rootDir, const std::wstring&
     r.id = clean;
     return r;
 }
-
 // 进入命名态：把共用的 EDIT 控件摆到命名框上并聚焦。
 //
 // 跟素材注解那套一致：编辑框由窗口过程管，这里只管定位，
@@ -21686,15 +20986,14 @@ static void ChCardEndName(App& a) {
     a.ui.newCharName = false;
     if (a.hEdit) ShowWindow(a.hEdit, SW_HIDE);
 }
-
 //
 // 打开角色包目录（assets\char\）。
 //
-// 【为什么要有这个按钮】
-//  "把文件夹放进去"本来就是加角色的一条正规路子——尤其自己做包的时候，
-//  不可能每改一次就打个 zip 再拖进来。可游戏里没有任何入口指向那个目录，
-//  作者只能自己猜路径（以前还有个 charpacks 目录，常常猜成那个）。
-//  给个按钮直接打开，比在提示里写路径可靠。
+// 为什么要有这个按钮
+// "把文件夹放进去"本来就是加角色的一条正规路子——尤其自己做包的时候，
+// 不可能每改一次就打个 zip 再拖进来。可游戏里没有任何入口指向那个目录，
+// 作者只能自己猜路径（早期版本还有个 charpacks 目录，常常猜成那个）。
+// 给个按钮直接打开，比在提示里写路径可靠。
 //
 // 目录不存在时先建出来：空目录打开后能直接往里放包，
 // 而 explorer 打开一个不存在的路径只会报错。
@@ -21880,15 +21179,14 @@ static void DrawAssetLib(Graphics& g, App& a) {
         Gdiplus::Font f(L"Microsoft YaHei", 16);
         Center(g, CardKindLabel(i), f, r, on ? kText : kTextDim);
     }
-
     // ---- 孤儿注解提醒（画在类别 Tab 右侧的空白区，不占网格）
     //
-    // 【只提醒、不动手】真删要等"再进一次素材页"（见 GoScreen 里的 orphanArmed）。
-    //   这一次机会是给人去补图的：看到提示就知道目录里还缺哪张图。
+    // 只提醒、不动手真删要等"再进一次素材页"（见 GoScreen 里的 orphanArmed）。
+    // 这一次机会是给人去补图的：看到提示就知道目录里还缺哪张图。
     //
-    // 【为什么要列名字】改名错误唯一能暴露的地方就是这里。
-    //   「柊史的房间」打成「楼史的房间」，注解立刻变孤儿，而且不报错——
-    //   她只是再也不去那个地方。名字出现在这一行，才知道该去改文件名。
+    // 为什么要列名字改名错误唯一能暴露的地方就是这里。
+    // 「设定里的名字的房间」打成「楼史的房间」，注解立刻变孤儿，而且不报错
+    // 她只是再也不去那个地方。名字出现在这一行，才知道该去改文件名。
     if (!a.ui.orphanNames.empty()) {
         Gdiplus::Font fo(L"Microsoft YaHei", 13);
         std::wstring cnt = WFromInt((long long)a.ui.orphanNames.size());
@@ -21904,10 +21202,9 @@ static void DrawAssetLib(Graphics& g, App& a) {
         Gdiplus::Rect r2(660, 118, 530, 20);
         Center(g, list, fo, r2, Color::MakeARGB(255, 200, 145, 90));
     }
-
     // ---- 操作按钮
     //
-    // 【为什么只有三个】
+    // 为什么只有三个
     // 原来还有第 4 个「清孤儿」，是给"图在资源管理器里删了、注解还留着"
     // 留的手动出口。现在 CardRefresh 会自动把没有对应素材的注解全清掉
     // （不管值是不是空的），所以打开素材页之后孤儿必然是 0 条，
@@ -21987,8 +21284,7 @@ static void DrawAssetLib(Graphics& g, App& a) {
             Gdiplus::Font fp(L"Microsoft YaHei", 26);
             Center(g, L"♪", fp, ir, kText);
         }
-
-        // 名字 + 有没有注解。缺注解的标红——
+        // 名字 + 有没有注解。缺注解的标红
         // 没说明的素材模型只能瞎猜，这个状态必须一眼看得见。
         //
         // 文字列比原来窄，所以注解要按字数截断：
@@ -22094,21 +21390,18 @@ static void DrawPersona(Graphics& g, App& a) {
     Gdiplus::Rect hr(150, kScreenH - 60, 980, 26);
     Center(g, L"点一行改它，改完点「保存」写回 char.ini", fh, hr, kTextDim);
 }
-
-// ============================================================================
-//   前世记忆页 —— 编辑 char.ini 的 [Memory] 段
-// ============================================================================
-//  这一段是"她这一世之前经历过什么"，不是人设标签：
-//  标签只能生成类型化反应（被撩就脸红），具体记忆才能生成主动行为
-//  （"说到这个，我小时候…"）。所以它是角色包内容，跟着包走。
+// 前世记忆页 —— 编辑 char.ini 的 [Memory] 段
+// 这一段是"她这一世之前经历过什么"，不是人设标签：
+// 标签只能生成类型化反应（被撩就脸红），具体记忆才能生成主动行为
+// （"说到这个，
 //
-//  界面上把它摊平成"一行一条"：出身 / 习惯是两条固定行，
-//  在意.N / 记得.N / 雷区.N / 我们.N 是四条可增删的列表。
-//  「我们」是两人共同经历过的事——续集设定下这一段最出戏，
-//  所以也给它一个入口，别让作者只能开记事本改。
-//  保存时按顺序重新编号写回——删中间一条不会留下空洞。
-//  （解析时本来就会跳过空值，但编号一乱，下次打开看到的顺序就跟 ini 里
-//   对不上了，排查起来很痛苦，所以还是重排干净。）
+// 界面上把它摊平成"一行一条"：出身 / 习惯是两条固定行，
+// 在意.N / 记得.N / 雷区.N /
+// 「
+// 所以也给它一个入口，别让作者只能开记事本改。
+// 保存时按顺序重新编号写回——删中间一条不会留下空洞。
+// （解析时本来就会跳过空值，但编号一乱，下次打开看到的顺序就跟 ini 里
+// 对不上了，排查起来很痛苦，所以还是重排干净。）
 struct MemItem {
     std::wstring grp;    // 出身 / 习惯 / 在意 / 记得 / 雷区 / 我们
     std::wstring val;
@@ -22367,21 +21660,17 @@ static void DrawAvatar(Graphics& g, App& a) {
     Center(g, L"点一张选中，再点「用这张当头像」写回 char.ini",
            fh, Gdiplus::Rect(200, kScreenH - 60, 1080, 26), kTextDim);
 }
-
 // ---------------------------------------------------------------- 命中测试
-// ============================================================================
-//   人设全文页 —— 编辑 char.ini 的 [Prompt] 段
-// ============================================================================
+// 人设全文页 —— 编辑 char.ini 的 [Prompt] 段
 //
-//  【两份身份设定合并成一份】
-//  以前"她怎么说话"写在包里的 prompt.txt、"她是谁"写在 char.ini，
-//  两者功能高度雷同：代码上要维护两条读取路径，模型上要同时读两份
-//  互相打架的性格描述，而且 txt 那份角色卡根本编辑不到。
-//  合并后 [Prompt] 是唯一正源：角色卡能直接编辑，换包只搬一个文件。
+// 两份身份设定合并成一份
+// 早期版本"她怎么说话"写在包里的 prompt.txt、"她是谁"写在 char.ini，
+// 两者功能高度雷同：代码上要维护两条读取路径，模型上要同时读两份
+// 互相打架的性格描述，而且 txt 那份角色卡根本编辑不到。
+// 合并后 [Prompt] 是唯一正源：角色卡能直接编辑，换包只搬一个文件。
 //
-//  【多行怎么存】ini 里"行首一个空格"表示上一行的续行（见 IniLoad）。
-//  空行写一个空格——真·空行会被当成键之间的分隔，值会被截断。
-
+// 多行怎么存ini 里"行首一个空格"表示上一行的续行（见 IniLoad）。
+// 空行写一个空格——真·空行会被当成键之间的分隔，值会被截断。
 // 0 = System（怎么说），1 = Sample（示例台词）
 static std::wstring CardPromptValue(const App& a, int which) {
     std::wstring ini = CardIni(a);
@@ -22584,10 +21873,9 @@ static int CardHitTest(const App& a, int x, int y) {
     }
     return -1;
 }
-
 // 把 EDIT 控件摆到注释框上并聚焦。
 //
-// 【为什么不用"点行就提交"那套】
+// 为什么不用"点行就提交"那套
 // 编辑框由窗口过程管理，这里只负责定位和取值；
 // 提交时机明确放在"保存"按钮上，比靠失焦提交更不容易丢内容。
 static void CardStartNote(App& a) {
@@ -22619,11 +21907,10 @@ static void CardStartPersonaText(App& a) {
         SendMessageW(a.hEdit, EM_SETSEL, 0, -1);
     }
 }
-
 // 把队列里的下一个素材推进注释编辑；队列空了就退回网格。
 //
 // 队列里可能有导入失败的名字（CopyFile 没成功但已经 push 了），
-// 所以逐个核对清单，不在清单里的直接丢掉——
+// 所以逐个核对清单，不在清单里的直接丢掉
 // 否则会弹出一个"给根本不存在的素材写注解"的框。
 static void CardNextNote(App& a) {
     a.ui.noteEdit = false;
@@ -22652,20 +21939,15 @@ static std::wstring CardPersonaValue(const App& a, int i) {
     if (ini.empty() || i < 0 || i >= 4) return L"";
     return IniGetStr(ini, L"Char", CardPersonaKey(i), L"");
 }
-
-// ============================================================================
-//   头像页 —— 挑一张图当卡面
-// ============================================================================
-//  【为什么单独一页，不放进素材页】
-//   卡面和立绘是两码事：立绘是模型每轮在挑的表情，卡面只是选角卡片上那张脸。
-//   混进素材页的话，它会出现在"模型可选清单"旁边，作者很容易顺手给它写情绪注解，
-//   而模型根本不会拿它当表情——注释写了白写，还多一个没说明的素材。
+// 头像页 —— 挑一张图当卡面
+// 为什么单独一页，不放进素材页
+// 卡面和立绘是两码事：立绘是模型每轮在挑的表情，卡面只是选角卡片上那张脸。
+// 混进素材页的话，它会出现在"模型可选清单"旁边，作者很容易顺手给它写情绪注解，
+// 而模型根本不会拿它当表情——注释写了白写，还多一个没说明的素材。
 //
-//  【候选图从哪来】
-//   立绘目录（含服装子目录）+ 角色包根目录里的所有图片。不读配置、不猜名字：
-//   画了、放进去了，就能在这里选。
-// ============================================================================
-
+// 候选图从哪来
+// 立绘目录（含服装子目录）+ 角色包根目录里的所有图片。不读配置、不猜名字：
+// 画了、放进去了，就能在这里选。
 static void CardAvatarRefresh(App& a) {
     a.ui.avatarPaths.clear();
     a.ui.avatarPick = -1;
@@ -22837,15 +22119,8 @@ void UiCommitEdit(App& a, const std::wstring& text) {
     }
     SaveConfig();
 }
-
-//==============================================================================================
-//  —— 以下到文件末尾是窗口过程、入口与各子界面的接线 ——
-//==============================================================================================
-
-//==============================================================================================
-//  模块：程序入口与窗口过程
-//==============================================================================================
-
+// —— 以下到文件末尾是窗口过程、入口与各子界面的接线
+// 模块：程序入口与窗口过程
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")      // 窗口 / 菜单 / 托盘
 #pragma comment(lib, "gdi32.lib")       // CreateFontW / CreateSolidBrush / StretchBlt
@@ -22854,13 +22129,13 @@ void UiCommitEdit(App& a, const std::wstring& text) {
 #pragma comment(lib, "xaudio2.lib")
 
 #define WM_APP_INPUT_SEND (WM_APP + 4)     // 自由输入框里按了回车
-// WM_APP + 7 已废弃：原来是"自由输入框里按 Esc 跳过这轮对话"（见 EditProc）。
+// WM_APP + 7 已废弃：
 // 该机制已按要求移除，编号留空不再复用——别拿它去接别的消息，
 // 免得旧版本残留的消息号被新逻辑误接。
 //
 // ---- 素材打回重填：她填错了就让模型自己重填
 //
-// 【这是"不再堆匹配算法"的关键一步】
+// 这是"不再堆匹配算法"的关键一步
 // 她填的名字对不上清单时，与其在程序里猜"她大概想说害羞"，
 // 不如把错的地方摆给她、让她从清单里重选一个。
 // 她知道这句话是什么情绪，引擎只能从字面猜。
@@ -22880,73 +22155,72 @@ static bool      g_trayAdded = false;
 static std::wstring g_chatFull;
 static bool         g_chatOk = false;
 static std::wstring g_chatErr;
-
 // ★ 本次回复的结束原因（"stop" 说完了 / "length" 被输出上限掐断 / 空 = 没给）。
 //
-// 它唯一的作用是把"她的话太长被掐断"和"流式中途断网"分开——
+// 它唯一的作用是把"她的话太长被掐断"和"流式中途断网"分开
 // 这两种都会让台词停在半句上，但修法完全不同：
-//   length   → 让她下一轮说短一点（重发还是会断在同一个地方）
-//   中途断网 → 自动重发一次（大概率能拿到完整的）
-// 混在一起就只能给用户一句笼统的提示，他照着做却解决不了问题。
+// length → 让她下一轮说短一点（重发还是会断在同一个地方）
+// 中途断网 → 自动重发一次（大概率能拿到完整的）
+// 混在一起就只能给玩家一句笼统的提示，他照着做却解决不了问题。
 static std::wstring g_chatFinishReason;
 // 素材打回的结果（工作线程 -> 主线程的搬运槽）
 static std::wstring g_stageFixPose, g_stageFixBg, g_stageFixBgm, g_stageFixPose2;
 //
-// 【日常段重写台词】的搬运槽 + 模式标记。
+// 日常段重写台词的搬运槽 + 模式标记。
 //
-// 跟上面四个的区别：那四个是【素材名】（要过清单校验），
-// 这个是【一整句台词】（直接替换 she said 的那句）。
+// 跟上面四个的区别：那四个是素材名（要过清单校验），
+// 这个是一整句台词（直接替换 she said 的那句）。
 // 两种请求共用同一个线程和消息，靠这个标记区分回来后该干什么。
 static std::wstring g_stageFixSay;
 static bool        g_stageFixIsRewrite = false;
 //
-// 这一次 StageFix 请求是【挑素材】还是【打回重填】。
+// 这一次 StageFix 请求是挑素材还是打回重填。
 //
 // 两者走同一条线程和同一条消息，但语义完全不同：
-//   挑素材 = 每轮都发，三项全要，台词已经显示（画面后到）
-//   打回   = 只在填错时发，只补错的那几项，台词挂起等它一起出
-// 不区分的话，挑素材失败时会被当成"打回失败"去走引擎兜底换脸——
+// 挑素材 = 每轮都发，三项全要，台词已经显示（画面后到）
+// 打回 = 只在填错时发，只补错的那几项，台词挂起等它一起出
+// 不区分的话，挑素材失败时会被当成"打回失败"去走引擎兜底换脸
 // 而那正是明确要求去掉的行为：换脸只能由模型决定。
 static bool g_stageFixIsPick = false;
 //
-// ---- 【这一次请求是"网络失败"还是"她没给值"】
+// ---- 这一次请求是"网络失败"还是"她没给值"
 //
-// 【这是素材日志整轮消失的成因】
+// 这是素材日志整轮消失的成因
 // 挑素材请求失败（网络不可达）时，线程投回来的是三个空串，
-// 主线程那边跟"她给了但没接住""她压根没填"长得一模一样——
+// 主线程那边跟"她给了但没接住""她压根没填"长得一模一样
 // 三种情况都走 `fp/fb/fm 全空` 那一支，直接 return，
-// 于是【这一轮在素材调用日志里连一行都没有】。
-// 日志里 第1轮 之后直接跳到 第3轮，看起来像"她没选"或"程序拒了"，
+// 于是这一轮在素材调用运行时连一行都没有。
+// 运行时 第1轮 之后直接跳到 第3轮，看起来像"她没选"或"程序拒了"，
 // 实际是请求压根没发出去。
 //
 // 分开记，日志上才看得出来到底是网络问题还是模型问题。
 static bool g_stageFixNetFail = false;
 //
-// ---- 【挑素材失败之后发起的那次打回】
+// ---- 挑素材失败之后发起的那次打回
 //
-// 【这是日志标签被写错的成因】
+// 这是日志标签被写错的成因
 // 挑素材没接住时会置 g_stageFixIsPick=true 再发起打回（为了保住
 // "不许引擎兜底换脸"这条）。可那个标志回来时又被读走当标签用，
-// 于是【打回重填】的结果在日志里被标成【（挑素材）】。
+// 于是打回重填的结果在运行时被标成（挑素材）。
 //
 // 后果是分不清哪次是"她填错了"——挑素材是每轮都有的正常流程，
 // 打回才是异常。两者混在一起，日志上看不出问题有多严重。
 // 所以要单独记一个：isPick 管行为（不许兜底），isRetry 管标签（记成打回）。
 static bool g_stageFixIsRetry = false;
 //
-// ---- 【挑素材自己的"本轮第 2 次"】
+// ---- 挑素材自己的"本轮第 2 次"
 //
 // 跟 g_stageFixIsRetry 两码事：那个是"挑素材没接住之后发起的打回"，
-// 管的是【打回记录】里的标签；这个是【挑素材请求失败后原样再发一次】。
+// 管的是打回记录里的标签；这个是挑素材请求失败后原样再发一次。
 // 混用会出事：重试那一笔会被当成一次全新的挑素材失败，
-// 素材调用日志里就出现两行一模一样的"第N轮 请求失败"，
+// 素材调用运行时就出现两行一模一样的"第N轮 请求失败"，
 // 看着像失败了两轮，其实是同一轮发了两次。
 static bool g_stageFixIsPickRetry = false;
 //
-// ---- 【请求失败的原始原因】
+// ---- 请求失败的原始原因
 //
-// r.err 以前只进 AppLog（状态栏 / 调试输出），不落盘。
-// 于是日志里只剩一句"请求失败"，至于是超时、限流还是连不上，
+// r.err 早期版本只进 AppLog（状态栏 / 调试输出），不落盘。
+// 于是运行时只剩一句"请求失败"，至于是超时、限流还是连不上，
 // 事后无从判断——只能靠猜，猜错就把人往 prompt 上引。
 static std::wstring g_stageFixErr;
 // HTTP 状态码。429（限流）跟 500（服务端炸）的修法完全不同：
@@ -22973,16 +22247,14 @@ static void RefreshTitleBgm();
 // 定义在文件后面（要用到 BgAcceptNow 那套清单），
 // 但"挑素材失败"和"挑到了"两条结束路径都要调它，所以先声明。
 static void PullBgIntoChapterPool();
-
-// 【SLOT_BGM 里真正占着位置的那首曲子的路径】
+// SLOT_BGM 里真正占着位置的那首曲子的路径
 //
 // 这是全项目唯一的 BGM 判重依据。所有"要不要换曲"的判断都跟它比。
 //
-// 【为什么只能有一个变量】
-// 原来这里有三份缓存并存：
-//   g_lastBgm    剧本模式的"上次播的"
-//   a.lastDirBgm 导演模式的"上次播的"
-//   g_bgmNow     "槽里实际是什么"
+// 为什么只能有一个变量
+// g_lastBgm 剧本模式的"上次播的"
+// a.lastDirBgm 导演模式的"上次播的"
+// g_bgmNow "槽里实际是什么"
 // 前两份是"打算播什么"，第三份才是"槽里真的是什么"。
 // 而主页曲和游戏曲共用 SLOT_BGM —— 回标题时主页曲把游戏曲顶掉了，
 // 前两份缓存却完全不知道，于是再进游戏时判定"路径没变"直接跳过，
@@ -23027,13 +22299,13 @@ static bool SaidTaskPrompt(const std::wstring& say);   // 她这句话是不是�
 static bool SaidFillInTask(const std::wstring& say);   // 是不是【要他填空的】正式题面（区别于口头小练习）
 static bool SaidChoiceTask(const std::wstring& say);   // 是不是【把本章这道选择题摆出来了】（题改成选择题后必须有它，否则开考永不触发）
 //
-// 【硬判据单独拆出来——这一轮日志的教训】
+// 硬判据单独拆出来
 // 她讲课时随口问了句「哪个是在声明指针、哪个是在解引用？」，
 // 那句话里没有题库任何一个选项的原文（硬判据=0），
 // 却因为含「哪个是」被软判据认成了"她把选择题摆出来了"，
-// 引擎立刻开考，按钮上摆的是「交换两个整数」——
+// 引擎立刻开考，按钮上摆的是「交换两个整数」
 // 她问的是 A，考的是 B，她那句提问再也没人回答。
-// 所以【只有硬判据能压过"先让他答"】，软判据不能。
+// 所以只有硬判据能压过"先让他答"，软判据不能。
 static bool SaidChoiceTaskHard(const std::wstring& say);   // 只认选项原文指纹（不含"选哪个"这类措辞）
 static std::wstring BuildResumeKick();   // 读档后的接话提示（按当前阶段分别措辞）
 static void DirResumeAfterLoad(bool silent);  // 读档后让她接上话（三处入口共用，笔记没到就挂起）
@@ -23067,8 +22339,8 @@ static void FlowJumpTo(int slotIdx, int chapter, HWND hwnd);
 void GoScreen(Screen s) {
     App& a = g_app;
     //
-    // 【切换前的界面要先存下来】
-    // 下面判断"是不是刚从别处回到标题"要用它——
+    // 切换前的界面要先存下来
+    // 下面判断"是不是刚从别处回到标题"要用它
     // 而 a.ui.screen 在这一行就会被改成新值，
     // 等到进到 Title 分支时再读它，读到的已经是 Title 自己了，
     // 判据恒假，作废逻辑一次都不会执行。
@@ -23081,28 +22353,28 @@ void GoScreen(Screen s) {
     // 它们是"标题页的延伸"，换曲会很突兀。
     if (s == Screen::Title) {
         //
-        // ---- 【回到标题 = 离开这一局】
+        // ---- 回到标题 = 离开这一局
         //
-        // 【这就是"退出到主页以后，后台还在加载，最后把玩家强行拉回游戏"的根因】
+        // 这就是"退出到主页以后，后台还在加载，最后把玩家强行拉回游戏"的根因
         // 开新局 / 读档时笔记是后台生成的，画面和台词一起挂起等它
         // （pendingStage = true，屏幕上是空舞台 + "她在翻笔记"）。
-        // 玩家没等它回来就退到主页，而回标题只切了界面——
+        // 玩家没等它回来就退到主页，而回标题只切了界面
         // 那笔请求还在飞，pendingStage 也还是 true。
         // 等它跑完：KickOff 照常 ApplyStageChange，然后 GoScreen(Play)
         // 把玩家从主页拽回游戏里。他不点任何东西就被送了回去。
         //
-        // 修法不是在各条消息里挨个判断"还在不在游戏里"——
-        // 那正是"改一处忘一处"的温床（本项目已经栽过四次）。
+        // 修法不是在各条消息里挨个判断"还在不在游戏里"
+        // ★ 两处都要同步。
         // 回标题这件事本身就意味着这一局结束了，
-        // 于是把作废动作收口到【界面切换】这一处：
-        //   · ++chatGen / ++assetBriefGen —— 在飞的结果回来时因代号对不上被丢弃
-        //   · pendingStage / pendingKick 清空 —— 没有等待中的开场了
-        //   · 半截流式正文、状态栏提示一并清掉
+        // 于是把作废动作收口到界面切换这一处：
+        // · ++chatGen / ++assetBriefGen —— 在飞的结果回来时因代号对不上被丢弃
+        // · pendingStage / pendingKick 清空 —— 没有等待中的开场了
+        // · 半截流式正文、状态栏提示一并清掉
         // 所有异步分支本来就有代号判断，一处生效，处处生效。
         //
-        // 只在【真的从别处切过来】时做：启动时本来就在 Title，
+        // 只在真的从别处切过来时做：启动时本来就在 Title，
         // 而那时临界区还没初始化（AbortAsync 要进临界区）。
-        // 判据用的是切换【之前】的界面（prev）——
+        // 判据用的是切换之前的界面（prev）
         // a.ui.screen 此时已经等于 s 了，拿它比等于没比。
         if (prev != Screen::Title) {
             AppLog(L"[标题] 离开这一局：作废还在飞的对话 / 笔记请求");
@@ -23116,16 +22388,16 @@ void GoScreen(Screen s) {
         for (size_t i = 0; i < a.slots.size(); ++i) if (a.slots[i].used) { any = true; break; }
         a.ui.hasSaveData = any;
         //
-        // 【每次来到主页都重放入场动画】
+        // 每次来到主页都重放入场动画
         // 插画淡入 -> 菜单从左弹出 -> 立绘从下升起（见 DrawTitleScreen）。
-        // 记的是"切换到标题的那一刻"，进度由 NowMs() - titleEnterMs 算出来，
+        // 记的是"切换到标题的那一刻"，进度由 NowMs - titleEnterMs 算出来，
         // 所以从游戏 / 设置 / 选角任何一处退回来，动画都会重新演一遍。
         a.ui.titleEnterMs = NowMs();
         //
-        // 【每次回主页都重读一次配色】
+        // 每次回主页都重读一次配色
         // g_titlePalLoaded 原来只在进程里置一次、永不重置，
-        // 于是改完 assets\title\主页配色.ini 之后必须【重启程序】才看得到效果。
-        // 这是本项目最讨厌的那类失效：不报错、不提示，只是"我明明改了却没反应"。
+        // 于是改完 assets\title\主页配色.ini 之后必须重启程序才看得到效果。
+        // ★ 失效时不报错、不提示。
         // 玩家调色调到一半、每次改一个数都要重启一遍，根本调不动。
         // 这里回主页就重载一次（一个几 KB 的 ini，读一次的开销可以忽略）。
         g_titlePalLoaded = false;
@@ -23137,7 +22409,7 @@ void GoScreen(Screen s) {
     // 命名态同理：切走就收掉，否则 EDIT 控件会停在角色卡页那个框的位置上
     if (s != Screen::CharCard) a.ui.newCharName = false;
     //
-    // 【进素材页：孤儿注解"先提醒、下一次才清"】
+    // 进素材页：孤儿注解"先提醒、下一次才清"
     // CardRefresh 每次刷新只点名（commit=false），名字放在 a.ui.orphanNames。
     // 第一次进来：只显示，给作者一次"先去把图补上"的机会。
     // 再进一次：才真的从 char.ini 里删掉。
@@ -23191,31 +22463,29 @@ static HFONT  g_hFontCode      = nullptr;   // 代码编辑器（等宽）
 // FIXED_PITCH(1) | FF_MODERN(48) = 49 等宽；雅黑用 0（默认）。
 static const BYTE kPitchModern  = 49;
 static const BYTE kPitchDefault = 0;
-
 // 路径分两类，别混：
 //
-//  · 进度 / 记忆 / 画像  → 按【存档槽】分。它们是一个周目的状态，
-//    读哪个槽就该看到哪个槽里的她。否则读槽2却带着槽1的记忆，
-//    "她记得你讨厌递归"会凭空冒出来。
-    //  · 每个角色自己的东西（记忆）→ 按【角色】分，换槽不该串。
+// · 进度 / 记忆 / 画像 → 按存档槽分。它们是一个周目的状态，
+// 读哪个槽就该看到哪个槽里的她。否则读槽2却带着槽1的记忆，
+// "她记得
+    // · 每个角色自己的东西（记忆）→ 按角色分，换槽不该串。
 //
-// 槽位编号直接进文件名（save_s3.json），所以不需要"角色 id 消毒"那一步——
+// 槽位编号直接进文件名（save_s3.json），所以不需要"角色 id 消毒"那一步
 // 编号是 int，拼不出路径分隔符。
-
 // ---------------------------------------------------------------- 存档搬迁
 //
-// 【为什么要有这一段】
-// 存档原来写在 %APPDATA%\YourReality 下，现在全部并到 exe 旁边的 data。
+// 为什么要有这一段
+// 存档
 // 直接换路径的话，玩家一升级就"进度没了"——文件其实还在漫游目录里，
 // 只是程序不再去那儿读了。所以启动时搬一次：
-//   目标位置已经有了 → 不动（以 data 里的为准，那是最新的）
-//   目标位置没有、旧的在 → 复制过去，【复制成功就删掉旧的】
+// 目标位置已经有了 → 不动（以 data 里的为准，那是最新的）
+// 目标位置没有、旧的在 → 复制过去，复制成功就删掉旧的
 //
-// 【这一行原来是"搬完不删旧的，留个退路"——那是幽灵存档的根因】
+// 这一行
 // 旧副本一直躺在 %APPDATA% 里，而 DeleteSlot 只清 data：
 // 玩家删掉槽 N → data 里的 save_sN.json 没了 → 下次启动搬迁发现
 // "appDir 有、data 没有" → 又复制一份回来 → 槽 N 又有内容了。
-// 而且复制回来的还是【搬迁那一刻】的老数据，比复活更像见鬼：
+// 而且复制回来的还是搬迁那一刻的老数据，比复活更像见鬼：
 // 玩家刚删掉的进度原样回来，删多少次都没用。
 // 现在改成搬完即删（复制失败才留着，那才是真需要退路的时候）。
 static void MigrateOneSaveFile(const std::wstring& oldPath,
@@ -23237,7 +22507,7 @@ static void MigrateSavesFromAppData() {
     App& a = g_app;
     if (a.dataDir.empty()) return;
     //
-    // 【appDir 搬到 exe 旁边之后，%APPDATA% 那份仍在原地】
+    // appDir 搬到 exe 旁边之后，%APPDATA% 那份仍在原地
     // 这一趟搬的是"老版本存在漫游目录里的存档"，所以源必须是真正的
     // %APPDATA%\YourReality，不能拿 a.appDir 当源——它现在是 exe 目录，
     // 里面压根没有 save_*.json，照旧写法这一趟等于什么都没做。
@@ -23261,15 +22531,12 @@ static void MigrateSavesFromAppData() {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// 【改名搬迁：%APPDATA%\CodeSenpai -> %APPDATA%\YourReality】
-// 目录名一改，程序就去新目录找 config.ini，找不到就要重填 API Key——
+// 改名搬迁：%APPDATA%\CodeSenpai -> %APPDATA%\YourReality
+// 目录名一改，程序就去新目录找 config.ini，找不到就要重填 API Key
 // 而 Key 就在 config.ini 里。所以改名必须带这一步搬迁，否则等于丢设置。
 // 做法跟当年"存档从 appDir 搬进 data"是同一个：目标没有、旧的有 -> 复制过去。
-// 复制成功才允许继续（旧副本保留，让玩家自己确认没问题再手动删——
+// 复制成功才允许继续（旧副本保留，让玩家自己确认没问题再手动删
 // 设置和角色包不像存档那样可以重来，删错了就真没了）。
-// ---------------------------------------------------------------------------
 static std::wstring GetOldAppDataDir() {
     wchar_t buf[MAX_PATH] = { 0 };
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf)))
@@ -23280,7 +22547,7 @@ static std::wstring GetOldAppDataDir() {
 static void MigrateConfigFromOldAppData() {
     App& a = g_app;
     //
-    // 【appDir 从 %APPDATA% 搬到 exe 旁边之后，原来那几份还在漫游目录里】
+    // appDir 从 %APPDATA% 搬到 exe 旁边之后，
     // config.ini 里存着 API Key，丢了就要重新填。
     // 所以这里要搬的不止"改名前的 CodeSenpai"，还得加上"改位置前的
     // %APPDATA%\YourReality"——那才是当前这一版真正会留下的地方。
@@ -23319,29 +22586,26 @@ static std::wstring SafeDirNameOf(const std::wstring& id) {
     while (!r.empty() && r.front() == L' ') r.erase(r.begin());
     return r.empty() ? L"_default" : r;
 }
-
-// ---------------------------------------------------------------------------
-// 【存档进角色目录：data\save_s1.json -> data\<角色>\save_s1.json】
+// 存档进角色目录：data\save_s1.json -> data\<角色>\save_s1.json
 //
-//  存档改成按角色分目录之后，dataDir 指向 data\<角色>\，而 ScanSlots 【只扫
-//  这一个目录】。于是改版之前存在 data 根目录里的那些档，一个都扫不到——
-//  它们没坏也没丢，只是待在了一个程序再也不去看的地方。
+// 存档改成按角色分目录之后，dataDir 指向 data\<角色>\，而 ScanSlots 【只扫
+// 这一个目录】。于是改版之前存在 data 根目录里的那些档，一个都扫不到
+// 它们没坏也没丢，只是待在了一个程序再也不去看的地方。
 //
-//  症状很骗人：存档页干干净净，9 个槽全空，【不报错也不提示】。
-//  玩家只会说"读不到已有的存档"，根本想不到是目录多了一层。
-//  更糟的是这时开一局新游戏，新档写进 data\<角色>\——
-//  老的还在、新的也在，但老的永远看不见。
+// 症状很骗人：存档页干干净净，9 个槽全空，不报错也不提示。
+// 玩家只会说"读不到已有的存档"，根本想不到是目录多了一层。
+// 更糟的是这时开一局新游戏，新档写进 data\<角色>\
+// 老的还在、新的也在，但老的永远看不见。
 //
-//  【为什么不能照搬 MigrateOneSaveFile 那套】
-//  那一次的目标目录是固定的（data 根目录），而这一次的目录取决于
-//  【每一份存档自己记的 charId】——不读文件就不知道该往哪儿放。
-//  所以先解析 save_sN.json 取出 charId，再按它拼目标目录。
+// 为什么不能照搬 MigrateOneSaveFile 那套
+// 那一次的目标目录是固定的（data 根目录），而这一次的目录取决于
+// 每一份存档自己记的 charId——不读文件就不知道该往哪儿放。
+// 所以先解析 save_sN.json 取出 charId，再按它拼目标目录。
 //
-//  【取不到 charId 就原样留着】
-//  猜一个目录塞进去比不动更危险：放错等于把存档藏进一个谁也不会去看的
-//  文件夹。留在根目录至少还会被 SlotRejectReason 点名
-//  （"这份存档还在旧位置……请把它移进 data\xxx\"），玩家照着提示自己挪就行。
-// ---------------------------------------------------------------------------
+// 取不到 charId 就原样留着
+// 猜一个目录塞进去比不动更危险：放错等于把存档藏进一个谁也不会去看的
+// 文件夹。留在根目录至少还会被 SlotRejectReason 点名
+// （"这份存档还在旧位置……请把它移进 data\xxx\"），玩家照着提示自己挪就行。
 static std::wstring SaveSlotCharId(const std::wstring& savePath) {
     std::string u8;
     if (!ReadFileU8(savePath, u8)) return L"";
@@ -23351,23 +22615,20 @@ static std::wstring SaveSlotCharId(const std::wstring& savePath) {
     if (cid.empty()) cid = W(root.getStr("char"));   // 更老的版本用的是 "char"
     return cid;
 }
-
-// ---------------------------------------------------------------------------
-// 【data 根目录 -> 角色目录 的搬迁】
+// data 根目录 -> 角色目录 的搬迁
 //
-// 【实测现象："读不到已有的存档"，根因就在这里】
+// 实测现象："读不到已有的存档"，根因就在这里
 // 存档改成"一个角色一个文件夹"之后，ScanSlots 只在 data\<当前角色> 里扫。
-// 而改成这个结构【之前】存的档还躺在 data 根目录（save_s1.json 等）——
+// 而改成这个结构之前存的档还躺在 data 根目录（save_s1.json 等）
 // 于是它们根本不出现在扫描范围内：存档页显示 9 个空槽，
-// 玩家看到的就是"我的档没了"，而程序不说一句话。
 //
 // 更糟的是 SlotRejectReason 里那条「这份存档还在旧位置（data 根目录）」
 // 因此成了死代码：它假定扫描会看到根目录的档，而扫描从来不去那儿看。
 // 结果就是"提示写了，但它永远不会出现；档也永远读不到"。
 //
 // 所以启动时搬一次：按存档自己记的 charId 搬进 data\<角色>\。
-//   · 目标位置已经有了 -> 不动（以角色目录里的为准，那才是最新的）
-//   · charId 读不出来   -> 不动，只记日志（不猜它属于谁，猜错就是串味）
+// · 目标位置已经有了 -> 不动（以角色目录里的为准，那才是最新的）
+// · charId 读不出来 -> 不动，只记日志（不猜它属于谁，猜错就是串味）
 static void MigrateSavesToCharDirs() {
     App& a = g_app;
     if (a.dataRoot.empty()) return;
@@ -23411,13 +22672,12 @@ static void MigrateSavesToCharDirs() {
                    tag.c_str(), moved, SafeDirNameOf(cid).c_str());
     }
 }
-
 // 把 dataDir 指到当前角色自己的文件夹，并重扫存档槽。
 //
-// 【必须在 ApplySlotPaths 之前调用】顺序反了的话，
+// 必须在 ApplySlotPaths 之前调用顺序反了的话，
 // save_/memory_/profile_ 的路径会先按旧目录算出来，指向不存在的文件。
 //
-// 【为什么不在启动时一次性算好】
+// 为什么不在启动时一次性算好
 // 角色会变：config 的 LastChar 恢复一个、读档时 arch 里的 charId 又可能换一个、
 // 玩家在角色页自己选一个。每次换角色，存档目录都得跟着走。
 static void SetCharDataDir() {
@@ -23432,7 +22692,7 @@ static void SetCharDataDir() {
     // 槽位列表是按目录扫出来的，目录换了列表必须重扫，
     // 否则存档页还显示上一个角色的槽。
     //
-    // 【只在目录真的变了才扫】调用方可能正拿着 a.slots 里的元素，
+    // 只在目录真的变了才扫调用方可能正拿着 a.slots 里的元素，
     // 无条件重扫会让它在中途失效。
     ScanSlots();
 }
@@ -23444,28 +22704,27 @@ void ApplySlotPaths(int slot) {
     a.curSlot = slot;
     std::wstring tag = L"s" + WFromInt(slot);
     //
-    // 【存档只放 data（exe 旁边），不再放 %APPDATA%\YourReality】
+    // 存档只放 data（exe 旁边），不再放 %APPDATA%\YourReality
     // 原来 save_/memory_/profile_ 三份写在漫游目录（appDir）里，
-    // 而给人看的那两份（存档_sN.json / 对话_sN.txt）在 exe 旁边的 data 里——
+    // 而给人看的那两份（存档_sN.json / 对话_sN.txt）在 exe 旁边的 data 里
     // 一个周目的存档被劈成两处，玩家打开"存档目录"看到的是那堆
     // 二进制式的 json，而自己想找的对话记录在另一个地方。
     // 现在全部并进 data：一个周目 = 一个文件夹。
     //
-    // 【再往下分一层：一个角色 = data\<角色id> 一个文件夹】
+    // 再往下分一层：一个角色 = data\<角色id> 一个文件夹
     // 多角色包共用一个 data 时，槽位会被别的角色占着、素材调用日志
-    // 和打回记录互相覆盖。dataDir 由 SetCharDataDir() 指向当前角色的
+    // 和打回记录互相覆盖。dataDir 由 SetCharDataDir 指向当前角色的
     // 文件夹，槽号只在本角色内编号（每个角色各有自己的 s1..sN）。
     // 启动日志仍在 dataRoot——它不属于任何角色。
-    // config.ini / 角色包跟着 appDir 走（那是设置和素材，不是存档）——
+    // config.ini / 角色包跟着 appDir 走（那是设置和素材，不是存档）
 // 而 appDir 现在就是 exe 所在目录，所以它们也在 Debug 里，不在漫游目录。
     a.savePath = PathJoin(a.dataDir, L"save_"    + tag + L".json");
     a.memPath  = PathJoin(a.dataDir, L"memory_"  + tag + L".json");
     a.profPath = PathJoin(a.dataDir, L"profile_" + tag + L".json");
 }
-
 // 切周目 / 读档前调用：让所有在飞的异步任务结果作废。
 //
-// 【不这么做会怎样】
+// 不这么做会怎样
 // 玩家在她思考（或判题中）时按 Esc 读档，旧线程晚几秒回来，
 // OnChatDone 照常执行 —— 于是新读出来的存档被上一局的回复覆盖，
         // 章节进度、记忆全都串了味。
@@ -23473,7 +22732,7 @@ void ApplySlotPaths(int slot) {
 // 开新一句台词：清空打字机 / 分页的全部状态。
 //
 // 原来调用方在外面手抄三行（textShown=0 / ResetTextState / textDone=false），
-// 全项目 14 处重复且顺序不一。抄漏一行就是"上一句状态渗到下一句"——
+// 全项目 14 处重复且顺序不一。抄漏一行就是"上一句状态渗到下一句"
 // 典型表现：新台词不打字，或 textPageAtEnd 残留导致"下一句"三角不出现。
 //
 // 字段清单对应 render.h RenderState 里的分页字段，加字段要同步加到这里。
@@ -23487,10 +22746,10 @@ static void ResetTextState(App& a) {
     a.rs.textTotalChars  = 0;
     a.textAcc            = 0;      // 打字机时间累加器，新句子必须从头走
     //
-    // ---- 【新句子 = 上一句的第二个表情作废】
+    // ---- 新句子 = 上一句的第二个表情作废
     //
     // 不清的话她这一句已经翻页切过一次脸，下一句开口时画面还挂着
-    // 上一句后半段那张——玩家看到的是"新台词配着上一句的余韵"。
+    // 上一句后半段那张
     a.pose1Name.clear();  a.pose1Path.clear();
     a.pose2Name.clear();  a.pose2Path.clear();
     a.pose2Switched  = false;
@@ -23501,7 +22760,7 @@ static void ResetTextState(App& a) {
     //
     // 玩家一路点跳过时换脸那条路可能没走到，背景会卡在旧地方。
     // 开新一句前先把它落地，免得"上一句的换场"永远不发生。
-    // 【这里不调 FlushBeatBg】：它定义在本函数之后，直接内联同样的两步。
+    // 这里不调 FlushBeatBg：它定义在本函数之后，直接内联同样的两步。
     if (!a.bgBeatName.empty() && !a.bgBeatDone) a.dirCurBg = a.bgBeatName;
     a.bgBeatName.clear();
     a.bgBeatOld.clear();
@@ -23527,10 +22786,9 @@ static void AbortAsync() {
     g_chatErr.clear();
     g_chatFinishReason.clear();
     LeaveCriticalSection(&a.cs);
-
-    // 【半成品正文不能留】
+    // 半成品正文不能留
     // 流式回复期间 a.view.body 存的是模型已收到的那半截 JSON。
-    // 作废任务时只清了 g_chatFull（缓冲），view.body 里那份没人管——
+    // 作废任务时只清了 g_chatFull（缓冲），view.body 里那份没人管
     // 于是它会被当成"当前台词"继续显示/打字。
     // 读档（LoadFromSlot）就走这条路径，表现为对话框里出现 {"say":... 原文。
     // 这里统一清掉，读档那边的清理是第二道保险。
@@ -23551,16 +22809,15 @@ static void AbortAsync() {
     g_statusText.clear();
     g_statusTimer = 0;
 }
-
 // ---- 槽位扫描
 //
 // 存档界面要显示每个槽"是谁、第几章、什么时候存的"，
 // 所以每次打开界面时把 9 个槽的 save json 各读一遍头部字段。
-// 槽位少（9 个）且只在开界面时读一次，不值得为此维护一份索引文件——
+// 槽位少（9 个）且只在开界面时读一次，不值得为此维护一份索引文件
 // 索引会和存档不同步，反而是 bug 来源。
 // 按 id 在剧本清单里找一本。找不到 = 那一本已经不在了（被删 / 改名）。
 //
-// 存档卡片要显示"第几章 / 第几幕"，而单位取决于【存档当时那一本】是课程还是剧情。
+// 存档卡片要显示"第几章 / 第几幕"，而单位取决于存档当时那一本是课程还是剧情。
 // 用当前这一本去解释别人的存档，会把课程进度写成"第3幕"。
 static const SyllabusPack* SyllabusPackById(const std::wstring& id) {
     if (id.empty()) return nullptr;
@@ -23579,7 +22836,7 @@ static std::wstring SlotChapterText(const App& a, const ck::JValue& root) {
     if (a.dirMode) {
         int ch = (int)root.getNum("dirChapter", 1);
         //
-        // 【章节名只在这一本 = 当前这一本时才显示】
+        // 章节名只在这一本 = 当前这一本时才显示
         // 存档记的是它自己那一本的章号。拿当前大纲去查别人的章号，
         // 查出来的名字是张冠李戴（角色B剧情第 3 幕的名字安到 C 语言第 3 章上）。
         // 宁可只显示序号，也不要显示一个错的名字。
@@ -23603,32 +22860,29 @@ static std::wstring SlotChapterText(const App& a, const ck::JValue& root) {
     }
     return s;
 }
-
-// ---------------------------------------------------------------------------
-// 【存档合法性：能读才让读，读不了就把原因写明白】
+// 存档合法性：能读才让读，读不了就把原因写明白
 //
-// 下面这些状态在【正常操作下根本不会出现】——全是绕过界面手动动文件才造得出来：
+// 下面这些状态在正常操作下根本不会出现——全是绕过界面手动动文件才造得出来：
 //
-//   · 新程序读老档（老档里没有 syllabusId 那一项）
-//   · 把 save_s1.json 从 data\角色A 拷进 data\角色B（手动改 json 里那个字段也一样）
-//   · 存档记的那一本剧本被删了 / 改名了
-//   · 存档里的角色包被删了，或者被解绑了
+// · 新程序读老档（老档里没有 syllabusId 那一项）
+// · 把 save_s1.json 从 data\角色A 拷进 data\角色B（手动改 json 里那个字段也一样）
+// · 存档记的那一本剧本被删了 / 改名了
+// · 存档里的角色包被删了，或者被解绑了
 //
 // 早先对它们的处理是"尽量凑合着读"——切个角色、退回个剧本、章号夹一下。
 // 凑合的代价是错得更隐蔽：程序照常跑、章号合法、角色也在，
 // 只是她开口讲的东西跟进度、对话历史、关系曲线完全不是一回事。
 // 玩家往往玩到一半才发现不对，那时已经分不清是哪一步错的了。
 //
-// 所以现在改成：扫描时就把它们认出来，界面上写明原因，并拒绝这次读取。
+// 所以扫描时就把它们认出来，界面写明原因并拒绝读取。
 // 宁可让玩家知道"这份档读不了、坏在哪"，也不要让他玩一半才发现内容不对。
 //
-// 【为什么只有这一个函数】
-// 三个读档入口（存档页 / 流程图跳章 / 继续上次）原来各判各的——
+// 为什么只有这一个函数
+// 三个读档入口（存档页 / 流程图跳章 / 继续上次）原来各判各的
 // "流程图做了、存档页漏了"这种事已经真实发生过一次。
 // 收回单一判据之后，所有入口自动一致，不会再有第二处漏掉。
 //
-// 返回空串 = 可以读；非空 = 禁止读，内容直接弹给玩家看。
-// ---------------------------------------------------------------------------
+// 返回空串 = 可以读；非空 = 禁止读，内容直接弹给
 static std::wstring SlotRejectReason(const SaveSlotInfo& si) {
     App& a = g_app;
 
@@ -23641,24 +22895,23 @@ static std::wstring SlotRejectReason(const SaveSlotInfo& si) {
     if (a.chars.IsHidden(si.charId))
         return L"角色「" + CharDisplayName(si.charId) + L"」已经解绑了。"
                L"去「角色卡 → 已解绑」里重新绑定就能读。";
-
     // ---- ② 存档放错地方了
     //
-    //  存档按角色分目录之后，一个目录里只该有它自己那个角色的档。
-    //  出现别人的档只有一种可能：手动拷过去的。
-    //  它跟"读档时按 charId 切角色"那条逻辑一叠加就特别坏——
-    //  点的是角色B目录里的槽 1，读出来的却是角色A目录里的槽 1。
+    // 存档按角色分目录之后，一个目录里只该有它自己那个角色的档。
+    // 出现别人的档只有一种可能：手动拷过去的。
+    // 它跟"读档时按 charId 切角色"那条逻辑一叠加就特别坏
+    // 点的是角色B目录里的槽 1，读出来的却是角色A目录里的槽 1。
     //
-    // 【dataDir 还挂在根目录 -> 不拦，更不许报"还在旧位置"】
+    // dataDir 还挂在根目录 -> 不拦，更不许报"还在旧位置"
     //
-    //  走到这里说明当前【没有选定角色】（角色全被解绑了 / 角色包没扫到 /
-    //  SafeDirNameOf 退化成 _default），于是 dataDir 没能切进角色文件夹。
-    //  这时把档一律说成"还在旧位置，请移进 data\X\"是彻头彻尾的误导：
-    //  玩家照着去搬文件，搬完还是读不了——因为真正的原因是角色没选上，
-    //  而上面 ① 那条已经按角色状态把原因写清楚了。
+    // 走到这里说明当前没有选定角色（角色全被解绑了 / 角色包没扫到 /
+    // SafeDirNameOf 退化成 _default），
+    // 这时把档一律说成"还在旧位置，请移进 data\X\"是彻头彻尾的误导：
+    // 玩家照着去搬文件，搬完还是读不了——因为真正的原因是角色没选上，
+    // 而上面 ① 那条已经按角色状态把原因写清楚了。
     //
-    //  在根目录里扫到的档本身是能读的：读档时会按它自己记的 charId 切过去。
-    //  所以这里不重复拦一道。
+    // 在根目录里扫到的档本身是能读的：读档时会按它自己记的 charId 切过去。
+    // 所以这里不重复拦一道。
     if (a.dataDir != a.dataRoot && si.charId != a.curChar)
         return L"这份存档是「" + CharDisplayName(si.charId) + L"」的，"
                L"但它躺在「" + CharDisplayName(a.curChar) + L"」的存档目录里——"
@@ -23667,14 +22920,14 @@ static std::wstring SlotRejectReason(const SaveSlotInfo& si) {
     // ---- ③ 剧本对不上（只管导演模式的档；剧本模式没有大纲）
     if (si.chapterNo >= 1) {
         // ★ 判"字段在不在"，不是判"值空不空"：值空 = 存它的时候就没有剧本
-        //   （assets\syllabus 下一本都没有），那是新档、能读；
-        //   字段不在 = 旧版本写的档，真的没记。
+        // （assets\syllabus 下一本都没有），那是新档、能读；
+        // 字段不在 = 旧版本写的档，真的没记。
         // ★ 没有 syllabusId 字段 ≠ 一定不能读。这个字段是"可以同时装好几本剧本"
-        //   之后才写的，在那之前存的档根本没有它——但那时也只有【一份】大纲，
-        //   压根不存在"用错剧本"的风险，按当前这一本读进去就是对的。
-        //   一律拒掉的后果很重：玩家"已有的存档"会永久读不了，
-        //   而提示还是一句跟他完全无关的话。
-        //   只有【现在装了不止一本】时才真的无法判断该用哪本，那才必须拦。
+        // 之后才写的，在那之前存的档根本没有它
+        // 压根不存在"用错剧本"的风险，按当前这一本读进去就是对的。
+        // 一律拒掉的后果很重：玩家"已有的存档"会永久读不了，
+        // 而提示还是一句跟他完全无关的话。
+        // 只有现在装了不止一本时才真的无法判断该用哪本，那才必须拦。
         if (!si.hasSyllabusId) {
             if (a.syllabusPacks.size() > 1)
                 return L"这份存档是旧版本存的，没记录用的是哪一本剧本；"
@@ -23683,9 +22936,9 @@ static std::wstring SlotRejectReason(const SaveSlotInfo& si) {
             // 0 本或 1 本：安全，按当前那本读。
         }
         //
-        // 【字段在、值是空 = 存它的时候就没装剧本，不是"剧本找不到了"】
+        // 字段在、值是空 = 存它的时候就没装剧本，不是"剧本找不到了"
         // 空 id 去查清单必然查不到（SyllabusPackById 对空 id 直接返回 nullptr），
-        // 于是"根本没装剧本"被报成"你用的那本剧本不见了"——
+        // 于是"根本没装剧本"被报成"
         // 提示跟事实无关，玩家照着它去翻 assets\syllabus 也翻不出东西。
         // 没装剧本是合法状态（那时大纲为空、章由别处定义），不该拦。
         if (!si.syllabusId.empty()) {
@@ -23719,17 +22972,16 @@ void App::PushHist(const std::wstring& speaker, const std::wstring& text, bool i
     hist.push_back(h);
     if (hist.size() > kHistMax) hist.erase(hist.begin(), hist.begin() + (hist.size() - kHistMax));
 }
-
 //
-// ---- 【存档槽的唯一安全访问入口】
+// ---- 存档槽的唯一安全访问入口
 //
-//  槽位下标来自界面状态（slotPick / flowSlot），而那些状态是【跨界面留存的】：
-//  换角色、删剧本、清数据都可能让槽列表在它们还没被重置的时候先变短。
-//  直接写 a.slots[idx] 就是把"列表长度恒等于 kSaveSlots"当成隐式契约——
-//  这个契约一旦被打破，Debug 下就是 vector subscript out of range 直接断言失败。
+// 槽位下标来自界面状态（slotPick / flowSlot），而那些状态是跨界面留存的：
+// 换角色、删剧本、清数据都可能让槽列表在它们还没被重置的时候先变短。
+// 直接写 a.slots[idx] 就是把"列表长度恒等于 kSaveSlots"当成隐式契约
+// 这个契约一旦被打破，Debug 下就是 vector subscript out of range 直接断言失败。
 //
-//  所以：所有读槽的地方一律走这里，越界返回 nullptr，由调用方决定怎么提示。
-//  不要再散着写 a.slots[...]。
+// 所以：所有读槽的地方一律走这里，越界返回 nullptr，由调用方决定怎么提示。
+// 不要再散着写 a.slots[...]。
 static const SaveSlotInfo* SlotAt(int idx) {
     App& a = g_app;
     if (idx < 0 || idx >= (int)a.slots.size()) return nullptr;
@@ -23768,7 +23020,7 @@ void ScanSlots() {
         //
         // ---- 流程图要用的路径 + 当前章号
         //
-        // 【章号为什么不从 si.chapter 那段文字里反解】
+        // 章号为什么不从 si.chapter 那段文字里反解
         // 那段是显示文本（"第3章 字符串"），剧本模式下还是别的格式。
         // 反解等于把显示格式当数据格式用——改一次文案就崩一次。
         si.path      = DecodeChapterPath(W(root.getStr("dirPath")));
@@ -23786,20 +23038,19 @@ void ScanSlots() {
         if (cd) si.charName = cd->DisplayName();
         else if (si.charName.empty()) si.charName = si.charId;
         //
-        // ---- 【读不了就当场认出来，别等到玩家点了才说】
+        // ---- 读不了就当场认出来，别等到玩家点了才说
         //
-        //  认出来之后卡片上直接写明原因，读取按钮按下去也只是把这段话再说一遍。
-        //  让它躺在列表里装作能读，玩家点一下才发现读不了，等于骗了一次点击。
+        // 认出来之后卡片上直接写明原因，读取按钮按下去也只是把这段话再说一遍。
+        // 让它躺在列表里装作能读，玩家点一下才发现读不了，等于骗了一次点击。
         si.reject = SlotRejectReason(si);
         a.slots.push_back(si);
     }
     // 列表刚被整个换掉：留着的下标可能已经越界，这里一并掰回来。
     ClampSlotUi();
 }
-
 // 最近玩过的那个槽（时间戳最大）。"继续上次"用它。
 //
-// 【跳过读不了的那些】
+// 跳过读不了的那些
 // 老档 / 拷错目录的档不该被"继续上次"挑中——挑中了也只是弹一句读不了，
 // 而玩家明明还有别的能读的档。跳过它们，"继续上次"才真的是继续。
 static int NewestSlot() {
@@ -23842,10 +23093,9 @@ void SelectChar(const std::wstring& id) {
     // 这里会重扫槽位，所以存档页立刻只剩这个角色自己的档。
     SetCharDataDir();
 }
-
 // ---- 记一轮用到的素材
 //
-// 【只记"这一轮真的用上了什么"，不记她填了什么】
+// 只记"这一轮真的用上了什么"，不记她填了什么
 // 她填了个被拒绝的瞎编名字时，画面其实没变——记进去会让"最近用过"
 // 的清单里出现从没显示过的素材，反而误导她。
 static void PushRecent(std::vector<std::wstring>& v, const std::wstring& s) {
@@ -23853,20 +23103,19 @@ static void PushRecent(std::vector<std::wstring>& v, const std::wstring& s) {
     v.push_back(s);
     if (v.size() > App::kRecentKeep) v.erase(v.begin(), v.begin() + (v.size() - App::kRecentKeep));
 }
-
-// ---- 【删素材之后，"最近用过"必须跟着清】
+// ---- 删素材之后，"最近用过"必须跟着清
 //
-// 【这是"随意减少素材"这条路径上唯一没接住的一环】
+// 这是"随意减少素材"这条路径上唯一没接住的一环
 //
 // 作者删掉一张立绘 / 一首曲子之后，白名单会重扫、笔记会作废重生成、
 // 锁定的场景也会解锁——可 recentPoses / recentBgs / recentBgms 里
 // 还留着那个已经不存在了的名字。两处拿它去做事，于是静默失效：
 //
-//   · 禁用名单：把【清单里根本没有的名字】当成"本轮禁用"推出去。
-//     而真正该禁的（她正在用的那一张）没被禁——换脸机制整个空转，
-//     作者看到的就是"删了素材之后，每一轮又都靠打回才能换脸"。
-//   · "最近用过"提示词：列出一个清单里没有的名字。她照着填回去，
-//     精确匹配失败、模糊匹配也低，于是被当成瞎编拒绝——每轮白打回一次。
+// · 禁用名单：把清单里根本没有的名字当成"本轮禁用"推出去。
+// 而真正该禁的（她正在用的那一张）没被禁——换脸机制整个空转，
+// 作者看到的就是"删了素材之后，每一轮又都靠打回才能换脸"。
+// · "最近用过"提示词：列出一个清单里没有的名字。她照着填回去，
+// 精确匹配失败、模糊匹配也低，于是被当成瞎编拒绝——每轮白打回一次。
 //
 // 两种情况都不报错，所以只能靠这里主动清。
 static void PruneRecentToWhitelist() {
@@ -23900,12 +23149,10 @@ static void PruneRecentToWhitelist() {
     AppLog((L"[素材热更新] 有 " + WFromInt(dropped)
           + L" 个最近用过的素材已经不在目录里，已清出记录").c_str());
 }
-
-// 取序列末尾最近的两个【不同】值。
+// 取序列末尾最近的两个不同值。
 //
-// 【专用在禁用名单上】她连用时末尾会堆着好几个相同的名字，
+// 专用在禁用名单上她连用时末尾会堆着好几个相同的名字，
 // 直接取末两个会拿到两个一样的，白占一个禁用名额。
-
 void App::NoteAssets(const std::wstring& pose, const std::wstring& bg, const std::wstring& bgm) {
     // streak 只按 pose 算：表情重复是最容易被玩家察觉的"呆板"，
     // 背景和音乐连续几轮不变反而正常（你们还在同一个地方聊）。
@@ -23922,26 +23169,25 @@ void App::NoteAssets(const std::wstring& pose, const std::wstring& bg, const std
     PushRecent(recentBgs,   bg);
     PushRecent(recentBgms,  bgm);
 }
-
 // ---- 素材白名单：生成 + 预校验 + 落盘
 //
-// 【这是"让大模型调用不出错"的根子】
+// 这是"让大模型调用不出错"的根子
 // 模型只能从这份名单里选，而名单里的每一项都已经过一遍真正的解析函数，
 // 保证"选了就能显示"。它选不中不存在的东西——因为名单里根本没有。
 //
-// 生成时机：开局 / 读档，以及【素材目录被动过时】自动重扫。
+// 生成时机：开局 / 读档，以及素材目录被动过时自动重扫。
 //
-// ---- 【热更新：作者中途增删素材，不用重开游戏】
+// ---- 热更新：作者中途增删素材，不用重开游戏
 //
-// 【这是"随意增删素材"最要紧的一环】
+// 这是"随意增删素材"最要紧的一环
 // 原来只认 whitelistReady：开局扫一次就锁死。作者玩到一半往
 // assets/bg/ 里丢一张新图，模型根本不知道有它——清单里没有，
-// 选不到，而且【不报任何错】。删掉图反过来更糟：清单里还留着名字，
+// 选不到，而且不报任何错。删掉图反过来更糟：清单里还留着名字，
 // 模型照选，解析不到，画面保持原样，表现为"她选了但没反应"。
 //
 // 现在每次取清单前比对一次目录指纹，变了就重扫。
 // 扫描就是列几个目录的文件名（几十个），比一次网络请求便宜得多；
-// 而【预校验】（每项过一遍解析函数）只在指纹真的变了时才做。
+// 而预校验（每项过一遍解析函数）只在指纹真的变了时才做。
 static void EnsureWhitelist(const wchar_t* why) {
     App& a = g_app;
 
@@ -23980,7 +23226,7 @@ static void EnsureWhitelist(const wchar_t* why) {
     a.whitelistReady = true;
     // 重扫之后立刻记下指纹，下一轮比对用。
     //
-    // 【口径必须跟上面比对时一致：都用【扫描结果】】
+    // 口径必须跟上面比对时一致：都用【扫描结果】
     // 若这里存白名单、上面比扫描结果，加了张解析不了的图就会
     // 每轮都判定"变了"→ 每轮重扫 + 每轮重生成笔记，白白烧请求。
     if (stamp.empty()) stamp = AssetSetKey(ScanVisibleAssets(a.Def(), a.assetDir));
@@ -24020,18 +23266,17 @@ static void EnsureWhitelist(const wchar_t* why) {
 
 // 素材变了（新建角色、加了图）时重来一次。
 static void InvalidateWhitelist() { g_app.whitelistReady = false; }
-
 // ---- 开场引导语（输入框上方那行）按角色包刷新
 //
-// 【这是"一进游戏就看见一句穿帮的话"的那处】
-// Director::Guide() 里原本写死「先认识一下吧 —— 问问她是谁，或者说说你自己」。
+// 这是"一进游戏就看见一句穿帮的话"的那处
+// Director::Guide 里原本写死「先认识一下吧 —— 问问她是谁，或者说说
 // 那是"初次见面"时代的文本。现在玩家身份固定在角色包里、两人是续集关系，
 // 玩家一点输入框就看到"先认识一下"——跟设定直接对不上。
 //
-// 这句话说的是【你们现在到哪一步】，属于角色包内容，不该写在引擎里。
-// 所以优先读 [Player] 提示；没写就按【有没有写 Relation】推：
+// 这句话说的是
+// 所以优先读 [Player] 提示；没写就按有没有写 Relation推：
 // 写了关系就不是初次见面，不能再叫玩家去"认识她"。
-// 换了个没配 [Player] 的角色包，退回原来的初次见面措辞——绝不猜。
+// 换了个没配 [Player] 的角色包，退回
 static void SyncIntroGuide() {
     App& a = g_app;
     const CharDef* d = a.Def();
@@ -24041,11 +23286,11 @@ static void SyncIntroGuide() {
     }
     if (d && !d->playerRelation.empty()) {
         //
-        // ---- 【剧情模式里没有"课"，这句话整个是穿帮的】
+        // ---- 剧情模式里没有"课"，这句话整个是穿帮的
         //
-        // 玩家点开输入框，头顶上挂着"说说为什么选这门课"——
+        // 玩家点开输入框，头顶上挂着"说说为什么选这门课"
         // 而他正在演的是角色B那条世界线，根本没有课。
-        // 这句话说的是"你们现在到哪一步"，剧情里就该说剧情的事。
+        // 这句话说的是"
         if (a.dir.Syl().isStory) {
             a.dir.SetIntroGuide(
                 L"这一幕还没正式开始，随便聊两句吧 —— 说说刚才的事，或者你现在的样子");
@@ -24059,18 +23304,14 @@ static void SyncIntroGuide() {
         ? L"随便聊两句吧 —— 问问她刚才在想什么，或者说说你自己"
         : L"先认识一下吧 —— 问问她是谁，或者说说你自己");
 }
-
-// ---------------------------------------------------------------------------
-// 【剧本里写的素材名，跟目录对一次账】
+// 剧本里写的素材名，跟目录对一次账
 //
-//  大纲每一章可以指定 Bg（进章背景）和 Bgm（开场曲）。名字对不上目录里的文件时，
-//  原来的表现是【完全静默】：她不去那个地方、画面沿用上一幕、日志什么都不写。
-//  作者看到的是"这一章怎么没换场景"，而原因其实是文件名差了一个字
-//  （"学园中庭" vs "学院中庭"、"黑猫咖啡馆" vs "黑猫咖啡馆_黄昏"）。
+// 大纲每一章可以指定 Bg（进章背景）和 Bgm（开场曲）。名字对不上目录里的文件时，
+// 作者看到的是"这一章怎么没换场景"，而原因其实是文件名差了一个字
+// （"学园中庭" vs "学院中庭"、"咖啡馆" vs "咖啡馆_黄昏"）。
 //
-//  这条 P0 不是"越界操作"，它在正常写作中就会出现——所以它的处理是【报】，
-//  不是【拒】：剧本照常跑，只是把对不上的那几处指出来，让作者一眼看到。
-// ---------------------------------------------------------------------------
+// 这条 P0 不是"越界操作"，它在正常写作中就会出现——所以它的处理是报，
+// 不是拒：剧本照常跑，只是把对不上的那几处指出来，让作者一眼看到。
 static void CheckSyllabusAssetNames() {
     App& a = g_app;
     if (!a.dirMode) return;
@@ -24100,28 +23341,24 @@ static void CheckSyllabusAssetNames() {
            L"她不会去那些地方／不会放那首曲子，画面沿用上一个。去素材页核对文件名",
            bad, first.c_str());
 }
-
-// ---------------------------------------------------------------------------
-//  开新周目 / 读档之前，把"这一局界面上的状态"整份归零
+// 开新周目 / 读档
 //
-//  【这是"开了新存档，画面上却还是上一局那道题"的根因】
-//  BeginStory 以前只清了跟【存档内容】有关的东西（hist、mem、view.body…），
-//  而【界面状态】散在 RenderState / view 里：quizMode、inputMode、inputGuide、
-//  candoOpts、codeMode、showChoices…一个都没清。
+// 这是"开了新存档，画面上却还是上一局那道题"的根因
+// BeginStory 早期版本只清了跟存档内容有关的东西（hist、mem、view.body…），
+// 而界面状态散在 RenderState / view 里：quizMode、inputMode、inputGuide、
+// candoOpts、codeMode、showChoices…一个都没清。
 //
-//  于是上一局最后停在"选择题等他点选项"时开新周目，quizMode 仍是 true：
-//    · 绘制层照旧把那几个选项画在对话框上方
-//    · 点击处理第一条就是 `if (a.rs.quizMode)`，点了只认选项、直接 return
-//  新周目那句开场问候其实已经生成好了，只是被这套残留界面盖着看不见——
-//  玩家看到的就是"新开了档，对话被继承下来了"，
-//  而且因为点哪都不动，很容易被当成"网络断了"。
+// 于是上一局最后停在"选择题等他点选项"时开新周目，quizMode 仍是 true：
+// · 绘制层照旧把那几个选项画在对话框上方
+// · 点击处理第一条就是 `if (a.rs.quizMode)`，点了只认选项、直接 return
+// 新周目那句开场问候其实已经生成好了，只是被这套残留界面盖着看不见
+// 而且因为点哪都不动，很容易被当成"网络断了"。
 //
-//  【为什么必须抽成一个函数】
-//  这些字段在十几个地方被赋值，靠 BeginStory 里逐条手写，
-//  将来加一个字段就漏一个——这正是这个项目反复出问题的模式
-//  （同一件事两处各写一遍，改一处忘一处）。
-//  现在只在这里写一遍，开新周目和读档共用。
-// ---------------------------------------------------------------------------
+// 为什么必须抽成一个函数
+// 这些字段在十几个地方被赋值，靠 BeginStory 里逐条手写，
+// 将来加一个字段就漏一个
+// （同一件事两处各写一遍，改一处忘一处）。
+// 现在只在这里写一遍，开新周目和读档共用。
 static void ResetRuntimeUi() {
     App& a = g_app;
     a.rs.quizMode       = false;
@@ -24140,6 +23377,10 @@ static void ResetRuntimeUi() {
     a.rs.progress       = -1.0f;
     a.rs.hoverBtn       = -1;
     a.rs.hoverNextDay   = false;
+    a.rs.showNextDay    = false;   // 出口状态一并归零：退出 Play 后主页不能还挂着提示行
+    a.rs.nextDayWait    = -1;
+    a.rs.nextDayWhy.clear();
+    a.rs.nextDayLabel.clear();
     ResetTextState(a);
     a.view.showChoices  = false;
     a.view.choiceTexts.clear();
@@ -24151,9 +23392,8 @@ static void ResetRuntimeUi() {
 
 void BeginStory() {
     App& a = g_app;
-
     //
-    // ---- 【界面状态必须最先归零】
+    // ---- 界面状态必须最先归零
     //
     // 放在 AbortAsync 之后、其它任何初始化之前：
     // 上面那些 EnsureWhitelist / SetVisible 都要读界面状态，
@@ -24165,11 +23405,10 @@ void BeginStory() {
     g_titleUseChar = true;
 
     SyncIntroGuide();   // 开场引导语跟着角色包走
-
     // ---- 落槽
     //
     // 新周目占一个槽：优先第一个空槽，全满就用最老的那个（覆盖）。
-    // 全满时不能弹"没位置了"就把玩家挡在游戏外面——
+    // 全满时不能弹"没位置了"就把玩家挡在游戏外面
     // 那等于逼他去存档界面手动删，很劝退。
     ScanSlots();
     {
@@ -24189,8 +23428,8 @@ void BeginStory() {
         a.prof = Profile();
         // ---- 新周目必须清空对话历史
         //
-        // 【这是"不同角色 / 不同存档的对话在文本回想里串台"的根因】
-        // hist 只在【读档】时被清过一次（LoadFromSlot 里先 clear 再填充），
+        // 这是"不同角色 / 不同存档的对话在文本回想里串台"的根因
+        // hist 只在读档时被清过一次（LoadFromSlot 里先 clear 再填充），
         // 而"新游戏 / 换角色重开"这条路径从来没清。
         // 于是上一周目（甚至是另一个角色）的对话原封不动留着，
         // 一打开回想就看到角色A和角色B的台词混在一起。
@@ -24205,19 +23444,19 @@ void BeginStory() {
         //
         // ---- 剧本字段的残留必须清
         //
-        // 【这是"每次都错成同一张图"的机制】
+        // 这是"每次都错成同一张图"的机制
         // view.bg / view.emote 是剧本字段，导演模式下剧本没在跑，
-        // 它们的值就是【上一局留下来的】。
-        // 一旦这一轮的背景/立绘解析不到文件，渲染层就会退回这些残留值——
+        // 它们的值就是上一局留下来的。
+        // 一旦这一轮的背景/立绘解析不到文件，渲染层就会退回这些残留值
         // 画面于是画出上一局那张固定的旧图，而调试行写着这一轮的新名字。
         // 因为它永远是同一个残留值，所以表现是"每次错得一模一样"。
         a.view.bg.clear();
         a.view.emote.clear();
         //
-        // ---- 【开场画面必须是干净的】
+        // ---- 开场画面必须是干净的
         //
-        // 【这是"进游戏后名字牌显示「系统」"的根因】
-        // 启动时无条件 LoadScript()，缺 main.cks 时会把"找不到剧本文件"
+        // 这是"进游戏后名字牌显示「系统」"的根因
+        // 启动时无条件 LoadScript，缺 main.cks 时会把"找不到剧本文件"
         // 连同 speaker=L"系统" 一起写进 a.view；导演模式下没有任何一步
         // 会去覆盖它们（台词要等第一轮回来说才填），于是这两条残留一路
         // 带进游戏，玩家开场第一眼看到的就是一块写着「系统」的名字牌，
@@ -24236,21 +23475,21 @@ void BeginStory() {
         EnsureWhitelist(L"开局");
         CheckSyllabusAssetNames();   // 大纲里写的 Bg / Bgm 对不上目录时记一笔
         //
-        // ---- 【白名单扫完必须立刻交给 Director】
+        // ---- 白名单扫完必须立刻交给 Director
         //
-        // 【这是"素材笔记根本没在开局生成"的根因】
+        // 这是"素材笔记根本没在开局生成"的根因
         // Director 的 visible_ 只在 StartChat 里被 SetVisible 过一次，
-        // 而下面判断"要不要先等笔记"用的是 `a.dir.Visible().HasAny()`
-        // ——开局走到那里时它还是空的，于是这个条件【永远为假】。
+        // 而下面判断"要不要先等笔记"用的是 `a.dir.Visible.HasAny`
+        // ——开局走到那里时它还是空的，于是这个条件永远为假。
         // 后果是双重的：
-        //   1. 挂起等待从未发生，画面和台词照旧直接铺出去；
-        //   2. 笔记请求改由 StartChat 里那句发起，跟第一句话【并行】发出。
-        //      谁先回来不确定，实测开场先回——她已经说完两句、
-        //      立绘也换过两轮了，笔记才姗姗来迟。
-        //      那两轮的素材是她照着裸清单猜的，
-        //      而笔记本来就是为了不让她瞎猜。
-        // （StartAssetBrief() 自己也判 HasAny()：不交给 Director 的话，
-        //   它连请求都发不出去，连"并行"都不会发生。）
+        // 1. 挂起等待从未发生，画面和台词照旧直接铺出去；
+        // 2. 笔记请求改由 StartChat 里那句发起，跟第一句话并行发出。
+        // 谁先回来不确定，实测开场先回——她已经说完两句、
+        // 立绘也换过两轮了，笔记才姗姗来迟。
+        // 那两轮的素材是她照着裸清单猜的，
+        // 而笔记本来就是为了不让她瞎猜。
+        // （StartAssetBrief 自己也判 HasAny：不交给 Director 的话，
+        // 它连请求都发不出去，连"并行"都不会发生。）
         //
         // 交过去之后，下面"先等笔记"那条路才真正生效：
         // 笔记没到 -> 画面和台词一起挂起，屏幕保持空舞台。
@@ -24258,10 +23497,10 @@ void BeginStory() {
         //
         // ---- 让她先把素材自己总结一遍，再开始对话
         //
-        // 【这是"叫了半天还是那几张脸"的根治办法】
-        // 之前的做法全都是在【引擎这边】猜她的意思：别名表、字符重合度、
+        // 这是"叫了半天还是那几张脸"的根治办法
+        // 之前的做法全都是在引擎这边猜她的意思：别名表、字符重合度、
         // 按台词挑脸……每一层都治好一批又留下新的例外。
-        // 而 she 本人知道自己这句话是什么情绪，只是对【这批素材】没概念。
+        // 而 she 本人知道自己这句话是什么情绪，只是对这批素材没概念。
         // 开局先花一次请求让她自己写一份笔记，之后每轮带进上下文，
         // 她参照的是自己能读懂的说法，不是作者写的措辞。
         a.assetBrief.clear();
@@ -24272,7 +23511,7 @@ void BeginStory() {
         a.assetBriefBusyGen = 0;
         a.pendingStage   = false;   // 同上：上一局挂着的开场画面也作废
         //
-        // ---- 【先试试能不能复用上一局的笔记，省掉这次等待】
+        // ---- 先试试能不能复用上一局的笔记，省掉这次等待
         //
         // 笔记描述的是"这批素材是什么意思"，跟这一局要讲什么故事无关。
         // 素材清单没变（指纹对得上）就直接用上一局那份，
@@ -24326,17 +23565,16 @@ void BeginStory() {
     a.phase = Phase::Play;
     ResetTextState(a);
     a.rs.showMemory = false;
-
     // ---- 导演模式：不跑剧本，直接让她开口
     //
     // 剧本模式下第一句是 @scene 开场 写死的台词；
     // 导演模式没有写死的台词，所以要先给她一个"开场提示"让她自己说第一句，
     // 说完就进输入模式等玩家——整个过程玩家随时能打字。
     // 导演模式必须有大模型——没有它就没有剧情可言。
-    // 离线或没配 Key 时退回预制剧本，并明确告诉玩家为什么，
+    // 离线或没配 Key 时退回预制剧本，并明确告诉
     // 否则他会看到一个"能打字但永远只有几句车轱辘话"的怪东西。
     //
-    // 【离线模式已移除，只剩"没填 Key"这一种情况】
+    // 离线模式已移除，只剩"没填 Key"这一种情况
     // 曾经的"离线模式"开关会把原因归到设置上，玩家于是一直查设置，
     // 而真正的故障被这个解释盖住了。现在只有一种模式：联网。
     if (a.dirMode && a.llm.apiKey.empty()) {
@@ -24353,49 +23591,46 @@ void BeginStory() {
         a.askedDuringTask = false;
     a.quizAnswers     = 0;
         //
-        // ---- 【开新周目先清掉上一周目的画面残留】
+        // ---- 开新周目先清掉上一周目的画面残留
         //
-        // 【导演模式原来整段都没做这件事】
+        // 导演模式原来整段都没做这件事
         // 非导演模式那一段（下面）写着"开新周目：清掉转场残留"，
-        // 并调用 ResetStageVisuals()；而导演模式在这里就 return 了，
+        // 并调用 ResetStageVisuals；而导演模式在这里就 return 了，
         // 一次都没走到——于是玩到第 3 章回标题再开新局，
         // 上一局的立绘和背景仍挂在 rs 上，新故事一开场就带着旧画面。
         // 现在两种模式共用同一个清理入口，不会再漏。
         ResetStageVisuals();
-
         // ---- 开场不是第一章的教学
         //
-        // 原来这里直接让她"开始讲第一章"，一上来就是知识点——
-        // 那是网课不是 Galgame。真正的恋爱游戏先让你认识这个人。
+        // 那是网课不是 Galgame。真正的恋爱游戏先让
         //
-        // ---- 【这里绝不能写"你们还不认识 / 问问他是谁"】
+        // ---- 这里绝不能写"
         //
         // 关系由角色包 [Player].Relation 决定：包里写着早已相恋，
-        // 这里却写「你们还不认识」，就会把那份设定整个压掉。
-        // 可这一段是 user 消息，位置比 system prompt 更靠近输出、服从度更高——
+        // 这里却写「
+        // 可这一段是 user 消息，位置比 system prompt 更靠近输出、服从度更高
         // 一旦它写"还不认识""问问他是谁"，就会把 system 里的关系设定整个压掉，
-        // 于是开场第一句变成互相自我介绍：她不认得将臣。
+        // 于是开场第一句变成互相自
         // 关系对不对交给包里的 [Player]，这里只说"这一幕该干什么"。
         //
         // ---- 带上他的名字，是为了让她开口就叫得出人
-        // 写"他"她可能一直用代词，玩家看不出她认不认得；
+        // 写"他"她可能一直用代词，
         // 名字来自角色包，换包跟着走，没配就退回"他"。
         const CharDef* kd = a.Def();
         const std::wstring kickName = kd ? kd->playerName : L"";
         //
-        // 【为什么不是"刚坐下来"】
+        // 为什么不是"刚坐下来"
         // "刚坐下来"暗示"他刚到、刚落座"，配上"聊聊为什么选这门课"，
         // 整句读起来就是初次见面的场景——而这正是续集设定要避免的。
-        // 改成"就在你旁边"，只说位置，不暗示生疏。
+        // 改成"就在
         //
-        // ---- 【开场必须由她带节奏，而不是打个招呼就等】
+        // ---- 开场必须由她带节奏，而不是打个招呼就等
         //
-        // 原来这句只说"自然地打个招呼，聊聊为什么选这门课"，
         // 于是她真的只打了个招呼就停——玩家回一句"嗯"，对话就死了，
         // 开场阶段变成互相"嗯""哦"的空转，谁也不推进。
-        // 现在明确要求：打招呼之后【她主动抛话题、问一个具体的问题】。
+        // 现在明确要求：打招呼之后她主动抛话题、问一个具体的问题。
         //
-        // ---- 【顺带解决"开场没有第二个表情"】
+        // ---- 顺带解决"开场没有第二个表情"
         //
         // 她填的 pose2 只在翻页时切，而短台词一页就装完了（单页不切）。
         // 要求她把这一句写成两段（中间一行 ---），
@@ -24417,27 +23652,27 @@ void BeginStory() {
                                ? std::wstring(L"现在【不要】急着推进什么——先让这一段自然地开始。")
                                : std::wstring(L"现在【不要】讲知识点——那是之后的事。"));
         //
-        // ---- 【开场必须对关系再声明一次，而且要紧贴输出】
+        // ---- 开场必须对关系再声明一次，而且要紧贴输出
         //
         // [Player].Relation 在 system prompt 里，隔了好几段内容；
         // 而这一句是 user 消息，位置离输出最近、服从度最高，
         // 它长什么样基本决定了她用哪种语气开口。
         // 之前这里只做到"不写刚认识"——不写不等于写了对的，
         // 模型在没被明确告知时会滑向最常见的模板（初次见面）。
-        // 所以补一句来自角色包的【开场声明】，内容由包作者写。
+        // 所以补一句来自角色包的开场声明，内容由包作者写。
         // 包没写就不加（留空 = 不声明，绝不猜）。
         if (kd && !kd->playerIntro.empty())
             kick += L"\n" + kd->playerIntro;
         a.chatHint = a.dir.Guide();
         //
-        // ---- 【开场先等素材笔记，笔记没到就不让她开口】
+        // ---- 开场先等素材笔记，笔记没到就不让她开口
         //
-        // 笔记和开场是两个并行请求。并行就意味着谁先回来不确定——
+        // 笔记和开场是两个并行请求。并行就意味着谁先回来不确定
         // 实测是开场先回来：她已经说完两句、立绘也换过两轮了，
         // 笔记才姗姗来迟。那两轮的素材是她照着裸清单猜的，
         // 而笔记本来就是为了避免这种瞎猜。
         //
-        // 【只在真的发起了笔记请求时才等】
+        // 只在真的发起了笔记请求时才等
         // 清单为空、没有 Key、笔记已存在（读档读回来的）这几种情况
         // StartAssetBrief 会直接返回，busy 为 false —— 那就照常开场，
         // 不能让玩家对着一个永远不会有人来完成的等待。
@@ -24447,7 +23682,7 @@ void BeginStory() {
             StartAssetBrief();
             if (a.assetBriefBusy) {
                 //
-                // ---- 【画面和台词一起挂起】
+                // ---- 画面和台词一起挂起
                 //
                 // 只挂台词是不够的：开场的立绘/背景正是第一批
                 // 要被笔记影响的画面，先铺上去等于让它们裸奔一次。
@@ -24473,14 +23708,12 @@ void BeginStory() {
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // 开新周目：清掉转场残留。
     //
-    // 【原来这里手写了一份，漏了 bgPrev 和 rs.pose】
-    //   · 漏 bgPrev  —— 开局淡入时会闪出【上一周目的背景】，
-    //     而注释明明写着"清掉转场残留"
-    //   · 漏 rs.pose —— 新周目带着上一局的表情开场，全项目从没重置过它
-    // 现在跟导演模式共用 ResetStageVisuals()，不会再漏。
+    // · 漏 bgPrev —— 开局淡入时会闪出上一周目的背景，
+    // 而注释明明写着"清掉转场残留"
+    // · 漏 rs.pose —— 新周目带着上一局的表情开场，全项目从没重置过它
+    // 现在跟导演模式共用 ResetStageVisuals，不会再漏。
     ResetStageVisuals();
     a.mem.Decay();                     // 老记忆淡一点，符合"好久不见"的真实感
     //
@@ -24519,15 +23752,15 @@ void ContinueGame() {
     int s = NewestSlot();
     if (s < 0) { UiTip(a, L"没有找到可读的存档", 4); return; }
     //
-    // ---- 【"继续上次"原来不切剧本——这条路上漏了】
+    // ---- "继续上次"原来不切剧本
     //
-    //  存档页读取和流程图跳章都会先把剧本切回存档记的那一本，
-    //  唯独"继续上次"直接用当前这本去读。于是：在剧本页选了角色B的剧情，
-    //  点继续上次读一个课程档，就会用剧情大纲去解释课程进度——
-        //  她开口讲的是"第3幕 试探"，而进度、历史全是 C 语言那局的。
+    // 存档页读取和流程图跳章都会先把剧本切回存档记的那一本，
+    // 唯独"继续上次"直接用当前这本去读。于是：在剧本页选了角色B的剧情，
+    // 点继续上次读一个课程档，就会用剧情大纲去解释课程进度
+        // 她开口讲的是"第3幕 试探"，而进度、历史全是 C 语言那局的。
     //
-    //  不报错，章号也合法，只是内容一路串味。
-    //  现在补上这一步，跟另两条路一致。
+    // 不报错，章号也合法，只是内容一路串味。
+    // 现在补上这一步，跟另两条路一致。
     {
         const SaveSlotInfo* si = nullptr;
         for (size_t i = 0; i < a.slots.size(); ++i)
@@ -24552,7 +23785,7 @@ void ContinueGame() {
     a.askedDuringTask = false;
     a.quizAnswers     = 0;
     // 同样【不能】清 a.hist：LoadFromSlot 刚把该槽的对话历史读进来。
-    // 这里清掉的话"继续上次"就永远看不到以前聊了什么。
+    // 这里清掉的话"继续上次"就永远看不到早期版本聊了什么。
     a.rs.histOpen = false;
     a.rs.histScroll = 0;
     a.rs.playerEcho = false;
@@ -24573,12 +23806,7 @@ void ContinueGame() {
     AfterStep();
     UiTip(a, L"已读取上次的进度", 3);
 }
-
-// ============================================================================
-//  杂项
-// ============================================================================
-
-// 把记忆库里的内容整理成可显示的行（权重从高到低，带权重数字）
+// 杂项 把记忆库里的内容整理成可显示的行（权重从高到低，带权重数字）
 static void RefreshMemLines() {
     std::vector<MemoryFact> fs = g_app.mem.All();
     std::sort(fs.begin(), fs.end(), [](const MemoryFact& a, const MemoryFact& b) {
@@ -24642,13 +23870,11 @@ void LoadConfig() {
     if (a.zoom > 2.0f) a.zoom = 2.0f;
 
     a.audio.SetVolume(IniGetInt(a.configPath, L"Audio", L"Volume", 700));
-
     // 收藏跨周目保存，在 LoadConfig 里一起读，省得调用方记着还要读一份
-
     //
     // ---- 记忆容量：0 = 不限制（不缺 token，不再丢掉最早 / 最轻的记忆）
     //
-    // 【必须在这里设一次】SetCapacity 不会被存档持久化，
+    // 必须在这里设一次SetCapacity 不会被存档持久化，
     // 而 Load 会按默认 60 条先 Trim 一遍——等 Add 时再设就晚了，
     // 超出的部分已经被删掉了。
     a.mem.SetCapacity(0);
@@ -24670,12 +23896,11 @@ void SaveConfig() {
     // 仍可在 config.ini 里手工改，作为角色包没配 [Player] 时的兜底。
     IniSetStr(a.configPath, L"Game", L"CharName", a.persona.charName);
     IniSetStr(a.configPath, L"Game", L"Trait", a.persona.trait);
-
     //
     // ---- 已解绑的角色包名单
     //
     // 角色 id 里不会有逗号（它是目录名，而逗号在 Windows 目录名里合法但
-    // 我们从不这么建），所以逗号分隔够用，不值得为它引一个 json。
+    // 引擎不这么建），所以逗号分隔够用，不值得为它引一个 json。
     {
         std::wstring joined;
         const std::vector<std::wstring>& hid = a.chars.Hidden();
@@ -24688,11 +23913,8 @@ void SaveConfig() {
 
     IniSetInt(a.configPath, L"Audio", L"Volume", a.audio.Volume());
 }
-
-// ============================================================================
-//  剧本
-// ============================================================================
-// 教学大纲。加载成功就进入【导演模式】——剧情交给大模型，剧本只当离线兜底。
+// 剧本
+// 教学大纲。加载成功就进入导演模式——剧情交给大模型，剧本只当离线兜底。
 // 失败则退回剧本模式，两种情况下游戏都能玩。
 bool LoadSyllabus() {
     App& a = g_app;
@@ -24746,28 +23968,26 @@ bool LoadSyllabus() {
     AppLog(L"导演模式已启用：%d 章（%s）", s.Count(), s.title.c_str());
     return true;
 }
-
 // 切换剧本：改 id -> 重载大纲 -> 顺手写回 config。
 // 只在标题页的剧本界面里被调用，所以不会有"跑到一半换课"的问题。
 //
-// 【切过去的那份读不了时，必须退回来】
+// 切过去的那份读不了时，必须退回来
 // 原来只管往前切：a.syllabusId 已经改成新的了，config 也写进去了，
-// 然后 LoadSyllabus 失败。于是 config 里永久记着一个加载不了的剧本——
+// 然后 LoadSyllabus 失败。
 // 下次启动还是它，dirMode 一直是 false，游戏静默退回老剧本模式。
-// 玩家看到的是"切换之后就再也回不去了"，而界面上只写着"未启用导演模式"，
 // 根本联想不到是自己刚才点的那份害的。
-// 现在失败就回滚 id + 重新加载原来那份 + 把 config 也改回去。
+// 现在失败就回滚 id + 重新加载
 bool ApplySyllabus(const std::wstring& id) {
     App& a = g_app;
     //
-    // ---- 【一局已经开始，就不许再换剧本】
+    // ---- 一局已经开始，就不许再换剧本
     //
-    //  存档里记着它用的是哪一本剧本，章号、幕数、进度全是按那一本算的。
-    //  中途换掉的话，旧章号会被新剧本重新解释——她开口讲的东西和
-    //  进度、历史、关系曲线完全是两回事，而且【不报错】。
+    // 存档里记着它用的是哪一本剧本，章号、幕数、进度全是按那一本算的。
+    // 中途换掉的话，旧章号会被新剧本重新解释——她开口讲的东西和
+    // 进度、历史、关系曲线完全是两回事，而且不报错。
     //
-    //  正常界面上换剧本只在标题页的剧本页里做，走到这里时不在游戏内；
-    //  这一句是给"将来有人加了新入口"兜底——宁可拒绝，也不要串味。
+    // 正常界面上换剧本只在标题页的剧本页里做，走到这里时不在游戏内；
+    // 这一句是给"将来有人加了新入口"兜底——宁可拒绝，也不要串味。
     if (a.ui.screen == Screen::Play) {
         a.syllabusErr = L"正在游戏里，不能换剧本——先退回标题页";
         return false;
@@ -24798,12 +24018,11 @@ bool LoadScript() {
     if (!ReadTextFile(path, text)) {
         AppLog(L"剧本读取失败: %s", path.c_str());
         //
-        // 【不要占用画面】
-        // 这里是启动时无条件跑到的，而导演模式（有大纲）根本用不着剧本——
+        // 不要占用画面
+        // 这里是启动时无条件跑到的，而导演模式（有大纲）根本用不着剧本
         // 写进 view 的话，这条"找不到剧本文件"会一直挂在对话框上、名字牌
         // 被写成「系统」，进游戏后开场第一眼看到的就是它，而且没人会去清。
         // 只记下来：剧本模式（没大纲）才是真的没剧本就玩不了，
-        // 那时候由启动流程决定要不要显示（见 WinMain 里的 ShowScriptErr）。
         a.scriptErr = L"找不到剧本文件：" + path + L"\n请把 assets\\script\\main.cks 放回 exe 旁边。";
         a.block = ck::VmBlock::End;
         // 分页状态也要清：这两条提示可能出现在【切换剧本】之后，
@@ -24836,20 +24055,19 @@ bool LoadScript() {
     AppLog(L"剧本载入完成：%d 个场景，%d 条警告", (long long)p.scenes.size(), (long long)p.warnings.size());
     return true;
 }
-
 // 剧本出错了，要不要把它摆到画面上。
 //
-// 【这是"进游戏后名字牌显示「系统」"的根因所在】
-// 启动时是无条件 LoadScript() 的。缺 main.cks 时它原来会直接写
-//   a.view.body = "找不到剧本文件：…"；a.view.speaker = L"系统"；
-// 而导演模式（有大纲）根本用不着剧本，也没有任何一步去覆盖这两条——
+// 这是"进游戏后名字牌显示「系统」"的根因所在
+// 启动时是无条件 LoadScript 的。缺 main.cks 时它原来会直接写
+// a.view.body = "找不到剧本文件：…"；a.view.speaker = L"系统"；
+// 而导演模式（有大纲）根本用不着剧本，也没有任何一步去覆盖这两条
 // 台词要等第一轮回来说才填。于是这块写着「系统」的名字牌一路挂进游戏，
 // 玩家开场第一眼看到的就是它，正文还是跟他毫不相干的一句报错。
 //
 // 所以分两种模式处理：
-//   · 导演模式 —— 剧本只是历史遗留，缺了照样能玩，一律不提（只进日志）；
-//   · 剧本模式 —— 没有大纲就只能照脚本念，脚本读不出来就是彻底没内容可演，
-//     这时候必须说清楚，否则玩家面对的是一个没解释的黑屏。
+// · 导演模式 —— 剧本只是历史遗留，缺了照样能玩，一律不提（只进日志）；
+// · 剧本模式 —— 没有大纲就只能照脚本念，脚本读不出来就是彻底没内容可演，
+// 这时候必须说清楚，否则玩家面对的是一个没解释的黑屏。
 void ShowScriptErrIfNeeded() {
     App& a = g_app;
     if (a.scriptErr.empty()) return;
@@ -24866,28 +24084,23 @@ void ShowScriptErrIfNeeded() {
     a.block = ck::VmBlock::End;
     ResetTextState(a);
 }
-
-// ============================================================================
-//  存档（人能直接看的那一份）
-// ============================================================================
+// 存档（人能直接看的那一份）
 // 写两样，分开是因为用途不同：
-//   · 存档_sN.json —— 跟主存档同结构，但对话历史【不截断】
-//   · 对话_sN.txt  —— 纯文本，双击就能读
+// · 存档_sN.json —— 跟主存档同结构，但对话历史不截断
+// · 对话_sN.txt —— 纯文本，双击就能读
 // json 给"想核对程序到底存了什么"的人，txt 给"只想回看她说了什么"的人。
-// ============================================================================
-//  素材调用审计 / 会话追踪：把她给的、程序认的、实际画的三样写进 data，带时间
-// ============================================================================
+// 素材调用审计 / 会话追踪：把她给的、程序认的、实际画的三样写进 data，带时间
 //
-// ★ 立绘、背景跟调试文字对不上，靠看代码是查不出来的：链路上有四个值在流动——
-//   ① 她返回的原文 ② 归一化之后 ③ 校验/模糊匹配生效 ④ 实际解析到的文件。
-//   玩家只看到 ④，日志打的是 ①②③ 里的某一个；任何一环对不上，画面就跟文字分家，
-//   而且没有任何报错。现在每轮把四样按时间写一行，不一致处标 ★，
-//   一眼能看出是"她给错了"还是"程序没接住"。每次都写，不截断、不轮替。
+// ★ 立绘、背景跟调试文字对不上，靠看代码是查不出来的：链路上有四个值在流动
+// ① 她返回的原文 ② 归一化之后 ③ 校验/模糊匹配生效 ④ 实际解析到的文件。
+// 玩家只看到 ④，日志打的是 ①②③ 里的某一个；任何一环对不上，画面就跟文字分家，
+// 而且没有任何报错。现在每轮把四样按时间写一行，不一致处标 ★，
+// 一眼能看出是"她给错了"还是"程序没接住"。每次都写，不截断、不轮替。
 //
 // ★ 素材日志记的是"回复回来之后"的事。可判断"她为什么这么选"，必须知道
-//   【发请求那一刻她看到了什么】：清单里当时有哪些 pose（被 banned 拿掉的她填不出来）、
-//   她最近用过哪些（recent 会引导她避开）、当时第几轮什么阶段。
-//   这份文件把"输入侧"补全。
+// 发请求那一刻她看到了什么：清单里当时有哪些 pose（被 banned 拿掉的她填不出来）、
+// 她最近用过哪些（recent 会引导她避开）、当时第几轮什么阶段。
+// 这份文件把"输入侧"补全。
 static void AppendTurnTrace(const wchar_t* tag, const VisibleAssets* vis,
                             const std::vector<std::wstring>* banned,
                             const std::wstring& userText,
@@ -24929,13 +24142,13 @@ static void AppendTurnTrace(const wchar_t* tag, const VisibleAssets* vis,
                + L"（整章都在这里，这一轮没让她选）\n";
         } else {
             //
-            // ---- 【打印的必须是挑素材那次请求真正给的清单，不是主请求的全量】
+            // ---- 打印的必须是挑素材那次请求真正给的清单，不是主请求的全量
             //
-            // vis->bg 是【主请求】看到的清单（全量）；而背景是在【挑素材】请求里
-            // 才让她填、并按 BgAcceptNow() 过滤的（教学段只在里面留教室类）。
+            // vis->bg 是主请求看到的清单（全量）；而背景是在挑素材请求里
+            // 才让她填、并按 BgAcceptNow 过滤的（教学段只在里面留教室类）。
             // 两边不同源。打印 vis->bg 的话，教学段明明只给了 3 个教室，
             // 追踪却写「可选背景(10)」——看着像"过滤根本没生效、她还能选神社"，
-            // 排查方向整个被带偏（运行日志里就是这么被误导的）。
+            // 排查方向整个被带偏（运行时就是这么被误导的）。
             std::vector<std::wstring> bgAcc = a.dir.BgAcceptNow();
             // 认不出教室类 -> 不限制（绝不猜），这时照实打印全量
             if (bgAcc.empty()) bgAcc = vis->bg;
@@ -24970,12 +24183,11 @@ static void AppendTurnTrace(const wchar_t* tag, const VisibleAssets* vis,
     }
     AppendTextFile(path, t);
 }
-
 //
-// 打回请求原文落盘：她填错了，我们到底拿什么去问她。
+// 打回请求原文落盘：她填错了，当时拿什么清单去问她。
 //
-// 【不记的话，"打回为什么没用"完全没法查】
-// 打回失败有两种：① 她看不懂我们问的话 ② 她给了但我们还接不住。
+// 不记的话，"打回为什么没用"完全没法查
+// 打回失败有两种：① 她看不懂问句 ② 结果没接住。
 // 把发出去的原文和收回来的原文都存下来，一眼就能分辨。
 static void AppendFixLog(const std::wstring& prompt, const std::wstring& raw,
                         const std::wstring& tag = L"") {
@@ -24983,24 +24195,23 @@ static void AppendFixLog(const std::wstring& prompt, const std::wstring& raw,
     if (a.dataDir.empty()) return;
     const std::wstring path = PathJoin(a.dataDir, L"打回记录.txt");
     //
-    // ---- 【块头标出这是"挑素材"还是"打回重填"】
+    // ---- 块头标出这是"挑素材"还是"打回重填"
     //
-    // 这两类请求共用这一个文件，而【挑素材是每轮都有的正常流程】，
-    // 【打回重填是她填错了才发生】。不标的话，日志里一长串发出/收回，
+    // 这两类请求共用这一个文件，而挑素材是每轮都有的正常流程，
+    // 打回重填是她填错了才发生。不标的话，运行时一长串发出/收回，
     // 根本分不出哪次是"她填错了被退回来"，也就看不出素材问题有多严重。
     std::wstring t = L"[" + NowStampSec() + L"]";
     if (!tag.empty()) t += L" " + tag;
     t += L"\n";
     //
-    // ---- 【空标签不再打印】
+    // ---- 空标签不再打印
     //
-    // 发起和收回是【两次】调用（结果要等请求回来才知道），
+    // 发起和收回是两次调用（结果要等请求回来才知道），
     // 原来两次都无差别打印 "发出:"，于是收回那条多出一个空的 "发出:"。
     //
-    // 【实测复现如下】
-    //   [16:17:00]
-    //     发出:            ← 空的一行，看着像"这次什么都没发出去"
-    //     收回: {"emotion":...}
+    // ★ 症状：
+    // 发出: ← 空的一行，看着像"这次什么都没发出去"
+    // 收回: {"emotion":...}
     // 同一个请求被拆成两块，还多一行空标签，对照时要靠猜。
     // 现在哪边有内容就只打哪边，两块天然上下相邻、时间戳也挨着。
     if (!prompt.empty()) t += L"  发出: " + prompt + L"\n";
@@ -25011,21 +24222,20 @@ static void AppendFixLog(const std::wstring& prompt, const std::wstring& raw,
     }
     AppendTextFile(path, t);
 }
-
 //
-// 【第六个参数 reqPose2：她填的第二个表情】
+// 第六个参数 reqPose2：她填的第二个表情
 //
-// 【原来看日志会被骗】
+// 原来看日志会被骗
 // 打回记录里明明白白写着她返回了 "pose2":"提问"，
 // 素材日志却写「她返回 pose2=(没填)」，而同一份日志的下一行
 // 又写「本句表情 坏笑 -> 第二个表情=提问」。两行自相矛盾。
 //
-// 因为回调里把 g_stageFixPose2 存进 fp2 之后立刻 clear() 了
-// （那是对的，槽位必须清），可 fp2 从头到尾没被用上——
+// 因为回调里把 g_stageFixPose2 存进 fp2 之后立刻 clear 了
+// （那是对的，槽位必须清），可 fp2 从头到尾没被用上
 // 审计函数读的是那个已经被清空的全局变量，于是永远是"(没填)"。
 //
 // 玩家按这行判断"她到底填没填第二个表情"，结论是"她从来不填"，
-// 于是去改 prompt 催她填——白改。
+// 于是去改 prompt 催她填——无效。
 static void AppendAssetAudit(const std::wstring& reqPose,
                              const std::wstring& reqBg,
                              const std::wstring& reqBgm,
@@ -25044,25 +24254,24 @@ static void AppendAssetAudit(const std::wstring& reqPose,
     const std::wstring filePose = a.rs.posePath;
     std::wstring fitDummy, fileBg = ResolveBgFor(a.Def(), a.assetDir, effBg, &fitDummy);
     //
-    // ---- 【bgm 这一列必须跟前两列同源：都用"解析到的文件"】
+    // ---- bgm 这一列必须跟前两列同源：都用"解析到的文件"
     //
     // 原来取 g_bgmNow（槽里当前在播的那首），而 pose / bg 取的是解析结果。
-    // 音乐是异步淡入的，打日志那一刻新曲还没切过去，g_bgmNow 还是旧的——
-    // 于是日志里 bgm 永远"慢一拍"，看着像"她给了 A、实际播 B"，
-    // 其实只是时序差。实际运行日志里前几轮就是这样，白白误导排查方向。
+    // 音乐是异步淡入的，打日志那一刻新曲还没切过去，g_bgmNow 还是旧的
+    // 于是运行时 bgm 永远"慢一拍"，看着像"她给了 A、实际播 B"，
+    // 其实只是时序差。运行时前几轮就是这样，白白误导排查方向。
     //
     // 三列统一用解析结果，才是"程序有没有接住"的证据。
     const std::wstring fileBgm  = effBgm.empty() ? std::wstring()
                                 : ResolveBgmFor(a.Def(), a.assetDir, effBgm);
-
     // ---- 哪里不一致
     //
-    // 【必须把"引擎换脸"和"真解析失败"分开记】
+    // 必须把"引擎换脸"和"真解析失败"分开记
     // 两者在画面上都表现为"她给的跟画的不一样"，但性质完全不同：
-    //   · 引擎换脸 —— 她连续两轮给了同一个表情，引擎按规则替她换了一张。
-    //     这是【设计行为】，不算 bug，改 prompt 让它自己换才是正解。
-    //   · 解析失败 / 清单里没有 —— 她选了，程序没接住。这才是 bug。
-    // 混在一起记的话，玩家（和我们）会把设计行为当 bug 反复查。
+    // · 引擎换脸 —— 她连续两轮给了同一个表情，引擎按规则替她换了一张。
+    // 这是设计行为，不算 bug，改 prompt 让它自己换才是正解。
+    // · 解析失败 / 清单里没有 —— 她选了，程序没接住。这才是 bug。
+    // 混在一起记的话，会把设计行为当成 bug 反复查。
     std::wstring diff;
     auto cmp = [&](const wchar_t* what, const std::wstring& want, const std::wstring& got) {
         if (want.empty() && got.empty()) return;
@@ -25072,18 +24281,18 @@ static void AppendAssetAudit(const std::wstring& reqPose,
               + L"」→ 实际「" + (got.empty() ? L"(空)" : got) + L"」";
     };
     //
-    // ---- 【"她给的"和"实际画的"不一样，未必是问题】
+    // ---- "她给的"和"实际画的"不一样，未必是问题
     //
     // ★ 一律打成 ★不一致会产生大量误报，而且骗得很彻底：
-    //   ① 她写了「她的日常」（中文"的"），清单里是「她的日常」（日文"の"）
-    //      -> 模糊匹配接住了，程序生效是对的，却因为字面不同标 ★；
-    //   ② 打回重填那一轮：只要她重填 pose，bg/bgm 自然是空的
-    //      -> 沿用上一轮是预期，却因为"(空) → 上课期间的课室"标 ★；
-    //   ③ 她填了被禁用的同一张脸、引擎换了一张
-    //      -> 下面已经标了 ○，却又再标一个 ★，自相矛盾。
-    //   于是日志里 ★ 满天飞，真正的问题反而找不出来。
-    //   现在：只在【她给了、但确实没接住】时才算不一致。
-    //   diff 挪到"是否接住"那一栏之后算，那里才有 ok 标志可用。
+    // ① 她写了「她的日常」（中文"的"），清单里是「她的日常」（日文"の"）
+    // -> 模糊匹配接住了，程序生效是对的，却因为字面不同标 ★；
+    // ② 打回重填那一轮：只要她重填 pose，bg/bgm 自然是空的
+    // -> 沿用上一轮是预期，却因为"(空) → 上课期间的课室"标 ★；
+    // ③ 她填了被禁用的同一张脸、引擎换了一张
+    // -> 下面已经标了 ○，却又再标一个 ★，自相矛盾。
+    // 于是运行时 ★ 满天飞，真正的问题反而找不出来。
+    // 现在：只在她给了、但确实没接住时才算不一致。
+    // diff 挪到"是否接住"那一栏之后算，那里才有 ok 标志可用。
     const bool forced = false;
 
     std::wstring t;
@@ -25100,43 +24309,43 @@ static void AppendAssetAudit(const std::wstring& reqPose,
        +             L"  bg="   + (reqBg.empty()   ? L"(空)" : reqBg)
        +             L"  bgm="  + (reqBgm.empty()  ? L"(空)" : reqBgm) + L"\n";
     //
-    // ---- 【接住了没有：这一行是整份日志的命门】
+    // ---- 接住了没有：这一行是整份日志的命门
     //
-    // 【没有它，"✓一致"会骗人，而且骗得很彻底】
+    // 没有它，"✓一致"会骗人，而且骗得很彻底
     // 校验失败时槽位保持旧值，审计拿应用后的值去比，必然"一致"。
-    // 于是这三种情况在日志里长得【一模一样】：
-    //   ① 她给对了，画面换了
-    //   ② 她给了个清单外的名字，被拒，画面没动
-    //   ③ 她根本没给（留空），引擎沿用了上一轮
-    // 实际运行日志里一致性 100%、表情却连续 4 轮不动，
+    // 于是这三种情况在运行时长得一模一样：
+    // ① 她给对了，画面换了
+    // ② 她给了个清单外的名字，被拒，画面没动
+    // ③ 她根本没给（留空），引擎沿用了上一轮
+    // 运行时一致性 100%、表情却连续 4 轮不动，
     // 就是②或③被当成了①——排查方向整个被带偏。
     //
     // 分开写"她给了没有"和"被接住了没有"，
     // 一眼就能分辨是她没选、还是她选了程序没收下。
     if (hit) {
         //
-        // ---- 【兜底：画面最终就是她要的那张，就不能算"被拒"】
+        // ---- 兜底：画面最终就是她要的那张，就不能算"被拒"
         //
-        // 【实际运行日志里这条误报了 4 次，而且骗得很彻底】
+        // 运行时这条误报了 4 次，而且骗得很彻底
         // 第1轮：她返回 pose=认真，程序生效 pose=认真，实际文件也是认真，
         // 日志却打「pose被拒!」——因为判据只看"有没有走匹配成功分支"，
         // 而"跟当前值相同"时会跳过赋值，没进那个分支。
         // 画面完全就是她要的，日志却说没接住，害人白找不存在的 bug。
         //
-        // 以【最终生效值是不是她给的值】为准，这才是玩家关心的。
+        // 以最终生效值是不是她给的值为准，这才是玩家关心的。
         DirView h2 = *hit;
         //
-        // ---- 【被本轮禁用挡下的，绝不能套这个兜底】
+        // ---- 被本轮禁用挡下的，绝不能套这个兜底
         //
-        // 【这三条豁免曾经没有 !WasBanned 这个条件，结果把禁用整个废掉了】
-        // 禁用挡下时槽位保持旧值，于是 effPose == reqPose 成立，
-        // 兜底把"没接住"改判成"接住"。运行日志里的后果是：
+        // 这三条豁免曾经没有 !WasBanned 这个条件，结果把禁用整个废掉了
+        // 禁用挡下时槽位保持旧值，
+        // 兜底把"没接住"改判成"接住"。运行时的后果是：
         //
-        //   会话追踪写着  []内=本轮禁用: 恋ひ恋う縁.Piano Version
-        //   素材日志却写  是否接住 bgm接住 / ✓一致
-        //   两句互相打架，而真相是【她没能换掉那首曲子】。
+        // 会话追踪写着 []内=本轮禁用: 恋ひ恋う縁.Piano Version
+        // 素材日志却写 是否接住 bgm接住 / ✓一致
+        // 两句互相打架，而真相是她没能换掉那首曲子。
         //
-        // "画面最终是她要的那张"在禁用场景下【恰好说反了】：
+        // "画面最终是她要的那张"在禁用场景下恰好说反了：
         // 画面之所以还是这个，正是因为没让她换成功。
         // 禁用的全部意义就是"她不许再选到它"，判成接住等于机制自废。
         if (h2.gavePose && !h2.okPose && !h2.poseWasBanned && !reqPose.empty() && effPose == reqPose) h2.okPose = true;
@@ -25149,15 +24358,15 @@ static void AppendAssetAudit(const std::wstring& reqPose,
             return std::wstring(n) + L"被拒!";
         };
         //
-        // ---- 【"本轮禁用"是设计行为，不能报成被拒】
+        // ---- "本轮禁用"是设计行为，不能报成被拒
         //
-        // 【这是点名要的功能】连续两轮用同一张脸，就把那张从
+        // 这是点名要的功能连续两轮用同一张脸，就把那张从
         // 白名单里拿掉，让她不能再选。她还是填了 -> 被挡下 -> 画面沿用。
         // 这本来就是要的效果。
         //
-        // 可上一版把它和"名字接不住"混成同一个「被拒!」，
+        // 可早期版本把它和"名字接不住"混成同一个「被拒!」，
         // 看到日志容易以为程序坏了，其实是功能在正常工作。
-        // 所以这里单独标 ○，并且【不计入 anyRejected】——
+        // 所以这里单独标 ○，并且不计入 anyRejected
         // 否则每一行都会挂个 ✗，真正的问题反而被淹掉了。
         if (h2.poseWasBanned) acc += L"pose本轮禁用(预期) ";
         else                  acc += mark(h2.gavePose, h2.okPose, L"pose");
@@ -25184,14 +24393,13 @@ static void AppendAssetAudit(const std::wstring& reqPose,
                  L"这一轮没让她选\n";
         if (h2.bgmWasBanned)
             t += L"    ○bgm「" + reqBgm + L"」连用多轮已移出白名单 -> 挡下，已发起打回\n";
-
         //
-        // ---- 【只有"她给了但没接住"才算不一致】
+        // ---- 只有"她给了但没接住"才算不一致
         //
         // 三条豁免，缺一条 ★ 就会误报（见上面 cmp 那段说明）：
-        //   · 她没给          -> 沿用上一轮就是预期行为
-        //   · 接住了          -> 含模糊匹配改写（"她的日常"->"她的日常"），是对的
-        //   · 本轮禁用挡下的  -> 上面已标 ○，不能再标 ★
+        // · 她没给 -> 沿用上一轮就是预期行为
+        // · 接住了 -> 含模糊匹配改写（"她的日常"->"她的日常"），是对的
+        // · 本轮禁用挡下的 -> 上面已标 ○，不能再标 ★
         auto cmp2 = [&](const wchar_t* what, const std::wstring& want,
                         const std::wstring& got, bool gave, bool ok) {
             if (!gave) return;          // 她没给：沿用，不算问题
@@ -25219,10 +24427,10 @@ static void AppendAssetAudit(const std::wstring& reqPose,
        +             L"  bg="   + (fileBg.empty()   ? L"(解析失败,画面保持原样)"   : fileBg)
        +             L"  bgm="  + (fileBgm.empty()  ? L"(没播出来)"                : fileBgm) + L"\n";
     //
-    // ---- 【pose2 必须进日志，否则双表情到底生效没有无从验证】
+    // ---- pose2 必须进日志，否则双表情到底生效没有无从验证
     //
     // 打回记录里明明白白写着她给了 pose2=心动，可素材日志只记 pose/bg/bgm，
-    // 于是"她填了 → 程序接住了没 → 画面切没切"整条链在日志里是断的。
+    // 于是"她填了 → 程序接住了没 → 画面切没切"整条链在运行时是断的。
     // 只能靠"翻页时脸变了没"这种肉眼观察，出问题根本没法定位。
     {
         std::wstring p2s;
@@ -25241,11 +24449,11 @@ static void AppendAssetAudit(const std::wstring& reqPose,
            + L" -> " + p2s + L"\n";
     }
     //
-    // ---- 【把她这一轮说的话也记上】
+    // ---- 把她这一轮说的话也记上
     //
-    // 【没有台词，这份日志只能看出"程序接没接住"，看不出"她选得对不对"】
+    // 没有台词，这份日志只能看出"程序接没接住"，看不出"她选得对不对"
     // 真正想核的是"这句台词该配什么表情"，
-    // 而只有素材名的话，他还得回去翻对话记录、靠数顺序对上——
+    // 而只有素材名的话，他还得回去翻对话记录、靠数顺序对上
     // 某一轮没记上就全错位。
     // 台词摆在旁边，一眼就能判断"她说的是害羞的话却选了平静"。
     //
@@ -25257,7 +24465,7 @@ static void AppendAssetAudit(const std::wstring& reqPose,
         if (s.size() > 60) s = s.substr(0, 60) + L"…";
         t += L"    她的台词  " + s + L"\n";
         //
-        // ---- 【同一句也攒一份，供章末复盘用】
+        // ---- 同一句也攒一份，供章末复盘用
         //
         // 复盘的输入必须是"台词 + 她填的 + 实际生效的"三样齐全，
         // 缺了台词她只能对着一串素材名复盘，说不出"这句该配什么脸"。
@@ -25273,17 +24481,16 @@ static void AppendAssetAudit(const std::wstring& reqPose,
         if (a.chapterAssetLines.size() > 60)
             a.chapterAssetLines.erase(a.chapterAssetLines.begin());
     }
-
     //
-    // ---- 【本轮上下文：光看素材名查不出"为什么她这么选"】
+    // ---- 本轮上下文：光看素材名查不出"为什么她这么选"
     //
-    // 【这里有一条很对的意见：信息不够】
+    // 这里有一条很对的意见：信息不够
     // 素材日志只记"她给了什么、程序用了什么"，可真正的问题常常出在
-    // 【她当时看到了什么】：
-    //   · 清单里当时有没有这张（banned 拿掉了她就填不出来）
-    //   · 她最近几轮用过哪些（recent 影响她的判断）
-    //   · streak 到没到 2（决定了要不要禁用）
-    //   · 她这轮给的 advance / verdict（决定阶段推进）
+    // 她当时看到了什么：
+    // · 清单里当时有没有这张（banned 拿掉了她就填不出来）
+    // · 她最近几轮用过哪些（recent 影响她的判断）
+    // · streak 到没到 2（决定了要不要禁用）
+    // · 她这轮给的 advance / verdict（决定阶段推进）
     // 没有这些，只能看到结果，看不到成因。
     {
         std::wstring ctx;
@@ -25314,13 +24521,13 @@ static void AppendAssetAudit(const std::wstring& reqPose,
             t += L"    最近用过 " + rp + L"\n";
         }
         //
-        // ---- 【这里必须显示【真实的】禁用名单，不能自己重算】
+        // ---- 这里必须显示【真实的禁用名单，不能自己重算】
         //
-        // 【日志和实现对不上，会直接把排查带偏】
-        // 运行日志里同一轮出现两个自相矛盾的记录：
-        //   会话追踪：  []内=本轮禁用: 惊讶 平静     （真实名单，已去重）
-        //   素材日志：  本轮禁用 惊讶 / 惊讶         （取末两个，没去重）
-        // 看素材日志会以为禁用了两个【相同的】名字、白占一个名额，
+        // 日志和实现对不上，会直接把排查带偏
+        // 运行时同一轮出现两个自相矛盾的记录：
+        // 会话追踪： []内=本轮禁用: 惊讶 平静 （真实名单，已去重）
+        // 素材日志： 本轮禁用 惊讶 / 惊讶 （取末两个，没去重）
+        // 看素材日志会以为禁用了两个相同的名字、白占一个名额，
         // 于是去查那个根本不存在的问题。
         // 而且去重逻辑改过之后，只有真实名单会跟着变，重算的那处不会。
         if (!a.bannedPoseNow.empty()) {
@@ -25350,9 +24557,9 @@ static void AppendAssetAudit(const std::wstring& reqPose,
     }
     // ---- 她给的名字本身不在清单里：单独记一行
     //
-    // 【这是"smile"那种情况的直接线索】
+    // 这是"smile"那种情况的直接线索
     // 她给了个清单里没有的名字（比如英文 smile），
-    // 模糊匹配也没接住 → 走兜底。玩家看到画面变了但跟她说的不一样。
+    // 模糊匹配也没接住 → 走兜底。
     if (!reqPose.empty() && reqPose != effPose && !forced) {
         const VisibleAssets& vv = a.dir.Visible();
         if (!vv.HasPose(reqPose) && MatchAssetName(vv.pose, reqPose).empty()) {
@@ -25381,9 +24588,8 @@ static void MarkAssetAuditSession(const std::wstring& why) {
     t += L"角色：" + (a.Def() ? a.Def()->DisplayName() : a.persona.charName) + L"\n";
     t += L"=========================================================\n";
     AppendTextFile(path, t);
-
     //
-    // ---- 【另外两份诊断文件也要写分隔线】
+    // ---- 另外两份诊断文件也要写分隔线
     // 三份文件是同一局的三面：清单(输入) / 素材(输出) / 打回(修正)。
     // 只有素材日志有分隔线的话，另外两份跨局混在一起，
     // 看的时候根本分不清哪段是哪一局的。
@@ -25429,11 +24635,10 @@ static void WriteDataSnapshot(App& a, const ck::JValue& root) {
     //
     // ---- 每条都带时刻
     //
-    // 【这是为了跟 素材调用日志.txt 对照】
-    // 那份日志每轮都带 "13:36:46" 这样的时间戳，
+    // 这是为了跟 素材调用日志.txt 对照
     // 对话记录原本没有，于是"她说了什么"和"她当时选了什么素材"
     // 只能靠数顺序来对，一旦某一轮没记上就全错位。
-    // 两边都有时刻，直接按时间就能对上——
+    // 两边都有时刻，直接按时间就能对上
     // 这是排查"立绘跟台词对不上"最直接的一条线索。
     for (size_t i = 0; i < a.hist.size(); ++i) {
         const HistLine& h = a.hist[i];
@@ -25447,13 +24652,13 @@ static void WriteDataSnapshot(App& a, const ck::JValue& root) {
 void SaveGameNow() {
     App& a = g_app;
     //
-    // ---- 【这一局到底开没开始】—— 写盘前最后一道防线
+    // ---- 这一局到底开没开始—— 写盘前最后一道防线
     //
     // SaveGameNow 本身不判断"内存里这堆东西代不代表一局游戏"，
     // 它只是把当前状态写进 a.savePath（默认槽 1）。
-    // 于是任何一个"没进故事却调了它"的调用点，都会用【初始空状态】
+    // 于是任何一个"没进故事却调了它"的调用点，都会用初始空状态
     // 把玩家的主存档覆盖掉：不报错、不提示，等他下次点「继续上次」
-    // 才发现档回不到原来那一章了。
+    // 才发现档回不到
     //
     // g_titleUseChar 正好是这个标志：BeginStory / LoadFromSlot 成功后置 true，
     // 清空记录时置 false。它为真 == 本次会话确实进过故事。
@@ -25500,18 +24705,18 @@ void SaveGameNow() {
             root.obj.push_back(std::make_pair("dirChapterBg", vCb));
         }
         //
-        // ---- 【走过的路径：流程图要画它】
+        // ---- 走过的路径：流程图要画它
         //
         // 只存章号的话，流程图只能退化成"按总章数画一条满的直线"，
-        // 那等于告诉玩家"你走完了全部"，而实际上他可能跳过了中间几章。
+        // 那等于告诉玩家"
         if (!ds.path.empty()) {
             ck::JValue vP; vP.type = ck::JValue::TStr; vP.str = U8(ds.path);
             root.obj.push_back(std::make_pair("dirPath", vP));
         }
         // 当时用的剧本。流程图跳章前要切回它，否则会跳进错的那一课。
         //
-        // 【无条件写，哪怕是空串】
-        // 原来只在非空时写，于是"没装任何剧本时存的档"里根本没有这个字段——
+        // 无条件写，哪怕是空串
+        // 原来只在非空时写，于是"没装任何剧本时存的档"里根本没有这个字段
         // 读回来被 SlotRejectReason 当成"旧版本存的档"拒掉：
         // 玩家刚存完就读不了，而提示还在说一句跟他无关的话。
         // 字段必须存在（值可以空），"有没有剧本"和"这是不是旧档"才是两件事。
@@ -25520,14 +24725,14 @@ void SaveGameNow() {
             root.obj.push_back(std::make_pair("syllabusId", vS));
         }
         //
-        // ---- 【画面也要存】
+        // ---- 画面也要存
         //
         // 只存进度不存画面，读档回来就是一片空舞台：
         // 立绘要等模型回第一轮、背景要等她再挑一次。
         // 存档是"回到那一刻"，那一刻她站在哪儿、什么表情、放着什么曲子，
         // 本来就该跟着一起回来。
         //
-        // 存的是【名字】不是路径：路径里带着角色包目录，
+        // 存的是名字不是路径：路径里带着角色包目录，
         // 换台机器 / 改了目录名就全对不上，名字则永远能重新解析。
         if (!a.rs.pose.empty()) {
             ck::JValue vP; vP.type = ck::JValue::TStr; vP.str = U8(a.rs.pose);
@@ -25542,7 +24747,6 @@ void SaveGameNow() {
             root.obj.push_back(std::make_pair("dirCurBgm", vM));
         }
     }
-
     // ---- 存档界面要显示的元数据
     //
     // 没有这些，槽位列表只能画出 9 个"槽 1 / 槽 2"的空壳，
@@ -25556,13 +24760,11 @@ void SaveGameNow() {
     ck::JValue vChap; vChap.type = ck::JValue::TStr;
     vChap.str = U8(ChapterLabel());
     root.obj.push_back(std::make_pair("chapter", vChap));
-
-
     //
     // ---- 素材笔记要存进存档
     //
     // 不存的话每次读档都要重新问一次模型，白等几秒；
-    // 而那份笔记是【她自己的理解】，跟着这一局走才对。
+    // 而那份笔记是她自己的理解，跟着这一局走才对。
     ck::JValue vAb; vAb.type = ck::JValue::TStr; vAb.str = U8(a.assetBrief);
     root.obj.push_back(std::make_pair("assetBrief", vAb));
     ck::JValue vAr; vAr.type = ck::JValue::TStr; vAr.str = U8(a.assetReview);
@@ -25587,10 +24789,9 @@ void SaveGameNow() {
         vPv.str = U8(pv);
     }
     root.obj.push_back(std::make_pair("preview", vPv));
-
     // ---- 对话历史
     //
-    // 【之前刻意不存，是错的】
+    // 之前刻意不存，是错的
     // 理由是"文件会变大、读档后玩家关心的是聊到哪了"。
     // 但回想面板存在的意义就是回头看说过的话，读档后一片空白等于
     // 这个功能只在当前会话里有效——玩家存了档再打开，等于这段对话没发生过。
@@ -25620,8 +24821,7 @@ void SaveGameNow() {
     WriteTextFile(a.savePath, W(ck::JsonDump(root, 2)));
     a.mem.Save(a.memPath);
     a.prof.Save(a.profPath);
-
-    // ---- 往 data 写一份【完整】的
+    // ---- 往 data 写一份完整的
     //
     // 主存档里的历史是截断的（120 条 × 400 字），那是给程序读的。
     // data 里这份不截断，是给人看的 —— 玩家想回看整段对话就靠它。
@@ -25634,21 +24834,19 @@ void SaveGameNow() {
 void SaveToSlot(int slot) {
     App& a = g_app;
     if (slot < 1 || slot > kSaveSlots) return;
-
-    // 【这里原来有个会丢数据的 bug】
-    // 切槽之后写了 a.mem.Clear() / a.prof = Profile()，然后 SaveGameNow()
+    // 这里
+    // 切槽之后写了 a.mem.Clear / a.prof = Profile，然后 SaveGameNow
     // 把清空后的记忆写进新槽 —— 玩家存一次档，她就把之前记住的全忘了。
     //
     // 正确做法：旧槽先落一次盘（保住原槽的完整数据），切路径，
-    // 再把【内存中当前的】记忆和画像写进新槽。两个槽都该是完整的。
+    // 再把内存中当前的记忆和画像写进新槽。两个槽都该是完整的。
     a.mem.Save(a.memPath);
     a.prof.Save(a.profPath);
     ApplySlotPaths(slot);
     SaveGameNow();
 }
-
 // 一个槽的全部文件：程序读的三份 + 给人看的两份。
-// 【两个目录都要清】—— 只清 data 是"幽灵存档"的直接原因：
+// 两个目录都要清—— 只清 data 是"幽灵存档"的直接原因：
 // %APPDATA% 里若还留着老版本时代的副本，重启时搬迁逻辑会把它复制回 data，
 // 玩家删多少次它都还在。目录不存在时 DeleteFileW 返回失败，不影响流程。
 static void DeleteSlotFilesIn(const std::wstring& dir, const std::wstring& tag) {
@@ -25673,11 +24871,10 @@ void DeleteSlot(int slot) {
     if (!ad.empty() && ad != a.dataDir && ad != a.appDir) DeleteSlotFilesIn(ad, tag);
     std::wstring od = GetOldAppDataDir();
     if (!od.empty() && od != a.dataDir && od != a.appDir && od != ad) DeleteSlotFilesIn(od, tag);
-
     //
-    // ---- 删的是【当前正在用的槽】：必须换个槽继续
+    // ---- 删的是当前正在用的槽：必须换个槽继续
     //
-    // 【不换的话，60 秒后的自动存档会把内存里的对话原样写回去】
+    // 不换的话，60 秒后的自动存档会把内存里的对话原样写回去
     // 玩家刚删完，过一会儿又看见那个槽有内容了，
     // 而且写回去的还是删之前那局的数据——删除等于白做。
     if (a.curSlot == slot) {
@@ -25697,29 +24894,27 @@ void DeleteSlot(int slot) {
     }
     ScanSlots();
 }
-
 // 从指定槽读档。角色由槽里记录的 charId 决定，不是当前选的。
 // 启动日志追加（定义在 WinMain 附近，这里先声明）。
 // 读档失败必须写进 启动日志.txt：点一下没反应、又不知道程序到底去哪儿找的，
-// 是最难自查的一类问题。下面三个 return false 都会记下【实际尝试的路径】。
+// 是最难自查的一类问题。下面三个 return false 都会记下实际尝试的路径。
 static void BootNote(const std::wstring& msg);
 
 bool LoadFromSlot(int slot) {
     App& a = g_app;
     if (slot < 1 || slot > kSaveSlots) return false;
     //
-    // 【读档每一步都写进启动日志】
+    // 读档每一步都写进启动日志
     // "读不到档"最难受的地方是没有线索：点了没反应、或者进了游戏一片空白，
-    // 两种情况的界面长得差不多，成因却完全不同。以前只能靠猜——
-    // 我自己连着猜错了两轮。现在把走到哪一步、找的是哪个文件全记下来，
+    // 两种情况的界面长得差不多，成因却完全不同。早期版本只能靠猜
     // 玩家把 data\启动日志.txt 发来就能一次定位。
     BootNote(L"[读档] 点了读取：槽 " + WFromInt(slot) + L"，存档目录 " + a.dataDir);
     // 读档前先作废在飞的任务：它们的结果属于【读档之前】的那个周目。
     AbortAsync();
     //
-    // ---- 【界面状态同样要归零】
+    // ---- 界面状态同样要归零
     //
-    // 跟开新周目是同一件事：读档以前只清了 hist 那类"内容"，
+    // 跟开新周目是同一件事：读档早期版本只清了 hist 那类"内容"，
     // 而 quizMode / inputMode / showChoices 这些界面状态没人管。
     // 于是"当前正停在选择题上、再去读一个档"，读完选项还挂在屏幕上，
     // 点击也还只认选项——跟开新档继承了上一局对话是同一个毛病。
@@ -25743,14 +24938,14 @@ bool LoadFromSlot(int slot) {
     std::wstring cid = W(peek.getStr("charId"));
     if (cid.empty()) cid = W(peek.getStr("char"));   // 更老的版本用的是 "char"
     //
-    // ---- 【读不了就别读，并把原因说清楚】
+    // ---- 读不了就别读，并把原因说清楚
     //
-    //  这里是三个入口（存档页 / 流程图跳章 / 继续上次）唯一的共同出口，
-    //  所以检查放在这里，一处覆盖全部。
+    // 这里是三个入口（存档页 / 流程图跳章 / 继续上次）唯一的共同出口，
+    // 所以检查放在这里，一处覆盖全部。
     //
-    //  判据基于【刚从文件里读出来的内容】，不是 a.slots 里可能已经过期的副本——
-    //  a.slots 是上次扫描的结果，中间可能换过角色、删过剧本。
-    //  用过期副本判断，会出现"卡片上写着能读、点下去又说不能"。
+    // 判据基于刚从文件里读出来的内容，不是 a.slots 里可能已经过期的副本
+    // a.slots 是上次扫描的结果，中间可能换过角色、删过剧本。
+    // 用过期副本判断，会出现"卡片上写着能读、点下去又说不能"。
     {
         SaveSlotInfo chk;
         chk.index      = slot;
@@ -25778,14 +24973,14 @@ bool LoadFromSlot(int slot) {
         if (!sel.empty()) SelectChar(sel[0]->id);
     }
     //
-    // ---- 【"角色特化剧本 vs 存档里的角色"已经并进 SlotRejectReason】
+    // ---- "角色特化剧本 vs 存档里的角色"已经并进 SlotRejectReason
     //
-    //  这一句原来单独写在这里：当前剧本锁了角色、而存档是别人的，就挡下。
-    //  但它判的是【当前】剧本，而读档时剧本可能还没切到存档那一本——
-    //  于是"该挡的挡住了、不该挡的也可能挡住"，而且跟上面那份检查重复。
-    //  现在统一由 SlotRejectReason 按【存档自己记的那一本】判断，
-    //  这里不再重复判一次。
-    // 【启动时角色是从 config 的 LastChar 恢复的，不走 SelectChar】
+    // 这一句原来单独写在这里：当前剧本锁了角色、而存档是别人的，就挡下。
+    // 但它判的是当前剧本，而读档时剧本可能还没切到存档那一本
+    // 于是"该挡的挡住了、不该挡的也可能挡住"，而且跟上面那份检查重复。
+    // 现在统一由 SlotRejectReason 按存档自己记的那一本判断，
+    // 这里不再重复判一次。
+    // 启动时角色是从 config 的 LastChar 恢复的，不走 SelectChar
     // 这里兜底同步一次，否则 gRole 全空（= 所有语义限制静默失效）。
     AssetRoleSync(a.curChar);
     // 角色刚确定（或刚被存档里的 charId 改掉），开场引导语要跟着换，
@@ -25817,9 +25012,9 @@ bool LoadGameNow() {
     // 不清的话，读一个没记画面的老存档时，会顶着【上一个档】的画面开新的一局。
     a.loadPose.clear(); a.loadBg.clear(); a.loadBgm.clear();
     //
-    // 【下面三处原来都是光秃秃的 return false】
+    // 下面三处原来都是光秃秃的 return false
     // 没有原因、没有日志，界面只弹一句干巴巴的"存档读取失败"，
-    // 玩家无从查起——我自己连着猜错了三轮，就是因为没有线索可看。
+    // 玩家无从查起
     // 读档失败必须说清楚卡在哪一步、找的是哪个文件。
     std::string u8;
     if (!ReadFileU8(a.savePath, u8)) {
@@ -25848,21 +25043,21 @@ bool LoadGameNow() {
         }
     }
     //
-    // ---- 【导演模式不能让剧本 VM 决定读档的成败】
+    // ---- 导演模式不能让剧本 VM 决定读档的成败
     //
-    // 【这是"扫描到了、卡片写着能读、点下去却显示加载失败"的根因】
+    // 这是"扫描到了、卡片写着能读、点下去却显示加载失败"的根因
     // 导演模式（有大纲）里台词是实时生成的，剧本 VM 从头到尾没参与，
-    // 于是存档里的 scene 恒为空串（Vm::Save 时 SceneName() 拿不到场景名）。
+    // 于是存档里的 scene 恒为空串（Vm::Save 时 SceneName 拿不到场景名）。
     // 而 Vm::Load 只有两条判据：
-    //     if (!prog_) return false;                    —— 没有 main.cks 时 prog_ 是空
-    //     if (prog_->Find(s.scene) < 0) return false;  —— 空串在任何剧本里都找不到
+    // if (!prog_) return false; —— 没有 main.cks 时 prog_ 是空
+    // if (prog_->Find(s.scene) < 0) return false; —— 空串在任何剧本里都找不到
     // 导演模式根本用不着剧本文件，所以这两条必中其一条，整个读档失败；
     // 而扫描是扫目录的、跟 VM 无关，于是卡片写着"能读"、点下去才失败。
     //
     // 实测（把真实的 Vm::Load / Program::Find 抽出来编译跑）：
-    //   没有剧本 prog_=nullptr、scene=""   -> false
-    //   有剧本（2 个场景）、scene=""       -> false
-    //   剧本模式正常 scene="main"          -> true（对照）
+    // 没有剧本 prog_=nullptr、scene="" -> false
+    // 有剧本（2 个场景）、scene="" -> false
+    // 剧本模式正常 scene="main" -> true（对照）
     if (a.dirMode) {
         // 导演模式：VM 不参与这一局，跳过。
     } else if (s.scene.empty()) {
@@ -25873,24 +25068,22 @@ bool LoadGameNow() {
         BootNote(L"[读档失败] 槽 " + WFromInt(a.curSlot) + L"：剧本里没有这一幕「" + s.scene + L"」");
         return false;
     }
-
     //
-    // ---- 【读档的第一件事是重建素材清单，必须排在恢复画面之前】
+    // ---- 读档的第一件事是重建素材清单，必须排在恢复画面之前
     //
-    // 【这是"读档后没有立绘"的根因】
-    // 下面恢复画面时要拿存档里的名字去 Visible() 里核对
-    // （名字不在清单里就当作没记）。而 Visible() 只有三处被填：
-    // 开局、StartChat、StartAssetBrief 的兜底——【读档一条都不走】。
+    // 这是"读档后没有立绘"的根因
+    // 下面恢复画面时要拿存档里的名字去 Visible 里核对
+    // （名字不在清单里就当作没记）。而 Visible 只有三处被填：
+    // 开局、StartChat、StartAssetBrief 的兜底——读档一条都不走。
     // 于是它装的还是上一次的值：
-    //   · 刚开程序就读档  -> 空的，任何名字都核对不过
-    //   · 读一个别的角色的档 -> 还是上一个角色的立绘表
+    // · 刚开程序就读档 -> 空的，任何名字都核对不过
+    // · 读一个别的角色的档 -> 还是上一个角色的立绘表
     // 两种情况下 loadPose / loadBg / loadBgm 全被清成空，
-    // 日志还一本正经地写着「存档里的造型「害羞」现在已经不存在了」——
-    // 图明明在，是清单没跟上。玩家看到的就是读档进来一片空舞台，
+    // 日志还一本正经地写着「存档里的造型「害羞」现在已经不存在了」
+    // 图明明在，是清单没跟上。
     // 要等她开口回第一轮才有人。
     //
-    // 原来这段写在下面（对话历史那一块之后），排在核对【之后】，
-    // 于是核对用的永远是过期清单。现在提到恢复画面【之前】。
+    // 于是核对用的永远是过期清单。现在提到恢复画面之前。
     //
     // 顺序也不能反：SelectChar 已经在 LoadFromSlot 里换过角色了，
     // 这里扫到的才是这一档那个角色的素材。
@@ -25910,7 +25103,7 @@ bool LoadGameNow() {
         ds.chapterBg = W(root.getStr("dirChapterBg"));
         ds.path = W(root.getStr("dirPath"));   // 老存档没有这个字段 -> 空，Restore 会补当前章
         //
-        // ---- 【锁定的场景必须先在清单里，才接得上】
+        // ---- 锁定的场景必须先在清单里，才接得上
         //
         // 作者中途删了那张背景图、或者换了角色包，存档里记的名字
         // 现在根本不存在。照原样锁上去，画面会一片空白。
@@ -25919,12 +25112,12 @@ bool LoadGameNow() {
             ds.chapterBg.clear();
         a.dir.Restore(ds);
         //
-        // ---- 【读回存档里那一刻的画面】
+        // ---- 读回存档里那一刻的画面
         //
         // 这里只读名字、不铺画面：铺画面必须在 PromptStageReset 之后
         // （DirResumeAfterLoad 里），否则刚设好就被清掉。
         //
-        // 【名字一律先过一遍当前清单】
+        // 名字一律先过一遍当前清单
         // 作者中途删过素材的话，存档里记的名字现在根本不存在。
         // 照原样铺上去就是"画面空白 + 日志一切正常"，
         // 所以这里对不上就干脆当作没记，让她开口时重新挑。
@@ -25943,9 +25136,9 @@ bool LoadGameNow() {
                 AppLog(L"[读档] 存档里的曲子「%s」现在已经不存在了，改由她开口时重挑", m.c_str());
         }
         //
-        // ---- 【读档同样要清】
-        // 存档里记的"最近用过"是【上一局、上一份素材目录】的。
-        // 作者中途删过素材的话，这里会留着一批不存在的名字——
+        // ---- 读档同样要清
+        // 存档里记的"最近用过"是上一局、上一份素材目录的。
+        // 作者中途删过素材的话，这里会留着一批不存在的名字
         // 不清就会让换脸的禁用机制在整局里空转。
         PruneRecentToWhitelist();
     }
@@ -25994,37 +25187,33 @@ bool LoadGameNow() {
             h.text     = W(e.getStr("t"));
             h.isPlayer = (e.getNum("p", 0) != 0);
             //
-            // ---- 【旧存档里已经存进去的协议标签，读档时顺手清掉】
+            // ---- 旧存档里已经存进去的协议标签，读档时顺手清掉
             //
-            // 标签是【写进存档】的，光修生成侧救不回已经存下来的那批：
+            // 标签是写进存档的，光修生成侧救不回已经存下来的那批：
             // 玩家读档回来照样看到 </parameter>，还会被当成上下文
-            // 反复喂回给她。所以读档这一侧也剥一次——
+            // 反复喂回给她。所以读档这一侧也剥一次
             // 老存档不用手动删也能自愈。
             StripToolCallTags(h.text);
             if (!h.text.empty()) a.hist.push_back(h);
         }
     }
-
-    // 【这里原来漏了两行，读档后她会失忆】
+    // 这里原来漏了两行，读档后她会失忆
     // 记忆和画像是跟槽走的，读完进度必须把对应槽的 memory_/profile_ 也读进来。
-    // 之前只在启动时加载过一次，于是"读档"等于"进度回来了、记忆没了"——
-    // 玩家以为她忘了自己，其实是代码压根没读。
+    // 之前只在启动时加载过一次，于是"读档"等于"进度回来了、记忆没了"
     // 调用方（LoadFromSlot）已经 ApplySlotPaths 过，这里的路径就是目标槽的。
     a.mem.Load(a.memPath);
     a.prof.Load(a.profPath);
-
     // ---- 读档时必须把当前正文清掉
     //
-    // 【这是"读档后对话框出现 {\"say\":...} 原始文本"的根因】
+    // 这是"读档后对话框出现 {\"say\":...} 原始文本"的根因
     // 流式回复期间，WM_TIMER 每帧都在做 a.view.body = got（got 是模型
     // 已收到的那一段原始 JSON，开头就是 {"say":"）。
     // 如果这时候读档：
-    //   · AbortAsync 会清掉 g_chatFull（所以不会继续往里追加了）
-    //   · 但【a.view.body 里已经存着的那半截 JSON 没人动】
-    //   · 剧本模式没事——下面的 vm.Step(a.view) 会用剧本当前句覆盖掉它
-    //   · 导演模式有事——那里根本没有剧本在跑，body 原样留着
+    // · AbortAsync 会清掉 g_chatFull（所以不会继续往里追加了）
+    // · 但a.view.body 里已经存着的那半截 JSON 没人动
+    // · 剧本模式没事——下面的 vm.Step(a.view) 会用剧本当前句覆盖掉它
+    // · 导演模式有事——那里根本没有剧本在跑，body 原样留着
     // 于是打字机从 0 开始，一格一格把 { " s a y " : 打到对话框里。
-    // 玩家看到的正是截图里那种"带花括号的原始文本"。
     //
     // 必须在 Step 之前清：剧本模式靠 Step 覆盖，导演模式靠这里清空。
     a.view.body.clear();
@@ -26038,11 +25227,11 @@ bool LoadGameNow() {
     } else {
         a.block = ck::VmBlock::Click;
         //
-        // ---- 【旧存档兼容：停在"写代码"那一步的档】
+        // ---- 旧存档兼容：停在"写代码"那一步的档
         //
         // 题改成选择题之后，答题环节不再有编辑器。
         // 老存档若正好停在出题那一刻（phase=CodeInput / codeMode=true），
-        // 读档回来会是一个既没有编辑器、也没有选项的空界面——
+        // 读档回来会是一个既没有编辑器、也没有选项的空界面
         // 玩家点什么都没反应，只能弃档。
         //
         // 选择题的题干和选项都在大纲里、随时能放出来，
@@ -26061,20 +25250,19 @@ bool LoadGameNow() {
     ResetTextState(a);
     // 读档：笔记已在上面读回；读不到（老存档）就先试试缓存，再考虑生成。
     //
-    // 【只在存档里没带笔记时才试缓存】
+    // 只在存档里没带笔记时才试缓存
     // 存档里那份是跟着这一局一起存的，最贴合当时的语境，
     // 不能反过来让缓存把它盖掉。
     if (a.assetBrief.empty()) LoadAssetNoteCache();
     StartAssetBrief();
     return true;
 }
-
 // ---------------------------------------------------------------- 流程图跳章
 //
-// 【为什么跳章前要先切回剧本】
-// 玩家存的是"C 语言第 3 章"的档，回标题换成 Python 之后再点流程图第 3 章——
+// 为什么跳章前要先切回剧本
+// 玩家存的是"C 语言第 3 章"的档，回标题换成 Python 之后再点流程图第 3 章
 // 不切回去的话，"第 3 章"会被当成 Python 的第 3 章，讲的是完全不同的东西。
-// 而且这种错【不报错】：章号合法、剧本也在，只是内容对不上，
+// 而且这种错不报错：章号合法、剧本也在，只是内容对不上，
 // 玩家只会觉得"她怎么突然讲起别的来了"。
 static void FlowJumpTo(int slotIdx, int chapter, HWND hwnd) {
     App& a = g_app;
@@ -26099,15 +25287,14 @@ static void FlowJumpTo(int slotIdx, int chapter, HWND hwnd) {
         UiTip(a, a.slotLoadErr.empty() ? L"存档读取失败" : a.slotLoadErr, 6);
         return;
     }
-
     //
-    // ---- 前情提要：只补【被跳过的】那几章
+    // ---- 前情提要：只补被跳过的那几章
     //
     // 走过的章节她是真经历过的（记忆里有、关系曲线也记着），
-    // 再讲一遍是啰嗦；跳过的是她【没经历过】的——不讲的话，
+    // 再讲一遍是啰嗦；跳过的是她没经历过的——不讲的话，
     // 她会一脸茫然地开始新的一章，玩家问起前面她一问三不知。
     //
-    // 【不额外调模型】内容直接来自剧本的章节名 + 教学目标。
+    // 不额外调模型内容直接来自剧本的章节名 + 教学目标。
     // 跳章是玩家的即时操作，不该再让他等一次生成。
     std::wstring brief;
     for (int c = 1; c < chapter; ++c) {
@@ -26121,7 +25308,7 @@ static void FlowJumpTo(int slotIdx, int chapter, HWND hwnd) {
     }
     a.jumpBrief = brief;
     //
-    // 【跳章标记要在 DirResumeAfterLoad 之前置位】
+    // 跳章标记要在 DirResumeAfterLoad 之前置位
     // BuildResumeKick 就是那一次调用里读它的。
     // 注意它跟 jumpBrief 不是一回事：跳到第 2 章时 brief 为空（没跳过任何章），
     // 但"她开口要知道这一章讲什么"这件事照样成立。
@@ -26159,61 +25346,57 @@ static void FlowJumpTo(int slotIdx, int chapter, HWND hwnd) {
                               + L"（跳过的" + ju + L"她没经历过）"), 3);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
-
 // ---------------------------------------------------------------- 多轮上下文
 //
 // 把 a.hist（回想面板用的那份对话记录）拼成 user / assistant 交替的消息序列。
 //
-// 【为什么要单独做这件事】
-// 请求里只有 system + 当前一句的话，模型是"每一轮都从零开始"——
+// 为什么要单独做这件事
+// 请求里只有 system + 当前一句的话，模型是"每一轮都从零开始"
 // 它不知道上一句自己讲了什么、玩家问过什么。表现是：
-//   · 玩家说"刚才那个没懂"，她不知道"那个"是什么
-//   · 她会把讲过的内容换个说法再讲一遍，玩家觉得她没在听
-//   · 玩家复述错了，她发现不了，因为不记得自己原来怎么说的
+// · 玩家说"刚才那个没懂"，她不知道"那个"是什么
+// · 她会把讲过的内容换个说法再讲一遍，玩家觉得她没在听
+// · 玩家复述错了，她发现不了，因为不记得自己原来怎么说的
 //
 // 几个必须处理的细节：
 //
-// 1) 【结尾去重】玩家刚提交的这句话已经 push 进 hist 了（WM_APP_INPUT_SEND），
-//    紧接着又要作为本轮 user 追加。不去重的话同一句话会出现两次，
-//    模型容易把它当成"他重复了一遍"而给出奇怪的反应。
+// 1) 结尾去重玩家刚提交的这句话已经 push 进 hist 了（WM_APP_INPUT_SEND），
+// 紧接着又要作为本轮 user 追加。不去重的话同一句话会出现两次，
+// 模型容易把它当成"他重复了一遍"而给出奇怪的反应。
 //
-// 2) 【同角色相邻要合并】两条连续的 assistant（比如剧本连着两句旁白）
-//    在部分服务端会被当成非法序列。合并成一条，中间用换行隔开。
+// 2) 同角色相邻要合并两条连续的 assistant（比如剧本连着两句旁白）
+// 在部分服务端会被当成非法序列。合并成一条，中间用换行隔开。
 //
-// 3) 【总量要有上限】只取最近若干轮，并且单条截断。
-//    全量喂进去的话长会话的请求体会非常大，既慢又容易超上下文窗口。
+// 3) 总量要有上限只取最近若干轮，并且单条截断。
+// 全量喂进去的话长会话的请求体会非常大，既慢又容易超上下文窗口。
 //
-// 4) 【旁白要标明】说话人为空的条目是旁白，直接当 assistant 会让她
-//    以为那句话是她自己说的。加个「（旁白）」前缀区分开。
+// 4) 旁白要标明说话人为空的条目是旁白，直接当 assistant 会让她
+// 以为那句话是她自己说的。加个「（旁白）」前缀区分开。
 namespace {
-
-// 开考之前，他至少要回答多少次。
+// 开考
 //
-// 【为什么是最低次数而不是固定次数】
-// 原来这里是"她一说开考就开考"，结果她讲两句就考，玩家还没反应过来。
+// 为什么是最低次数而不是固定次数
 // 现在要求至少答够这么多次——保证有个基本的教学来回。
 //
-// 【但【没有上限】】：答够之后引擎完全放手，
+// 但【没有上限】：答够之后引擎完全放手，
 // 她认为没教懂就继续聊，聊多少轮都由她定。
-// 引擎不再有"聊太久就替你开考"这种兜底。
+// 引擎不再有"聊太久就替
 const int kQuizMinAnswers = 2;
 // 讲了这么多轮还没推进时，在 prompt 里提醒她一次（不强制，只提醒）
 const int kNudgeTurns = 10;
 // 同一个立绘连着用这么多轮，就在 prompt 里点名要求她换一张
 //
-// 【这是"提示阈值"，不是"引擎接管阈值"】
+// 这是"提示阈值"，不是"引擎接管阈值"
 // 引擎不再替她换脸（换出来的脸经常跟台词对不上，见 ApplyAiStage 的说明）。
-// 这个数只决定：连用几轮后，在 prompt 里把"你已经连续 N 轮用这张脸了"
+// 这个数只决定：连用几轮后，在 prompt 里把"
 // 这句话摆出来、并要求这一轮必须换。
 //
-// 【取 2】玩家要的是"两轮必须换一次"。取 3 的话她能连着用 3 轮同一张脸，
+// 取 2玩家要的是"两轮必须换一次"。取 3 的话她能连着用 3 轮同一张脸，
 // 3 轮同一张在对话里已经是很明显的一成不变了。
 const int kPoseStreakMax = 2;
-
 // 多轮上下文的窗口。
 //
-// 【这几个数原来是 12 / 6000 / 400，太小了】
-// 她讲一个知识点动辄 500~800 字，400 的截断会把讲解拦腰砍断——
+// 这几个数
+// 她讲一个知识点动辄 500~800 字，400 的截断会把讲解拦腰砍断
 // 模型看到的 her 上一条回复是半句话，只能顺着半句接，
 // 于是"讲了上句没下句"，看起来就像不记得自己说过什么。
 //
@@ -26221,17 +25404,16 @@ const int kPoseStreakMax = 2;
 const int    kCtxMaxTurns = 24;      // 最多带最近多少条（约 12 个来回）
 const size_t kCtxMaxChars = 16000;   // 上下文总字符上限
 const size_t kCtxLineMax  = 900;     // 单条截断长度（够放一整段讲解）
-
 //
-// ---- 【"不缺 token"时这三个上限全部取消】
+// ---- "不缺 token"时这三个上限全部取消
 //
-// ★ 必须做成函数，不能直接改常量：这三个数是【省 token 的折中】，不是正确性要求。
-//   只放开输出上限、上下文还砍着，表现依然是"她记不住前面聊的"，
-//   而玩家会以为自己已经设置好了（他明明选了无上限）。
+// ★ 必须做成函数，不能直接改常量：这三个数是省 token 的折中，不是正确性要求。
+// 只放开输出上限、上下文还砍着，表现依然是"她记不住前面聊的"，
+// 而
 // ★ 不用"很大的数"而用"真的不限"：kCtxMaxChars 参与加法（total + add > kCtxMaxChars），
-//   填 SIZE_MAX 有溢出风险——所以比较处改成"开关为真就跳过判断"。
+// 填 SIZE_MAX 有溢出风险——所以比较处改成"开关为真就跳过判断"。
 //
-// ---- 不缺 token，所以【恒为不限】
+// ---- 不缺 token，所以恒为不限
 // 曾经这里读 llm.noTokenLimit 开关，那个开关已随 token 上限机制移除。
 static bool  CtxUnlimited()  { return true; }
 static int    CtxMaxTurns()  { return CtxUnlimited() ? 0x7fffffff : kCtxMaxTurns; }
@@ -26296,25 +25478,18 @@ struct ChatCtx {
     LlmConfig cfg;
     int gen = 0;        // 发起时的代号，回来时对不上就丢弃这次结果
 };
-
-// ============================================================================
-//  素材打回重填
-// ============================================================================
+// 素材打回重填
 //
-// 【为什么不在主线程里等】LlmChat 是同步阻塞的，主线程等几秒界面就卡死了，
+// 为什么不在主线程里等LlmChat 是同步阻塞的，主线程等几秒界面就卡死了，
 // 而这时候玩家正在读她刚说出的台词——卡住等于打断阅读。
 // 所以跟正常对话一样丢到工作线程，回来再贴画面。
 //
-// 【为什么只重试一次】每多一次就是多几秒空白。一次打回能把绝大多数
+// 为什么只重试一次每多一次就是多几秒空白。一次打回能把绝大多数
 // 名字问题修好（她是照着清单重选，不是重新猜）；两次以上收益极小、
 // 玩家等待翻倍，还会让人觉得"这程序怎么老在重来"。
 // 打回仍失败就保持当前画面——不换脸总比换一张莫名其妙的脸好。
 static const int kMaxStageFix = 1;
-
-// ============================================================================
-//  素材笔记与章末复盘
-// ============================================================================
-
+// 素材笔记与章末复盘
 struct AssetNoteCtx {
     int                   gen = 0;
     std::vector<ChatMsg>  msgs;
@@ -26327,10 +25502,9 @@ static int          g_assetNoteChapter = 0;
 static bool         g_assetNoteIsReview = false;
 // 笔记被她写成"对话 JSON"时只重问一次，绝不无限重试（每次都是一次真请求）
 static int          g_assetBriefRetry = 0;
-
 // 把素材清单摊成给模型看的文本。
 //
-// 【要把作者写的说明一起给出去】
+// 要把作者写的说明一起给出去
 // 那份说明是作者的理解，让它在此基础上改写成自己的话，
 // 比让它凭空对着一堆文件名瞎猜要准得多。
 static std::wstring AssetListForBrief(const VisibleAssets& v) {
@@ -26355,10 +25529,9 @@ static std::wstring AssetListForBrief(const VisibleAssets& v) {
     }
     return o;
 }
-
-// 清单里【没有作者说明】的素材。
+// 清单里没有作者说明的素材。
 //
-// 【这是"丢个文件进去就能用"的关键】
+// 这是"丢个文件进去就能用"的关键
 // 作者新画一张图 / 新放一首曲子，通常不会顺手打开 char.ini 补一句说明。
 // 没有说明，模型对着一个光秃秃的文件名只能瞎猜，于是新素材要么永远选不到、
 // 要么被用在不合适的场合——表现就是"加了图没反应"或"用得莫名其妙"。
@@ -26385,11 +25558,11 @@ static std::wstring MissingMoodSection(const VisibleAssets& v) {
     }
     if (n == 0) return L"";
     //
-    // ---- 【示例行的名字必须是清单里真实存在的，否则她会照抄示例】
+    // ---- 示例行的名字必须是清单里真实存在的，否则她会照抄示例
     //
-    // 【实测复现如下】素材笔记的【补说明】写着：
-    //    立绘 得意 = …
-    //    背景 天台 = …
+    // ★ 症状：素材笔记的补说明写着：
+    // 立绘 得意 = …
+    // 背景 天台 = …
     // 而白名单里既没有「得意」也没有「天台」——那两行正是下面示例的原抄。
     // 模型把"格式示例"当成了"要补的内容"，于是笔记里凭空多出两个
     // 清单里没有的名字，她照着选就必然被拒、必然打回。
@@ -26412,39 +25585,36 @@ static std::wstring MissingMoodSection(const VisibleAssets& v) {
         L"只补上面列出的这几样，不要额外发明清单里没有的名字。\n";
     return head;
 }
-
 // 笔记请求专用的 system：把主对话那套"必须返回 JSON"的输出契约整段切掉。
 //
-// 【这就是素材笔记失效的真凶——实测存档里的原样】
-//   save_s1.json 里 assetBrief =
-//     【你自己的素材笔记】\n{"say":"哼哼——看来你很认真地研究了可用素材嘛…",
-//      "emote":"坏笑","pose":"坏笑","bg":"空无一人的课室","bgm":"おまかせあれ",…}
-//   她把【开场台词的 JSON】当成笔记交回来了。
+// 这就是素材笔记失效的真凶——实测存档里的原样
+// save_s1.json 里 assetBrief =
+// "emote":"坏笑","pose":"坏笑","bg":"空无一人的课室","bgm":"おまかせあれ",…}
+// 她把开场台词的 JSON当成笔记交回来了。
 //
 // 根因：笔记请求复用了主对话的 system prompt，而那段 system 结尾写着
-//   「【输出格式】只返回一个 JSON 对象 / 必须只返回一个 JSON 对象」。
+// 「输出格式只返回一个 JSON 对象 / 必须只返回一个 JSON 对象」。
 // user 消息里那句"不要写 JSON"是在跟 system 打架——system 赢，
 // 于是她照着 JSON 回。契约不切掉，在 user 消息里喊多少遍都没用。
 //
-// 【切到第一个【输出格式】为止】
+// 切到第一个【输出格式为止】
 // 角色包走 BuildCharSystem（契约在它自己末尾），内置角色走 BuildSystemMsg
 // （契约在它自己末尾）——两种情况下契约都在最后，切到标记处就是安全的。
 static std::wstring StripOutputFormat(const std::wstring& sys) {
     //
-    // 【从后往前找，不是从前往后】
-    // 契约确实在最后，但【角色包内容里也可能出现这几个字】——
+    // 从后往前找，不是从前往后
+    // 契约确实在最后，但角色包内容里也可能出现这几个字
     // 人设、前世记忆、共同记忆都是作者自由写的，万一谁在里面写了
-    // "【输出格式】"，从前往后找会一刀切在它那里，
+    // "输出格式"，从前往后找会一刀切在它那里，
     // 后面整段人设和记忆全没了，而且没有任何提示。
     // 取最后一次出现的位置，切掉的才是真正那份契约。
     size_t p = sys.rfind(L"【输出格式】");
     if (p == std::wstring::npos) return sys;
     return sys.substr(0, p);
 }
-
 // 这份"笔记"其实是她把对话 JSON 交回来了吗？
 //
-// 【为什么要判】
+// 为什么要判
 // 存下来就要每轮带进上下文。一份长得像回复模板的 JSON 混在上下文里，
 // 等于每轮给她看一遍"该输出成什么样"，后面更容易接着吐 JSON；
 // 而且里面写死了 bg=空无一人的课室 / bgm=おまかせあれ，她会照着抄。
@@ -26485,30 +25655,30 @@ static std::wstring AssetBriefPrompt(const VisibleAssets& v, bool retry) {
     t += L"· 情绪相近的几张要分清：哪些属于同一类情绪、哪些不是一类，\n";
     t += L"  照着上面的清单自己归纳——别把两种不同的情绪混成一类\n";
     //
-    // ---- 【只准写清单里有的名字】
+    // ---- 只准写清单里有的名字
     //
-    // 【举例必须是清单里真的有的名字】
+    // 举例必须是清单里真的有的名字
     // 假设这里举的例子是「叹气」和「无语」——可作者早就把「无语」删掉了。
     // 模型把示例当成素材照抄，笔记里于是写着"叹气 vs 无语"，
     // 它后面照笔记去选「无语」-> 清单里没有 -> 被拒 -> 打回 -> 每轮白跑一次请求。
     //
-    // 举例子用的名字【必须来自当前清单】。作者删掉的素材一个字都不能出现在
+    // 举例子用的名字必须来自当前清单。作者删掉的素材一个字都不能出现在
     // 提示里，否则它一定会被抄进笔记，然后再被它自己照着去选。
     t += L"· 【只写上面清单里有的名字】：清单外的名字你根本选不到，\n";
     t += L"  写进笔记只会害你后面照着它选、然后一轮一轮被打回。\n";
     //
-    // ---- 【笔记是跨章跨局持久的，不能写阶段性内容】
+    // ---- 笔记是跨章跨局持久的，不能写阶段性内容
     //
     // ★ 反例（它会自己写出这种阶段性内容）：
-    //     ## 开场阶段（认识期，还没开始讲课）
-    //     当前情境是刚认识的自我介绍。应该用：
-    //     - 立绘：坏笑（小恶魔开场）、微笑（温和问候）、或提问（反问他）
-    //     - BGM：她的日常（最稳开场）
-    //     现在进入正式对话。
+    // ## 开场阶段（认识期，还没开始讲课）
+    // 当前情境是刚认识的自
+    // - 立绘：坏笑（小恶魔开场）、微笑（温和问候）、或提问（反问他）
+    // - BGM：她的日常（最稳开场）
+    // 现在进入正式对话。
     //
     // 这段是它自己发挥写进去的（代码里没有这段措辞）。问题是笔记一旦生成
-    // 就【长期跟着它】——第 3 章、第 5 章、下一周目，开头都还挂着
-    // "当前情境是刚认识的自我介绍""现在进入正式对话"。
+    // 就长期跟着它——第 3 章、第 5 章、下一周目，开头都还挂着
+    // "当前情境是刚认识的自
     // 那是开场那一刻的指令，不是素材的固定含义，留着只会把它往回拽。
     t += L"· 【不要写「当前是开场 / 第几章 / 现在该用什么」这类阶段性内容】：\n";
     t += L"  这份笔记是长期跟着你的，换章换局都在用。\n";
@@ -26544,34 +25714,33 @@ static std::wstring AssetReviewPrompt(int chapter, const std::vector<std::wstrin
     t += L"· 哪些选得贴切（一句话说清为什么）\n";
     t += L"· 哪些不合适——尤其是【台词情绪和表情对不上】的\n";
     //
-    // ---- 【这几条原来是旧规则，跟现在的规则对着干】
+    // ---- 这几条
     //
-    // 现在的规则是：表情【全段允许连用】（换脸由同一句里的两个表情保证，pose != pose2）；
+    // 现在的规则是：表情全段允许连用（换脸由同一句里的两个表情保证，pose != pose2）；
     // 恋爱段背景自由，不限次数、不限重复；恋爱段音乐也不再被逼着换；
     // 教学段同样放开——讲课只有两三张贴切，逼她换只会换来一张不搭的脸。
     // 留着旧措辞，等于每过一章就再给她灌输一次"连用是错的"——她照着改，
     // 就又变成"讲着情话却挂着一张不搭的脸"。
     //
     // ★ 复盘提示是写给模型看的，不要点名具体角色名或素材名：换一个包，她会在复盘里
-    //   读到"○○连用是××的本色"，而她的清单里根本没有那张脸，于是去找一个
-    //   不存在的名字。规则是"同一张脸连用没问题"，跟那张脸叫什么无关。
+    // 读到"○○连用是××的本色"，而她的清单里根本没有那张脸，于是去找一个
+    // 不存在的名字。规则是"同一张脸连用没问题"，跟那张脸叫什么无关。
     t += L"· 【同一张脸连用【不算问题】，任何一段都允许】"
          L"——整段都用同一张是正常的，\n";
     t += L"  别为了换而换，换来的往往是一张不搭的脸\n";
     t += L"· 要检查的是【同一句里 pose 和 pose2 是不是真的不一样】——\n";
     t += L"  两个填了同一个，这一句就没有情绪变化\n";
-
     //
-    // ---- 【章末多要一句：现在我对他是……】
+    // ---- 章末多要一句：现在
     //
     // 这是关系曲线的载体。五章下来她一直用同一套反应，
     // 就是因为没有任何地方记录"现在到哪一步了"。
     //
-    // 【为什么放在复盘里而不是每轮问】
+    // 为什么放在复盘里而不是每轮问
     // 每轮问会多一轮请求，而且她每轮重新想一次，反而会来回摇摆。
     // 章末一次，跨度刚好是一章——一章里关系该往前走一点。
     //
-    // 【为什么用纯文本行而不是 JSON】
+    // 为什么用纯文本行而不是 JSON
     // 复盘刻意不走 JSON 契约（见 StartChapterAssetReview 的说明）：
     // 走 JSON 她会把复盘写成对话。所以这里让她在清单之后另起一行写，
     // 引擎按行首的标记抠出来。
@@ -26585,16 +25754,15 @@ static std::wstring AssetReviewPrompt(int chapter, const std::vector<std::wstrin
     t += L"\n写 5 条以内，条条具体（点名素材名字）。纯文本，不要 JSON。\n";
     return t;
 }
-
 // 把模型补的说明写回 char.ini 的 [AssetMood]。
 //
-// 【为什么要写回】
+// 为什么要写回
 // 只写进存档的话，换一局/换台机器又要重新问一遍；写回 ini 之后，
 // 这份说明就变成"作者写的说明"，下回开局直接读到，模型不必再猜。
 // 作者后来自己补了说明也不会被覆盖——只填没有的那些。
-// 纯解析：从笔记文本里取出「【补说明】」那一段的 名字->说明。
+// 纯解析：从笔记文本里取出「补说明」那一段的 名字->说明。
 //
-// 【单独抽出来的理由】
+// 单独抽出来的理由
 // 写回那一步要碰 g_app / ini 文件，不方便测；而"能不能正确认出模型写的
 // 补说明行"才是真正会出错的地方（它写作格式千奇百怪）。抽出来就能真测。
 static std::vector<std::pair<std::wstring,std::wstring>>
@@ -26631,17 +25799,16 @@ ParseMoodLines(const std::wstring& note) {
     }
     return out;
 }
-
-// 笔记【补说明】那一节里提到的名字，必须在当前白名单里。
+// 笔记补说明那一节里提到的名字，必须在当前白名单里。
 //
-// 【实测复现如下】
-//   笔记的【补说明】写着「立绘 得意」「背景 天台」，
-//   而白名单 11 个立绘、8 个背景里都没有这两个名字。
-//   她照笔记选 → 名字选不到 → 被拒 → 打回 → 每轮白跑一次请求。
+// ★ 症状：
+// 笔记的补说明写着「立绘 得意」「背景 天台」，
+// 而白名单 11 个立绘、8 个背景里都没有这两个名字。
+// 她照笔记选 → 名字选不到 → 被拒 → 打回 → 每轮白跑一次请求。
 //
 // 两个来源都要挡：
-//   · 模型照抄了提示里的示例名字（示例已改成真实名字，但保底还是要有）
-//   · 素材后来被删了 / 换了个包，旧笔记里还留着
+// · 模型照抄了提示里的示例名字（示例已改成真实名字，但保底还是要有）
+// · 素材后来被删了 / 换了个包，旧笔记里还留着
 //
 // 只要名字不在白名单里，那一行整条删掉——留着就是陷阱。
 static std::wstring StripUnknownMoodLines(const std::wstring& note,
@@ -26710,11 +25877,11 @@ static unsigned __stdcall AssetNoteThread(void* p) {
     cfg.stream = false;                 // 后台跑，玩家看不到过程
     cfg.temperature = 0.4;              // 要的是稳定的总结，不是发挥
     //
-    // ---- 【开场在等这份笔记，超时必须比正式对话短】
+    // ---- 开场在等这份笔记，超时必须比正式对话短
     //
     // 正式对话等 180 秒是合理的（她可能在写长台词），
-    // 但开场那句话现在挂在 pendingKick 里【等着笔记先回来】。
-    // 照 180 秒等下去，玩家看到的是一个空对话框挂三分钟，
+    // 但开场那句话现在挂在 pendingKick 里等着笔记先回来。
+    // 照 180 秒等下去，
     // 他会以为程序死了。笔记只要一份素材清单的总结，
     // 45 秒绰绰有余；超时就这一局不带笔记，她照常开口。
     cfg.timeoutSec = 45;
@@ -26724,13 +25891,13 @@ static unsigned __stdcall AssetNoteThread(void* p) {
         AppLog(L"[素材笔记] 生成失败：%s（这一局不带笔记）", r.err.c_str());
         delete ctx;
         //
-        // ---- 【失败也必须投消息，不能就此 return】
+        // ---- 失败也必须投消息，不能就此 return
         //
         // 两个后果，都很难查：
-        //   1. assetBriefBusy 永远留在 true —— 之后【再也生成不了笔记】，
-        //      热更新换了素材也只能对着空笔记猜，而且日志上什么都没有
-        //   2. 开场那句话挂在 pendingKick 里等这份笔记（见 BeginStory），
-        //      消息不来她就【永远不开口】——玩家看到的是空对话框
+        // 1. assetBriefBusy 永远留在 true —— 之后再也生成不了笔记，
+        // 热更新换了素材也只能对着空笔记猜，而且日志上什么都没有
+        // 2. 开场那句话挂在 pendingKick 里等这份笔记（见 BeginStory），
+        // 消息不来她就永远不开口
         // 失败也是一条结束路径，必须走到主线程去收尾。
         PostMessageW(g_app.hwnd, WM_APP_ASSET_NOTE, 0, (LPARAM)myGen);
         return 0;
@@ -26754,10 +25921,9 @@ static unsigned __stdcall AssetNoteThread(void* p) {
     PostMessageW(g_app.hwnd, WM_APP_ASSET_NOTE, 1, (LPARAM)myGen);
     return 0;
 }
-
 // 一行是不是纯代码围栏（```text / ``` 之类）。
 //
-// 【后面有空格就不算】
+// 后面有空格就不算
 // 「``` c」是围栏标记，「`int *p` 声明」这种行内代码不是。
 // 不加这条判断的话，正文里出现反引号的行会被整行删掉。
 static bool IsFenceLine(const std::wstring& line) {
@@ -26804,25 +25970,24 @@ static void WriteAssetNoteFile() {
     WriteTextFile(PathJoin(a.dataDir, L"素材笔记.txt"), t);
     WriteAssetNoteCache();
 }
-
 // ------------------------------------------------------------ 素材笔记缓存
 //
-// 【为什么要有它：开局那次等待是白等的】
+// 为什么要有它：开局那次等待是白等的
 //
-// BeginStory 里 a.assetBrief.clear() 是无条件的，于是每开一局都要重新
+// BeginStory 里 a.assetBrief.clear 是无条件的，于是每开一局都要重新
 // 生成一次笔记——哪怕素材清单跟上一局一字不差、笔记十分钟前刚生成过。
 // 表现就是每次点"开始游戏"都要盯着"她在翻笔记"干等二三十秒。
 //
-// 而笔记只描述【这批素材是什么意思】，跟这一局讲了什么故事无关。
+// 而笔记只描述这批素材是什么意思，跟这一局讲了什么故事无关。
 // 素材没变，她的理解就不会变，上一局那份完全可以接着用。
 //
-// 【安全性靠两把锁】
-//   1. charId —— 换角色包立刻失效
-//   2. 素材集指纹 —— 往目录丢一张新图、删一首曲子、改 char.ini 里的
-//      素材注解，指纹都会变，缓存自动作废、重新生成
+// 安全性靠两把锁
+// 1. charId —— 换角色包立刻失效
+// 2. 素材集指纹 —— 往目录丢一张新图、删一首曲子、改 char.ini 里的
+// 素材注解，指纹都会变，缓存自动作废、重新生成
 // 所以"改了素材却还抱着旧理解"这种情况不会发生。
 //
-// 【只存笔记，不存章末复盘】
+// 只存笔记，不存章末复盘
 // 复盘写的是这一章她自己挑错过什么，跟故事有关，跨局复用就是串台。
 static std::wstring AssetNoteCachePath() {
     return PathJoin(g_app.dataDir, L"素材笔记.cache");
@@ -26874,15 +26039,14 @@ static bool LoadAssetNoteCache() {
     AppLog(L"[素材笔记] 复用上一局的笔记（素材清单没变），跳过这次生成");
     return true;
 }
-
 // 发起"素材笔记"生成。开局和读档各一次。
 //
-// 【为什么只生成一次并存在存档里】
+// 为什么只生成一次并存在存档里
 // 每轮都生成的话，每一轮都要多等一次请求；而素材清单在一局里是不变的，
 // 她的理解也不会自己变。存进存档后读档直接读回，不用再问一遍。
 // 素材集指纹：把当前能选的素材名拼成一个串。
 //
-// 【只要清单变了，指纹就变】——加了图、删了曲子、装了新角色包都会变，
+// 只要清单变了，指纹就变——加了图、删了曲子、装了新角色包都会变，
 // 于是笔记自动过期重生成，作者不用记得去点什么"刷新"。
 static std::wstring AssetSetKey(const VisibleAssets& v) {
     std::wstring k;
@@ -26893,13 +26057,13 @@ static std::wstring AssetSetKey(const VisibleAssets& v) {
     k += L"M" + WFromInt((long long)v.bgm.size()) + L":";
     for (size_t i = 0; i < v.bgm.size(); ++i) k += v.bgm[i] + L"|";
     //
-    // ---- 【说明也要算进指纹】
+    // ---- 说明也要算进指纹
     //
-    // 【不加这一段会怎样】作者改了 char.ini 里的一句注解（比如给「神社夜晚」
+    // 不加这一段会怎样作者改了 char.ini 里的一句注解（比如给「神社夜晚」
     // 补上"上课不要选这里"），素材名一个没变 → 指纹对得上 → 笔记不重新生成，
     // 模型看到的还是旧笔记里那句旧说明。界面明明显示"已保存"，模型却不知道。
     //
-    // 只统计【清单里存在的名字】：ini 里可能残留已删素材的说明，
+    // 只统计清单里存在的名字：ini 里可能残留已删素材的说明，
     // 那些不该让指纹变——否则删了图还会平白多烧一次请求。
     k += L"#";
     for (size_t i = 0; i < v.pose.size(); ++i) {
@@ -26922,11 +26086,11 @@ static void StartAssetBrief(bool retry) {
     if (a.llm.apiKey.empty()) return;           // 没有模型可问
     if (a.assetBriefBusy) return;
     //
-    // ---- 【清单还没交给 Director 时自己补一次】
+    // ---- 清单还没交给 Director 时自己补一次
     //
-    // 【这是"这一局根本没有笔记"的静默故障】
-    // Visible() 只在 StartChat 里被 SetVisible 过，而【开局】和【读档】
-    // 这两条路都会先走到这里。那时它还是空的，于是直接 return——
+    // 这是"这一局根本没有笔记"的静默故障
+    // Visible 只在 StartChat 里被 SetVisible 过，而开局和读档
+    // 这两条路都会先走到这里。那时它还是空的，于是直接 return
     // 不报错、不影响流程、只是这一局没有笔记，极难发现。
     // 白名单扫一次只有几十个文件，这里补一次并交过去，
     // 任何调用点都能正常发起，不用每个调用方都记得先 SetVisible。
@@ -26936,10 +26100,9 @@ static void StartAssetBrief(bool retry) {
     }
     if (!a.dir.Visible().HasAny()) return;      // 真的一个素材都没有，没什么可总结的
     if (a.hwnd == nullptr) return;
-
     // ---- 素材变了就作废旧笔记，重新总结一遍
     //
-    // 【不加这段的后果，对照"随意增删素材"这个目标看】
+    // 不加这段的后果，对照"随意增删素材"这个目标看
     // 作者往目录里丢一张新立绘：白名单会重扫、清单里有它了，
     // 可笔记是照着旧清单写的，里面没有这张脸——模型压根不知道有新表情，
     // 于是"加了图却永远不出现"。删图反过来：笔记里还写着它，模型照选、
@@ -26952,12 +26115,12 @@ static void StartAssetBrief(bool retry) {
     }
     // ---- 存档里那份"笔记"其实是对话 JSON 的话，一样作废
     //
-    // 【真发生过，而且会一直跟着存档走】
+    // 真发生过，而且会一直跟着存档走
     // 笔记是存进存档的。第一次生成失败（把对话 JSON 存了进去）之后，
-    // 只要素材清单不变，指纹就对得上，下面那句"已经有笔记了"会一直成立——
+    // 只要素材清单不变，指纹就对得上，下面那句"已经有笔记了"会一直成立
     // 那份假笔记于是每局都带进上下文，作者删都删不掉，只能清存档。
     //
-    // 【所以这一步必须排在那个 return 之前】
+    // 所以这一步必须排在那个 return 之前
     // 写反了就永远走不到：假笔记非空 -> 直接 return -> 自愈形同虚设。
     if (NoteLooksLikeDialogue(a.assetBrief)) {
         AppLog(L"[素材笔记] 存档里那份笔记其实是她把对话 JSON 交回来了，作废重新生成");
@@ -26977,7 +26140,7 @@ static void StartAssetBrief(bool retry) {
     ctx->isReview = false;
     // 带人设，但不带对话历史：这是开场前的准备，还没有对话可带。
     //
-    // 【system 必须切掉输出契约】——笔记请求要的是纯文本总结，
+    // system 必须切掉输出契约——笔记请求要的是纯文本总结，
     // 而主 system 末尾写着"必须只返回一个 JSON 对象"。留着它，
     // 模型就会把开场台词的 JSON 当成笔记交回来（见 StripOutputFormat 的注释）。
     ChatMsg sysMsg = BuildSystemMsg(a.persona, a.Def(), a.mem, a.prof,
@@ -27000,7 +26163,6 @@ static void StartAssetBrief(bool retry) {
 
 // 行首标记。她写"现在我对他是……"这一句时用的。
 static const wchar_t* const kBondMark = L"【现在我对他是】";
-
 // 从章末复盘的文本里抠出关系状态那一句。
 //
 // 复盘是纯文本（刻意不走 JSON），所以这里按行找标记。
@@ -27026,10 +26188,9 @@ static std::wstring ParseBondFromReview(const std::wstring& txt) {
         if (end == std::wstring::npos) return L"";
         v.resize(end + 1);
         if (v.empty()) return L"";
-
         //
-        // 【她把说明照抄下来了】
-        // 提示里写的是"【现在我对他是】（一句话，写你此刻……）"，
+        // 她把说明照抄下来了
+        // 提示里写的是"现在
         // 她可能连括号一起抄。剥掉括号里的说明，剩下才是真内容；
         // 剥完为空 = 她只抄了说明没写自己的话，这一章作废。
         if (v[0] == L'（') {
@@ -27084,22 +26245,17 @@ struct StageFixCtx {
     // 发出前先睡这么久（毫秒）。限流重试时用——立刻重发还是会被拒。
     unsigned       delayMs = 0;
 };
-
 // ---------------------------------------------------------------- 请求节流
 //
-// 【实测日志里最扎眼的两行】
-//   15:57:14 ×挑素材请求失败   HTTP 429 限流
-//   15:57:15 ×挑素材【重试】也失败  HTTP 429 限流
-// 两次只隔 1 秒。限流的正确修法是【等】，而原来失败后是立刻原样重发——
+// ★ 症状：最扎眼的两行。
+// 两次只隔 1 秒。限流的正确修法是等，而原来失败后是立刻原样重发
 // 等于在同一秒内又撞了一次墙，必然还是 429。重试次数再多也没用。
 //
 // 这里做两件事：
-//   1. ApiThrottle：任意两条请求之间垫一个最小间隔。
-//      主对话刚回来就紧接着发挑素材（日志里 15:36:43 发请求、
-//      15:36:44 就发挑素材），这种连发最容易触发按分钟计的免费额度。
-//   2. 429 时按退避时长重发（见 WM_APP_STAGE_FIX 里的重试）。
+// 1. ApiThrottle：任意两条请求之间垫一个最小间隔。
+// 2. 429 时按退避时长重发（见 WM_APP_STAGE_FIX 里的重试）。
 //
-//  sleeps 都发生在【工作线程】上，主线程照常刷新，界面不会卡。
+// sleeps 都发生在工作线程上，主线程照常刷新，界面不会卡。
 //
 // 间隔取 1200ms：正常一轮对话要几秒到十几秒，间隔早就满足了，
 // 只有"上一条刚结束就发下一条"这种情况才会真的等一下。
@@ -27137,16 +26293,16 @@ static unsigned __stdcall StageFixThread(void* p) {
     cfg.stream = false;
     cfg.temperature = 0.3;      // 重选是【照抄清单】，不要发挥
     //
-    // ---- 【修正请求的超时必须短得多】
+    // ---- 修正请求的超时必须短得多
     //
     // 正式对话等 180 秒是合理的（她可能在写长台词）。
-    // 但这套请求【台词是挂起的】——对话框空着，等着跟画面一起出来。
+    // 但这套请求台词是挂起的——对话框空着，等着跟画面一起出来。
     // 180 秒的超时意味着最坏情况下她三分钟不说话，
-    // 而玩家看到的只有一行"她在为这句话配画面…"。
+    // 而
     // 它只要三个字段名，15 秒绰绰有余；超时就按原值走，
     // 最坏结果是"这一轮没换表情"，远好过三分钟没反应。
     //
-    // 【挑素材也走这条路径】所以同样受这 15 秒约束。
+    // 挑素材也走这条路径所以同样受这 15 秒约束。
     // 挑素材是正常流程不是补救，挂起等待的体感比打回更明显，
     // 但让玩家"读到新台词配着旧脸"是明确点名要修的问题，
     // 15 秒换同步，值得。
@@ -27164,7 +26320,7 @@ static unsigned __stdcall StageFixThread(void* p) {
         //
         // ---- 【把"网络失败"跟"她没给值"分开告诉主线程】
         // 两者投回来的都是三个空串，主线程分不出来——
-        // 不分的话素材日志里这一轮连一行都不会有。
+        // 不分的话素材运行时这一轮连一行都不会有。
         g_stageFixNetFail = true;
         g_stageFixErr     = r.err;
         g_stageFixHttpStatus = r.httpStatus;
@@ -27176,11 +26332,11 @@ static unsigned __stdcall StageFixThread(void* p) {
                r.err.c_str());
         delete ctx;
         //
-        // ---- 【不能就此 return：台词还挂着】
+        // ---- 不能就此 return：台词还挂着
         //
         // 挂起机制之后，台词只在 pendingSay 里。这里不投消息的话
         // WM_APP_STAGE_FIX 永远不会来，FlushPendingSay 永远不执行，
-        // 她这句话就【永远不显示】——对话框空着，点了也没用。
+        // 她这句话就永远不显示——对话框空着，点了也没用。
         // 投一条空结果，让主线程把台词放出来。
         g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
         g_stageFixPose2.clear();
@@ -27210,17 +26366,17 @@ static unsigned __stdcall StageFixThread(void* p) {
         return 0;
     }
     //
-    // ---- 【重写台词这一路：整段回复就是台词本身】
+    // ---- 重写台词这一路：整段回复就是台词本身
     //
     // 素材打回要的是三个字段名，走 ParseReply 解析 JSON；
-    // 重写要的是【一整句自然语言】，解析成 JSON 反而会把正文吃掉。
+    // 重写要的是一整句自然语言，解析成 JSON 反而会把正文吃掉。
     // 两条路共用同一个线程，靠 g_stageFixIsRewrite 分岔。
     if (g_stageFixIsRewrite) {
         AppendFixLog(L"", r.full, L"【日常段重写】");
         //
         // 她偶尔会不听话，仍然回 JSON 或者带围栏。
         // 剥掉围栏 + 修掉首尾空白；剥完看着还是机器格式
-        // （说明她照旧输出了字段而不是台词）就【不替换】——
+        // （说明她照旧输出了字段而不是台词）就不替换
         // 宁可让原话照常显示，也不能把一行 JSON 当成她说的话。
         std::wstring ns = StripFenceLines(r.full);
         while (!ns.empty() && (ns.front() == L'\n' || ns.front() == L'\r' ||
@@ -27257,18 +26413,16 @@ static unsigned __stdcall StageFixThread(void* p) {
 
 //
 static void WriteAssetNoteFile();   // 素材笔记落盘（素材笔记与章末复盘一节里定义）
-
 //
 // 打回结束（成功 / 失败 / 过期 / 她没给值）之后，把挂起的台词放出来。
 //
-// 【必须在【每一条】结束路径上调用】
+// 必须在【每一条结束路径上调用】
 //
 // 挂起期间台词只存在于 pendingSay 里，对话框是空的。
-// 任何一条结束路径漏掉这一步，她这句话就【永远不显示】——
-// 玩家看到的是"她思考完了，对话框却空着，点击也没反应"，
-// 而日志里一切正常（请求确实跑完了），极难定位。
+// 任何一条结束路径漏掉这一步，她这句话就永远不显示
+// 而运行时一切正常（请求确实跑完了），极难定位。
 //
-// 挂起机制是我为了修"立绘在打回前生效"加的，代价就是多出了这个
+// 挂起机制是
 // 必须收尾的状态。三条结束路径：请求失败、结果过期、她没给有效值。
 static void FlushPendingSay(HWND hwnd) {
     App& a = g_app;
@@ -27290,7 +26444,7 @@ static bool StartStageFix(const DirView& dv, const std::wstring& say,
     // 台词为空时打回没有依据——她得知道自己说的是哪句才能重选
     if (say.empty()) return false;
     //
-    // ---- 【pose2 单独错时也要能发起】
+    // ---- pose2 单独错时也要能发起
     // StageNeedsFix 只认 pose/bg/bgm，而恋爱段的第二个表情是第四个字段。
     // 不加这一条的话，只有 pose2 错时会直接返回 false，
     // 那一句就永远只有一个表情——而日志上什么都不报。
@@ -27310,11 +26464,11 @@ static bool StartStageFix(const DirView& dv, const std::wstring& say,
     ctx->say  = say;
     // 复用正式对话的 system：人设、素材清单、最近用过的表情全在里面。
     //
-    // 【为什么要带完整 system 而不是只发一句"你填错了"】
-    // 她填错恰恰是因为【记不住清单】。只说"错了"她只会再猜一个，
+    // 为什么要带完整 system 而不是只发一句"
+    // 她填错恰恰是因为记不住清单。只说"错了"她只会再猜一个，
     // 大概率还是错的 —— 打回就变成白等几秒。清单必须一起发过去。
     //
-    // 这里刻意【不带对话历史】：修正请求只要三个字段，
+    // 这里刻意不带对话历史：修正请求只要三个字段，
     // 带上历史只会让请求变重、等得更久，对重选没有任何帮助。
     ctx->msgs.push_back(BuildSystemMsg(a.persona, a.Def(), a.mem, a.prof,
                                        a.dir.SceneHint(), a.dirMode,
@@ -27335,39 +26489,38 @@ static bool StartStageFix(const DirView& dv, const std::wstring& say,
     CloseHandle(h);
     return true;
 }
-
 //
-// ---- 【这句话是不是在讲知识点】
+// ---- 这句话是不是在讲知识点
 //
-// 【为什么只在日常段用】教学段本来就该讲课，只有章间日常（Daily）
-// 和毕业（Graduate）是"你们两个人的时间"——在那儿讲代码就是抢戏。
+// 为什么只在日常段用教学段本来就该讲课，只有章间日常（Daily）
+// 和毕业（Graduate）是"
 //
-// 【词表从【剧本】来，不写死在引擎里】
+// 词表从【剧本来，不写死在引擎里】
 //
-//  这张表判的是【教学内容】，跟素材名无关（增删立绘/背景/音乐不会让它腐烂），
-//  但它【跟课程强相关】——C 语言那套词（#include / scanf / 指针 / 解引用）
-//  在 Python 剧本里一个都不出现，于是"她在讲知识点"永远判不出来，
-//  章间日常的教学惯性就再也拦不住。
-//  所以词表搬到 [Course] 的 CodeWords / TeachWords，教什么课由剧本自己说。
-//  剧本没写就退回内置那份（C 语言），老剧本行为一个字都不变。
+// 这张表判的是教学内容，跟素材名无关（增删立绘/背景/音乐不会让它腐烂），
+// 但它跟课程强相关——C 语言那套词（#include / scanf / 指针 / 解引用）
+// 在 Python 剧本里一个都不出现，于是"她在讲知识点"永远判不出来，
+// 章间日常的教学惯性就再也拦不住。
+// 所以词表搬到 [Course] 的 CodeWords / TeachWords，教什么课由剧本自己说。
+// 剧本没写就退回内置那份（C 语言），老剧本行为一个字都不变。
 //
-// 【为什么不用"含问号"之类】那条早试过，会把正式题面也挡掉。
-// 这里只认【真的在讲代码】的信号，越窄越好——
+// 为什么不用"含问号"之类那条早试过，会把正式题面也挡掉。
+// 这里只认真的在讲代码的信号，越窄越好
 // 误判的代价是让她重写一句本来没问题的台词。
 static bool SaysTeachingIn(const std::wstring& say, const Syllabus& syl) {
     //
-    // ---- 【剧情大纲里没有"讲课"这个概念，一律不算讲课】
+    // ---- 剧情大纲里没有"讲课"这个概念，一律不算讲课
     //
-    //  这套判据是课程模式的护栏：日常段不许她把话题拉回学习。
-    //  剧情大纲里照常跑的话，问题在于判据用的词表来自剧本的 [Course]
-    //  TeachWords——而 story.ini 根本不写 [Course]，于是退回内置的
-    //  C 语言那份（作业 / 练习 / 那道题 / 复习 / 掌握……）。
+    // 这套判据是课程模式的护栏：日常段不许她把话题拉回学习。
+    // 剧情大纲里照常跑的话，问题在于判据用的词表来自剧本的 [Course]
+    // TeachWords——而 story.ini 根本不写 [Course]，于是退回内置的
+    // C 语言那份（作业 / 练习 / 那道题 / 复习 / 掌握……）。
     //
-    //  那批词里有一半是【通用生活词】：她说一句"今天作业写完了吗"
-    //  在剧情里完全正常，却会被判成"在讲课"打回重写。
-    //  更荒唐的是"这一章"——剧情里根本没有章。
+    // 那批词里有一半是通用生活词：她说一句"今天作业写完了吗"
+    // 在剧情里完全正常，却会被判成"在讲课"打回重写。
+    // 更荒唐的是"这一章"——剧情里根本没有章。
     //
-    //  所以剧情大纲下这个函数一律返回 false：没有要拦的东西。
+    // 所以剧情大纲下这个函数一律返回 false：没有要拦的东西。
     if (syl.isStory) return false;
     if (say.empty()) return false;
     // 代码块：基本确定是在讲课
@@ -27378,18 +26531,18 @@ static bool SaysTeachingIn(const std::wstring& say, const Syllabus& syl) {
     for (size_t i = 0; i < code.size(); ++i)
         if (say.find(code[i]) != std::wstring::npos) return true;
     //
-    // ---- 【「这一章」有歧义：讲课 vs 收尾，必须分开看】
+    // ---- 「这一章」有歧义：讲课 vs 收尾，必须分开看
     //
     // 讲课是「这一章讲指针」，收尾是「这一章总算上完了」。
-    // 后一种恰恰是章间日常最该出现的开场——
+    // 后一种恰恰是章间日常最该出现的开场
     // 考完了、终于能相处了，玩家等的就是这句话。
     // 被判成"讲课"打回重写，等于把最好的一句删掉。
     //
     // 跟上面删掉「课上完」是同一个道理：漏放（她多讲一句）
     // 远好过误伤（删掉对的那句）。
     //
-    // 【是收尾时不直接放行】她可能前半句收尾、后半句又讲起来
-    // （"这一章上完了，不过那道题你还没答完"），所以继续查后面的关键词。
+    // 是收尾时不直接放行她可能前半句收尾、后半句又讲起来
+    // （"这一章上完了，不过那道题
     if (say.find(L"这一章") != std::wstring::npos) {
         //
         // 【不能只认"完"】"先学完再出去玩"里的"学完"是【拉回学习】，
@@ -27403,24 +26556,24 @@ static bool SaysTeachingIn(const std::wstring& say, const Syllabus& syl) {
         if (!over) return true;      // 不是收尾 -> 就是在讲这一章
     }
     //
-    // ---- 【这门课的教学词】（剧本给，没给就用内置那份）
+    // ---- 这门课的教学词（剧本给，没给就用内置那份）
     //
-    //  内置那份长这样（C 语言），新剧本照着这个思路写自己那门课：
-    //      函数 / 变量 / 指针 / 数组 / 循环 / 编译 / 语法 / 知识点
-    //      解引用 / 取地址 / 代码 / 题库 / 这道题 / 下一题
-    //      作业 / 练习 / 那道题 / 题目 / 补习 / 复习 / 预习 / 学会 / 掌握
-    //  「代码」单独出现也基本确定在讲课。
+    // 内置那份长这样（C 语言），新剧本照着这个思路写自己那门课：
+    // 函数 / 变量 / 指针 / 数组 / 循环 / 编译 / 语法 / 知识点
+    // 解引用 / 取地址 / 代码 / 题库 / 这道题 / 下一题
+    // 作业 / 练习 / 那道题 / 题目 / 补习 / 复习 / 预习 / 学会 / 掌握
+    // 「代码」单独出现也基本确定在讲课。
     //
     // ★ 软性拉回学习的话也要拦——她根本不硬讲，用的是这三句：
-    //   「有没有好好写作业？……我是说，C语言的作业！」
-    //   「先把今天的练习做完再说！」「你刚才那道题还没答完呢！快说，输出是多少？」
-    //   一句代码都没有，气氛却全被拉回课堂，玩家等的那段相处一帧都没有。
-    //   判据是【把话题拉回学习】，不是"这段里有没有技术名词"。
+    // 「有没有好好写作业？……
+    // 「先把今天的练习做完再说！」「
+    // 一句代码都没有，气氛却全被拉回课堂，玩家等的那段相处一帧都没有。
+    // 判据是把话题拉回学习，不是"这段里有没有技术名词"。
     //
     // ★ 不要放「课上完」：本意是拦「先把课上完再说」，可"今天的课上完了，走吧"
-    //   同样含这三个字——而那是【收尾】，正是章间日常最该出现的开场白。
-    //   最好的一句被打回重写，玩家看到的是她绕开"下课"这件事硬聊别的。
-    //   误伤（删掉对的那句）比漏放（她多讲一句）糟得多。
+    // 同样含这三个字——而那是收尾，正是章间日常最该出现的开场白。
+    // 最好的一句被打回重写，
+    // 误伤（删掉对的那句）比漏放（她多讲一句）糟得多。
     const std::vector<std::wstring>& teach = syl.TeachWords();
     for (size_t i = 0; i < teach.size(); ++i)
         if (say.find(teach[i]) != std::wstring::npos) return true;
@@ -27430,26 +26583,25 @@ static bool SaysTeachingIn(const std::wstring& say, const Syllabus& syl) {
 static bool SaysTeaching(const std::wstring& say) {
     return SaysTeachingIn(say, g_app.dir.Syl());
 }
-
 //
-// ---- 【日常段讲知识点 -> 打回让她重写这句台词】
+// ---- 日常段讲知识点 -> 打回让她重写这句台词
 //
-// 【选定方案 2】
+// 选定方案 2
 // 另一个选项是"日常段把讲课脸从清单里拿掉"（引擎替她限制），
 // 没有选它——那等于程序替她决定能用什么表情。
 // 方案 2 是让她自己把话说对：讲代码就重写成不讲代码的。
 //
-// 【为什么不直接丢弃这句】
+// 为什么不直接丢弃这句
 // 丢了她会再说一句，很可能还是讲课——她的教学惯性很强，
-// 日志里整段日常四轮有三轮在讲。打回 + 明确的重写要求才拦得住。
+// 运行时整段日常四轮有三轮在讲。打回 + 明确的重写要求才拦得住。
 //
-// 【重写回来之后】台词变了，原来的画面判定也就不作数了，
+// 重写回来之后台词变了，
 // 所以回调里会用新台词再走一次挑素材（见 WM_APP_STAGE_FIX 处理）。
 static bool StartDailyRewrite(const std::wstring& say) {
     App& a = g_app;
     if (say.empty()) return false;
     //
-    // 【必须限次】
+    // 必须限次
     // 她可能重写完还在讲代码。不限次就会变成
     // "重写 -> 还讲 -> 再重写" 的死循环，每轮多花一次请求，
     // 玩家只觉得她说话越来越慢。到上限就放行，
@@ -27464,9 +26616,9 @@ static bool StartDailyRewrite(const std::wstring& say) {
         L"· 不讲知识点、不出现代码、不考他\n"
         L"· 只说你们两个人之间的事：刚才的相处、他的变化、你的心情、想跟他做的事\n"
         //
-        // 【这里原来写死了「角色A」】
-        // 换角色包之后，重写提示会拿另一个角色的名去要求她——
-        // 她只能照着演一个不是自己的人。改成"保持你自己的口吻"，
+        // 这里
+        // 换角色包之后，重写提示会拿另一个角色的名去要求她
+        // 她只能照着演一个不是自己的人。改成"保持
         // 代码不认识任何角色名。
         L"· 保持你自己的口吻——跟前面那些话是同一个人说的\n"
         L"· 长度跟原来差不多，一人一句对话\n\n"
@@ -27478,9 +26630,9 @@ static bool StartDailyRewrite(const std::wstring& say) {
     ctx->gen = a.chatGen;
     ctx->say = say;
     //
-    // 【这里原来有一行 ctx->delayMs = delayMs;，而本函数没有这个参数】
+    // 这里
     // 编译直接报 C2065。重写不需要延迟（延迟是挑素材那条路用的，
-    // 见 StartAssetPick 的 delayMs 参数），删掉即可——
+    // 见 StartAssetPick 的 delayMs 参数），删掉即可
     // ctx->delayMs 保持结构体默认的 0，Sleep 那段本来就不执行。
     ctx->msgs.push_back(BuildSystemMsg(a.persona, a.Def(), a.mem, a.prof,
                                        a.dir.SceneHint(), a.dirMode,
@@ -27491,9 +26643,9 @@ static bool StartDailyRewrite(const std::wstring& say) {
     ++a.stageFixTries;
     g_stageFixIsRewrite = true;
     //
-    // 【这两个必须清】
+    // 这两个必须清
     // 线程和回调靠 isPick / isRetry 判断"这次是挑素材还是打回重填"。
-    // 重写是第三条路，但它复用同一个线程——
+    // 重写是第三条路，但它复用同一个线程
     // 万一上一轮遗留了 isPick=true，线程里就会按"挑素材"去解析，
     // 把整句台词当 JSON 吃掉，结果这场重写等于没发生。
     g_stageFixIsPick    = false;
@@ -27516,14 +26668,13 @@ static bool StartDailyRewrite(const std::wstring& say) {
     CloseHandle(h);
     return true;
 }
-
-// 【素材独立请求】为刚说出口的这句台词单独挑一次画面。
+// 素材独立请求为刚说出口的这句台词单独挑一次画面。
 //
 // 跟 StartStageFix 的区别：
-//   · prompt 用 AssetPickPrompt（要三项，且给她 scene/beat 做依据）
-//   · 不占用打回次数（它不是"填错了"，是正常流程的一环）
-//   · 【台词不挂起】——每轮都要走一次，挂起会让每句话都晚一两秒才出现，
-//     玩家体感是"对话变慢了"。画面保持上一轮，没有"错误的脸"这个中间态。
+// · prompt 用 AssetPickPrompt（要三项，且给她 scene/beat 做依据）
+// · 不占用打回次数（它不是"填错了"，是正常流程的一环）
+// · 台词不挂起——每轮都要走一次，挂起会让每句话都晚一两秒才出现，
+// 玩家体感是"对话变慢了"。画面保持上一轮，没有"错误的脸"这个中间态。
 static bool StartAssetPick(const std::wstring& say,
                            const std::wstring& scene,
                            const std::wstring& beat,
@@ -27532,7 +26683,7 @@ static bool StartAssetPick(const std::wstring& say,
     if (say.empty())    return false;      // 没台词就没法判断情绪
     if (!a.dirMode)     return false;
     //
-    // ---- 【记下这三个参数】
+    // ---- 记下这三个参数
     //
     // 整轮失败（请求发不出去 / 她一个字没填）时要原样再发一次。
     // 不记的话回调里只剩三个空串，想重试也不知道该拿哪句台词去问。
@@ -27559,9 +26710,9 @@ static bool StartAssetPick(const std::wstring& say,
     g_stageFixIsPick = true;
     a.stageFixing    = true;
     //
-    // 【这一条不能省】stageFixWasBanned 是"这次打回是因为连用被禁"。
+    // 这一条不能省stageFixWasBanned 是"这次打回是因为连用被禁"。
     // 挑素材不是打回，不清的话它会留着上一次打回时的 true，
-    // 于是挑素材【失败】时消息处理那边会走进"引擎兜底轮换"分支——
+    // 于是挑素材失败时消息处理那边会走进"引擎兜底轮换"分支
     // 那正是明确要求去掉的行为：换脸只能由模型决定，引擎不许替她挑。
     a.stageFixWasBanned = false;
     AppLog(L"[挑素材] 第二次请求已发出（只为这一句配画面）");
@@ -27578,20 +26729,19 @@ static bool StartAssetPick(const std::wstring& say,
 static unsigned __stdcall ChatThread(void* p) {
     ChatCtx* ctx = (ChatCtx*)p;
     LlmResult r;
-
     // 增量回调：直接往共享缓冲里追加，主线程靠定时器慢慢放出来形成打字机效果。
     // 这里必须加锁——工作线程和主线程同时写同一个 wstring 会直接崩。
     //
-    // 【这里原来没有代号校验，是"读档后对话框出现机器原文"的根因】
-    // 缓冲 g_chatFull 是【全局一份】，靠 gen 区分新旧请求。
-    // 但旧线程没法安全取消（WinHTTP 同步请求），它会一直跑完——
-    // 而它拿着的是【发起时】的 gen，写缓冲时却不校验：
+    // 这里原来没有代号校验，是"读档后对话框出现机器原文"的根因
+    // 缓冲 g_chatFull 是全局一份，靠 gen 区分新旧请求。
+    // 但旧线程没法安全取消（WinHTTP 同步请求），它会一直跑完
+    // 而它拿着的是发起时的 gen，写缓冲时却不校验：
     //
-    //   读档 → AbortAsync() 清空 g_chatFull → StartChat() 再清一次
-    //          → 旧线程继续 append，把【上一周目那半截 JSON】重新灌进缓冲
-    //          → 新请求还在思考，定时器每帧从缓冲里取，取到的却是旧内容
+    // 读档 → AbortAsync 清空 g_chatFull → StartChat 再清一次
+    // → 旧线程继续 append，把上一周目那半截 JSON重新灌进缓冲
+    // → 新请求还在思考，定时器每帧从缓冲里取，取到的却是旧内容
     //
-    // 更糟的是新旧内容会【拼在同一个缓冲里】，抠出来的字符串可能正好
+    // 更糟的是新旧内容会拼在同一个缓冲里，抠出来的字符串可能正好
     // 断在字段中间，看起来就是带花括号的机器原文。
     //
     // 所以每次写缓冲前都比对 gen：不是当前这一代就直接丢弃。
@@ -27629,16 +26779,12 @@ static unsigned __stdcall ChatThread(void* p) {
 void StartChat(const std::wstring& userText, const std::wstring& speaker,
                const std::wstring& hint, bool silent) {
     App& a = g_app;
-    //
-    // ---- 【新的一轮开始：她上一轮说的「可以走了」当场作废】
-    //
-    // 他没点「明天见」而是接着往下聊，那就是这一轮的共识还没达成——
-    // 上一轮那句"可以走了"已经过期了，他点下去用的是旧意见。
-    // 作废之后由她在这一轮的回复里重新表态（见 ApplyAiStage）。
-    // 顺带也挡住了"请求还在飞的时候抢着点按钮"。
-    a.dir.ClearDailyReady();
-    // 【这里原来有个会卡死的 bug】
-    // 原来是 `if (a.chatting) return;` —— 玩家在她思考时按 Esc 读了个档，
+    // ★ actDone_ 在这一段内保持，不在这里清。
+    // "该发生的事"一旦演完，玩家接着聊几句也不该把出口收回去
+    // （见 advance::Evaluate 的 done || turns 判据）。
+    // 清它的时机只有进下一段、跳章或换章；请求在飞时点出口的拦截
+    // 放在 DirGoNextDay，不靠改动这个标记。
+    // 这里
     // 新周目想让她开口，结果因为 chatting 还是 true 被直接挡回去，
     // 于是她再也不说话了；等旧线程回来，又把上一局的回复盖到新存档上。
     //
@@ -27648,11 +26794,11 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     a.chatting = true;
     a.chatSilent = silent;      // 见 app.h：读档时思考期间不显示文本
     //
-    // ---- 打回计数必须【每轮】归零
+    // ---- 打回计数必须每轮归零
     //
     // 它是"这一轮打回了几次"。忘了归零的话，第一轮打回一次之后
     // 后面所有轮都被当成"已经用完了"——打回只生效一次就没了，
-    // 而日志里什么都不报，只看到素材又对不上了。
+    // 而运行时什么都不报，只看到素材又对不上了。
     a.stageFixTries = 0;
     a.stageFixing   = false;
     g_stageFixIsPick = false;
@@ -27661,21 +26807,20 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     // 忘了归零的话，第一次网络失败重试过之后再遇到失败就永远不再重试。
     a.assetPickRetry = 0;
     //
-    // ---- 【上一轮挂起的台词要作废】
+    // ---- 上一轮挂起的台词要作废
     //
     // 新一轮开始时，如果上一轮的打回还没回来（比如玩家没等就点了继续），
-    // 那句挂着的台词已经过期。不清的话它会在旧打回回来时【突然冒出来】，
+    // 那句挂着的台词已经过期。不清的话它会在旧打回回来时突然冒出来，
     // 盖在这一轮的对话上——表现为"她说了两句，第一句莫名其妙"。
     a.stageFixPending = false;
     a.pendingSay.clear();
     a.pendingEmote.clear();
-
     // ---- 开聊前把对话框清空
     //
-    // 【这是"读档时对话框出现 {"say":...} 原始文本"的另一半根因】
+    // 这是"读档时对话框出现 {"say":...} 原始文本"的另一半根因
     // 读档 / 切阶段时 LoadGameNow 会清 view.body，但 StartChat 还有别的
     // 调用点（继续聊、出题后点评、读档续接……），那些路径不一定清过。
-    // 只要上一句残留在 view.body 里，思考的这几秒就会继续显示它——
+    // 只要上一句残留在 view.body 里，思考的这几秒就会继续显示它
     // 残留的正好是半截 JSON 时，看到的就是带花括号的机器原文。
     //
     // 放在 StartChat 里最省事也最可靠：任何一次"她在想"都从空白开始。
@@ -27691,7 +26836,6 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     g_chatFinishReason.clear();
     LeaveCriticalSection(&a.cs);
     SetStatus(L"她在想…", 60);
-
     // ---- 离线 / 没配 Key：直接给兜底台词，不联网
     // 括号是必要的：&& 优先级高于 ||，去掉括号这段就读成
     // 曾经这里是 "离线 || (没Key && 不是本地)"，离线模式移除后只剩后半段。
@@ -27722,9 +26866,9 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
         sceneHint += L"\n" + SyllabusToPrompt(a.dirSyllabus, a.dir.Chapter());
         // ---- 讲很久还没推进：提醒她，但不替她决定
         //
-        // 【不能加回"聊满 N 轮就强行开考"】
+        // 不能加回"聊满 N 轮就强行开考"
         // 那条被删掉正是因为不该由引擎评判"讲够了没"。
-        // 可如果她一直不给 advance，玩家会以为程序坏了——
+        // 可如果她一直不给 advance，
         // 所以这里只在情境里提一句，决定权仍然在她手里。
         if (a.dir.Turn() >= kNudgeTurns) {
             sceneHint += L"\n【提醒】这一章你已经讲了挺久了。觉得他懂了就给 advance=2"
@@ -27735,10 +26879,10 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
         ck::EValue ch = a.vm.GetVar(L"章节");
         sceneHint = (ch.kind == ck::EValue::VStr) ? ch.s : L"";
     }
-    // ---- 告诉她【当前画面是什么】
+    // ---- 告诉她当前画面是什么
     //
-    // 【没有这一段，"每轮必填"就是一句空话】
-    // 要求她每轮都给 pose/bg/bgm，却不告诉她现在是什么——
+    // 没有这一段，"每轮必填"就是一句空话
+    // 要求她每轮都给 pose/bg/bgm，却不告诉她现在是什么
     // 她想"保持不变"也不知道该填什么，只能留空，于是画面又被空值覆盖。
     // 给了当前值，她照抄一遍就等于"这轮不变"，引擎比对相同就不切换。
     if (a.dirMode) {
@@ -27747,23 +26891,23 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
         cur += L"\n  bg   = " + (a.dirCurBg.empty()  ? std::wstring(L"（还没有）") : a.dirCurBg);
         cur += L"\n  bgm  = " + (a.dirCurBgm.empty() ? std::wstring(L"（还没有）") : a.dirCurBgm);
         //
-        // ---- 【pose 不给当前值，这是关键】
+        // ---- pose 不给当前值，这是关键
         //
-        // 【改前这里有一行 `pose = X`，加上"照抄 = 保持不变"，把脸锁死了】
-        // 运行日志完全证实了这一点：
-        //   自我介绍 第1~5轮 全是「害羞」
-        //   教学     第0~5轮 全是「叹气」——而这 6 句的 beat 完全不同：
-        //     「清了清嗓子，认真起来」  该是 认真
-        //     「诶——原来你真的预习过」  该是 惊讶
-        //     「接过纸，嘴角忍不住往上翘」该是 害羞
-        //   她全给了「叹气」。
+        // 改前这里有一行 `pose = X`，加上"照抄 = 保持不变"，把脸锁死了
+        // 运行时完全证实了这一点：
+        // 自
+        // 教学 第0~5轮 全是「叹气」——而这 6 句的 beat 完全不同：
+        // 「清了清嗓子，认真起来」 该是 认真
+        // 「诶——原来
+        // 「接过纸，嘴角忍不住往上翘」该是 害羞
+        // 她全给了「叹气」。
         //
-        // 原因是：对模型来说【照抄是最省 token 的策略】。
-        // 只要【当前画面】里摆着一个可直接抄的值，
-        // "两轮必须换脸"那句约束就压不住这个惯性——
+        // 原因是：对模型来说照抄是最省 token 的策略。
+        // 只要当前画面里摆着一个可直接抄的值，
+        // "两轮必须换脸"那句约束就压不住这个惯性
         // 它第一轮定了个值，之后永远抄它。
         //
-        // 背景和音乐【保留】当前值：场景和音乐确实需要连续性，
+        // 背景和音乐保留当前值：场景和音乐确实需要连续性，
         // 每轮乱跳反而更糟。只有表情需要每轮跟着台词走。
         sceneHint += cur;
     }
@@ -27775,11 +26919,11 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
         if (!sceneHint.empty()) sceneHint += L"\n";
         sceneHint += hint;
     }
-    // 清单在【每次对话时】扫一次，不在启动时扫死：
+    // 清单在每次对话时扫一次，不在启动时扫死：
     // 玩家可能中途装了新角色包、往 assets/bg/ 里丢了新图，
     // 扫一次的开销只有几十个文件，而拿到过期清单会让她切不过去新场景。
     // 用开局/读档时生成好的白名单，不再每轮扫盘。
-    // 这份是【预校验过】的：每一项都能解析到真实文件。
+    // 这份是预校验过的：每一项都能解析到真实文件。
     EnsureWhitelist(L"对话前");
     VisibleAssets& vis = a.whitelist;
     // 同一份清单既给模型看、也给 Director 校验。
@@ -27790,7 +26934,7 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     // 每轮请求前同步一次，否则 Director 里那份会停在上一轮。
     a.dir.SetRecentPlaces(a.recentBgs);
     //
-    // ---- 【素材热更新的另一半：笔记跟着重生成】
+    // ---- 素材热更新的另一半：笔记跟着重生成
     //
     // 笔记是模型照着当时的清单写的。清单刚重扫过（作者加了图 / 删了曲子），
     // 笔记里要么缺新素材、要么还写着已删的——两种情况都不报错。
@@ -27808,32 +26952,32 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     //
     // ---- 本轮禁用的表情：连续用过就拿掉
     //
-    // 【两边同源是关键】同一份名单既收窄她看到的清单，
+    // 两边同源是关键同一份名单既收窄她看到的清单，
     // 也作为 Director 的校验口径。只做前者的话，她填被禁的名字
-    // 依然会被 HasPose 接受 —— 收窄就白做了（运行日志里连续 4 轮
+    // 依然会被 HasPose 接受 —— 收窄就白做了（运行时连续 4 轮
     // 「惊讶」不动，正是这个原因）。
     //
     // 只剔最近 2 个：足够打破连续同一张脸，又不至于把可选范围越收越窄。
     //
     // ★ 每轮先清空再按本轮情况填。只在 streak>=2 的分支里赋值的话，
-    //   streak 掉下来时这份名单从不清空，审计日志会永久显示旧名单——
-    //   写着"这轮禁了 A B"，其实什么都没禁，照着它排查是在查一个不存在的东西。
+    // streak 掉下来时这份名单从不清空，审计日志会永久显示旧名单
+    // 写着"这轮禁了 A B"，其实什么都没禁，照着它排查是在查一个不存在的东西。
     a.bannedPoseNow.clear();
     if (a.poseStreak >= 2) {
-        // ---- 跨轮禁用：只禁【当前这一张】
+        // ---- 跨轮禁用：只禁当前这一张
         //
         // ★ 不要顺带禁掉上一张。讲课场景往往只有「认真」贴切，
-        //   连用两轮后当前那张被禁、上一张也被禁，她就只剩两条路：
-        //   填一张不搭的（穿帮）或硬填被禁的（打回）。
-        //   禁一张就够打破连用，剩下的让她自己按这一拍的台词挑。
+        // 连用两轮后当前那张被禁、上一张也被禁，她就只剩两条路：
+        // 填一张不搭的（穿帮）或硬填被禁的（打回）。
+        // 禁一张就够打破连用，剩下的让她自己按这一拍的台词挑。
         //
         // ★ 可选不足 4 张时干脆不禁：素材少的包禁一张就几乎没得选。
-        //   不换脸只是呆板，换错脸是穿帮。
+        // 不换脸只是呆板，换错脸是穿帮。
         //
         // ★ 放行的前提是「同轮两个表情」pose2 真的在跑：
-        //   pose2 只在挑素材那次请求里才要。玩家把 SplitAsset 设成 0 之后
-        //   没人问她 pose2，再放开跨轮禁用就是整局一张脸。
-        //   所以按"pose2 在不在跑"判断，不按段分支——按段分支越多越容易腐烂。
+        // pose2 只在挑素材那次请求里才要。玩家把 SplitAsset 设成 0 之后
+        // 没人问她 pose2，再放开跨轮禁用就是整局一张脸。
+        // 所以按"pose2 在不在跑"判断，不按段分支——按段分支越多越容易腐烂。
         const bool pose2Active = a.llm.splitAsset;
         const int nPoseAll = (int)a.dir.Visible().pose.size();
         if (nPoseAll >= 4 && !a.recentPoses.empty() && !pose2Active) {
@@ -27844,24 +26988,23 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     //
     // ---- 背景 / 音乐连用太久也禁用
     //
-    // 只禁【当前这一个】，不禁上一个——场景不像表情，
+    // 只禁当前这一个，不禁上一个——场景不像表情，
     // 两个都禁的话她可能被迫在两个都不合适的地方之间来回跳。
     //
     // ★ 换一首曲子不会穿帮，换教室会。所以教学 / 做题阶段豁免背景的强制切换；
-    //   自我介绍和章间日常照旧（那两段换地方本来就是在推进相处）。
+    // 自
     //
     // ★ 章内锁定期间，这条"连用就换"整个不该存在：锁定期间背景本来就恒定，
-    //   bgStreak 会一路涨过阈值，把【锁定值本身】当成"连用太久"塞进禁用名单——
-    //   结果是清单里少一个选项、她平白被打回一次，画面却不会变。
+    // bgStreak 会一路涨过阈值，把锁定值本身当成"连用太久"塞进禁用名单
+    // 结果是清单里少一个选项、她平白被打回一次，画面却不会变。
     //
     // ★ 恋爱段不再逼她换：这条规则正是"恋爱段被迫离开教室"那类穿帮的源头。
-    //   "当前地点"往往正是最合适的地方（两个人聊得正好的那家店），
-    //   剔掉它等于逼她换到一个没道理的地方。音乐同理，同一首撑一整段恋爱戏是合理的。
-    //   教学段保留（换曲不穿帮，跟着情绪走是对的）。
+    // "当前地点"往往正是最合适的地方（两个人聊得正好的那家店），
+    // 剔掉它等于逼她换到一个没道理的地方。音乐同理，同一首撑一整段恋爱戏是合理的。
+    // 教学段保留（换曲不穿帮，跟着情绪走是对的）。
     if (a.bgmStreak >= App::kAssetStreakMax && !a.recentBgms.empty()
         && !a.dir.IsRomanceStage())
         recent.bannedBgm.push_back(a.recentBgms.back());
-
     //
     // ---- 章间日常：把"讲课脸"从清单里拿掉
     //
@@ -27870,35 +27013,35 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     // 玩家一答「当然了」，她当场就在黑板上写下下一章的标题。
     // 整段相处被一句话跳过，而她不认为自己在违规。
     //
-    // 所以从清单里拿掉讲课用的表情——这是引擎侧的硬约束，不依赖她读不读提示。
+    // 所以从清单里拿掉讲课用的表情
     if (a.dir.Stage() == DirStage::Daily) {
         //
         // ---- 她上一句还在讲知识点时，不要收窄
         //
         // ★ 收窄帮倒忙的典型：阶段=日常，可她上一句还在讲「解引用 / 取地址」。
-        //   讲课背景被剔掉后她被迫选了「卧室」——画面是卧室、台词在讲指针，穿帮。
-        //   她照样讲，只是讲的地方从教室挪到了卧室，错得更明显。
-        //   所以她还在讲课时先不收窄（画面至少跟台词对得上），等她停下来再收窄。
+        // 讲课背景被剔掉后她被迫选了「卧室」——画面是卧室、台词在讲指针，穿帮。
+        // 她照样讲，只是讲的地方从教室挪到了卧室，错得更明显。
+        // 所以她还在讲课时先不收窄（画面至少跟台词对得上），等她停下来再收窄。
         //
         // ★ 判定"她这句是不是在讲知识点"的词表只此一份、来自剧本。
-        //   在这里另抄一份副本，换剧本时就会改一处忘一处。
+        // 在这里另抄一份副本，换剧本时就会改一处忘一处。
         const bool stillTeaching = SaysTeaching(a.lastHerSay);
         if (!stillTeaching) {
         //
         // ---- 教室类背景不再剔除
         //
         // 剔它的本意是"没有黑板就不会在黑板上写下一章"，
-        // 但「空无一人的课室」写的是"放学后只剩两个人，适合说心里话"——
+        // 但「空无一人的课室」写的是"放学后只剩两个人，适合说心里话"
         // 恰恰是这段最该去的地方，却因为带"课室"两个字被踢出清单。
-        // 讲下一章是【内容】问题，交给 prompt 约束，不靠砍场景。
+        // 讲下一章是内容问题，交给 prompt 约束，不靠砍场景。
         //
         // ---- 讲课表情要整组拿掉，不能只拿掉一张
         //
         // ★ 硬编码只剔一张的话，她立刻改填同义的另一张（讲解 / 提问），
-        //   从日志看就是"禁止没生效"，其实是名单漏了同义词。
-        //   改成按语义整组判定（名单来自 char.ini [AssetRole] 的 讲课），
-        //   以后再加「板书」这类也自动覆盖。没配 = 不识别。
-        // 【讲课表情由 char.ini [AssetRole] 的 讲课 决定】没配 = 不识别
+        // 从日志看就是"禁止没生效"，其实是名单漏了同义词。
+        // 改成按语义整组判定（名单来自 char.ini [AssetRole] 的 讲课），
+        // 以后再加「板书」这类也自动覆盖。没配 = 不识别。
+        // 讲课表情由 char.ini [AssetRole] 的 讲课 决定没配 = 不识别
         auto isTeachingPose = [](const std::wstring& n) {
             if (gRole.teachPose.empty()) return false;
             return gRole.Has(gRole.teachPose, n);
@@ -27931,38 +27074,35 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     //
     // ---- 她上一轮给了个无效名字（tsundere / smile 之类）
     //
-    // 【不回传的话，同样的错会一轮一轮重复】
+    // 不回传的话，同样的错会一轮一轮重复
     // 它没有跨轮记忆，上一轮写了 tsundere 被忽略，这一轮还会再写一次。
     // 把原话摆回给它看，一次就能纠正（见 BuildSystemMsg 里的★段落）。
     recent.badPose = a.dir.LastBadPose();
     ctx->msgs.push_back(BuildSystemMsg(a.persona, a.Def(), a.mem, a.prof, sceneHint,
                                        a.dirMode, &vis, &recent, a.assetBriefNote(),
                                        a.llm.splitAsset));
-
     // ---- 多轮上下文
     //
-    // 【这是"她完全不记得刚才聊了什么"的根因】
-    // 原来这里只有 system + 当前这一句 user：
+    // 这是"她完全不记得刚才聊了什么"的根因
     //
-    //     msgs = [ system, user("他说的话") ]
+    // msgs = [ system, user("他说的话") ]
     //
-    // 每一轮请求都是【全新且独立】的，模型看不到任何历史。
-    // 于是玩家问"刚才那个为什么"、"再讲一遍"、"我刚才说的对吗"，
-    // 它只能瞎猜或者把讲过的内容原样重讲一遍——
+    // 每一轮请求都是全新且独立的，模型看不到任何历史。
+    // 于是玩家问"刚才那个为什么"、"再讲一遍"、"
+    // 它只能瞎猜或者把讲过的内容原样重讲一遍
     // 而 a.hist 里明明记着全部对话，只是从来没被用上。
     //
     // 现在把最近的对话按 user / assistant 交替拼进去。
     AppendHistoryMsgs(ctx->msgs, a.hist, userText);
     ctx->msgs.push_back(ChatMsg{ L"user", userText });
-
     // ★ 她上一句话被掐断了：明确告诉她，让她接着把那半句说完。
     //
-    // 不提醒的话她不知道自己上一句停在半路——玩家看到的会是
-    // 「所以，你觉得 scanf(」这种断句，而且【后半句永远等不到】：
+    // 不提醒的话她不知道自己上一句停在半路
+    // 「所以，
     // 下一轮她以为自己讲完了，自顾自往下讲新的内容。
     //
     // 用完即清（a.lastSayTruncated 置回 false）：只影响这一轮。
-    // 留着不清的话，之后每一轮都背着"你欠着话没说"，她会一直重复道歉。
+    // 留着不清的话，之后每一轮都背着"
     if (a.lastSayTruncated) {
         a.lastSayTruncated = false;
         ctx->msgs.push_back(ChatMsg{ L"user",
@@ -27970,9 +27110,8 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
             L"这一次【先把那半句接着说完】，而且【说短一点】"
             L"——控制在 3~8 句以内，别再断在半路。）" });
     }
-
     //
-    // ---- 【发请求前把"她看到了什么"记下来】
+    // ---- 发请求前把"她看到了什么"记下来
     // 素材日志记的是回来之后的事，这份记的是发出去之前的。
     // 两边对照才能判断"她选得对不对"。
     AppendTurnTrace(L"发请求", &vis, &recent.banned, userText,
@@ -28003,11 +27142,11 @@ static void OnChatDone(HWND hwnd) {
     a.chatSilent = false;
     a.rs.thinking = false;
     //
-    // 【judging 必须在这里复位】
+    // judging 必须在这里复位
     // 判题改成交给她看之后，judging 由 StartJudge 置位、表示"等她读代码"。
-    // 原来它由 OnJudgeDone 复位，而那个函数已经删了——
-    // 不在这里清的话，界面上"她在看你的代码 ●○○○"会一直转下去，
-    // 而且下次进编辑器时还挂着，玩家以为什么东西没跑完。
+    // 原来它由 OnJudgeDone 复位，而那个函数已经删了
+    // 不在这里清的话，界面上"她在看
+    // 而且下次进编辑器时还挂着，
     a.judging = false;
     a.rs.judging = false;
     a.rs.progress = -1.0f;
@@ -28036,11 +27175,10 @@ static void OnChatDone(HWND hwnd) {
     //   反过来：JSON 没结尾但服务端说 stop，那是模型自己把格式写坏了，
     //   不该按"输出上限"处理——照那个提示去翻设置，翻遍也找不到能调的项。
     if (g_chatFinishReason == L"length") rep.truncated = true;
-
     // ★ 半截台词必须让人一眼看出是半截。
     //
     // 不加标记，回想面板和存档里躺着的就是一句断在半路的"正常台词"：
-    //   「所以，你觉得 scanf(」
+    // 「所以，
     // 下一轮她也不知道自己上一句没说完——那后半句就永远等不到。
     if (rep.truncated && !rep.say.empty()) {
         if (rep.say[rep.say.size() - 1] != L'…') rep.say += L"……";
@@ -28061,19 +27199,18 @@ static void OnChatDone(HWND hwnd) {
         // 提示塞进变量，剧本里可以用 $她的提示 读出来显示
         a.vm.SetVar(L"她的提示", ck::EValue(rep.hint));
     }
-
     // ---- 导演模式：把画面交给模型
     //
-    // 她说"我们换个地方"就真的会换背景，说"考考你"就会进入出题流程。
-    // 校验用的是【扫出来的真实文件清单】（Director::ApplyAiStage），
+    // 她说"
+    // 校验用的是扫出来的真实文件清单（Director::ApplyAiStage），
     // 不再是代码里写死的白名单——作者加一张图就立刻可切，不用改代码。
     // 模型给的名字不在清单里就丢弃，画面保持原样——宁可不变，也不能变没。
     if (a.dirMode && a.phase != Phase::Review) {
         // ---- 她漏给素材参数时，引擎自己补上，绝不让画面空着
         //
-        // 【prompt 要求每轮必填，但不能指望模型每次都照做】
+        // prompt 要求每轮必填，但不能指望模型每次都照做
         // 它漏一个字段（尤其是害羞、开心这类情绪明显的轮次反而容易只顾着说话），
-        // 画面就维持上一轮甚至变空——玩家看到的是"她明明害羞了却还是那张脸"。
+        // 画面就维持上一轮甚至变空
         // 补的顺序：她给的 > 当前画面 > 从清单里挑一个。
         // 第三档是最后保险：宁可挑一个中性的，也不能什么都没有。
         {
@@ -28106,12 +27243,12 @@ static void OnChatDone(HWND hwnd) {
         dv.emote  = rep.emote;
         dv.pose   = a.rs.pose;
         //
-        // ---- 这个角色【没有服装分化】时，outfit / emote 一律作废
+        // ---- 这个角色没有服装分化时，outfit / emote 一律作废
         //
-        // 【这是"立绘只有表情"这条事实必须贯穿到解析层的部分】
+        // 这是"立绘只有表情"这条事实必须贯穿到解析层的部分
         // 光在 prompt 里不提还不够：老模型的输出习惯、格式示例的残留、
         // 甚至它自己脑补，都可能让它照样塞一个 outfit 过来。
-        // 而 ApplyAiStage 在【服装清单为空】时是【放行】的
+        // 而 ApplyAiStage 在服装清单为空时是放行的
         // （清单空 = 漏扫，不该让功能失效）——于是这个不存在的衣服名
         // 会被原样写进 dv.outfit，再被 ApplyStageChange 落到 rs.outfit，
         // 渲染层随后拿它去拼 <base>_<衣服>_<表情>，拼不出来 → 画面不动。
@@ -28123,11 +27260,11 @@ static void OnChatDone(HWND hwnd) {
         std::wstring repEmote  = rep.emote;
         if (noOutfitSplit) { repOutfit.clear(); repEmote.clear(); }
         //
-        // ---- 【素材独立请求：主回复里的画面字段一律作废】
+        // ---- 素材独立请求：主回复里的画面字段一律作废
         //
         // 主请求这一轮根本没向它要 pose/bg/bgm（格式里没有这三个字段），
         // 它可能还是会自作主张塞一个回来。不作废的话：它随手给的那一版
-        // 会先画上去，一秒后挑素材请求回来再换一次——
+        // 会先画上去，一秒后挑素材请求回来再换一次
         // 又变成被抱怨过的"画面闪一下"。
         //
         // 清空后 ApplyAiStage 什么都不改（gavePose/gaveBg/gaveBgm 全为 false），
@@ -28135,21 +27272,19 @@ static void OnChatDone(HWND hwnd) {
         const bool splitAsset = a.llm.splitAsset && a.dirMode;
         if (splitAsset) { rep.pose.clear(); rep.bg.clear(); rep.bgm.clear(); }
         a.dir.ApplyAiStage(dv, rep.bg, rep.bgm, repOutfit, repEmote, rep.pose);
-
         //
-        // ---- 【先判定这一轮要不要打回，要打回就先把问题字段还原】
+        // ---- 先判定这一轮要不要打回，要打回就先把问题字段还原
         //
-        // 【这是"立绘在打回前生效"的根因，被报过三次的那个 bug】
+        // 这是"立绘在打回前生效"的根因，被报过三次的那个 bug
         //
-        // 原来的顺序是：校验 ->【立刻把画面画出来】-> 显示台词 -> 最后才打回。
-        // 她填错的那一轮，玩家会【先看到一张错的脸】，一两秒后打回回来
+        // 她填错的那一轮，
         // 才换成对的——体感是"画面闪一下又变了"。
         //
         // 最典型的场合是"别名猜中"：她写 smile / 微笑，程序猜成「平静」
-        // 并【立刻画上】，而她真正想要的是开心的脸。打回之后才对上，
+        // 并立刻画上，而她真正想要的是开心的脸。打回之后才对上，
         // 中间那一秒画面是错的，而且正好配着新台词。
         //
-        // 现在：要打回的那一轮，把有问题的字段还原成【当前生效值】，
+        // 现在：要打回的那一轮，把有问题的字段还原成当前生效值，
         // 于是画面完全不动；台词也挂起（下面）。打回回来后两者一起呈现。
         const bool willFix = (!rep.say.empty()
                               && a.stageFixTries < kMaxStageFix
@@ -28159,47 +27294,43 @@ static void OnChatDone(HWND hwnd) {
             if (dv.gaveBg   && !dv.okBg)                        dv.bg   = a.dirCurBg;
             if (dv.gaveBgm  && !dv.okBgm)                       dv.bgm  = a.dirCurBgm;
         }
-
         //
         // ---- 占位画面：模型说了算，无条件换掉
         //
-        // 【开局那张脸/背景是引擎猜的，不是她选的】
-        // 玩家看到"模型还在思考，画面却已经有了"就是它。
-        // 它只是为了让画面不空，一旦她开口就必须换成她选的那张——
-        // 否则玩家会以为"她选了平静，画面却是叹气"，
+        // 开局那张脸/背景是引擎猜的，不是她选的
+        // 它只是为了让画面不空，一旦她开口就必须换成她选的那张
+        // 否则
         // 而实际上那张叹气是引擎在开场猜的，跟她毫无关系。
         const bool wasPlaceholder = a.stageIsPlaceholder;
         if (wasPlaceholder) a.stageIsPlaceholder = false;
-
         // ---- 占位画面：日志留痕，方便确认"开场的脸是不是她选的"
         //
         // 画面本身在下面的三件套块里无条件应用，不需要额外处理。
-        // 但必须记一笔：否则玩家看到开场那张脸时，分不清它是
+        // 但必须记一笔：否则
         // 引擎猜的（占位）还是她选的——而这个区分正是排查"对不上"的关键。
         if (wasPlaceholder) {
             AppLog(L"[舞台] 第一轮：已用她选的画面替换开场占位（pose=%s bg=%s bgm=%s）",
                    dv.pose.c_str(), dv.bg.c_str(), dv.bgm.c_str());
         }
-
-        // ---- 阶段刚切换：三个都必须变，但【全部交给她】
+        // ---- 阶段刚切换：三个都必须变，但全部交给她
         //
-        // 【这里的引擎兜底已经整块删除】
+        // 这里的引擎兜底已经整块删除
         //
         // 原来 bg / bgm 由 PickDifferentFrom 挑一个"跟当前不同的"强制换掉。
         // 它跟已删除的立绘强制换脸是同一个毛病：只做"避开当前那个，
         // 再按计数器从清单里数一个"，完全不知道这一轮的情境是什么。
         //
-        // 实际运行日志里抓到一个活例：
-        //   教学结束 → 章间日常，她给「课间的课室」，引擎换成「神社」
-        //   ——两个人明明还在教室里说话，背景一帧跳到神社，
-        //     而且她给的那个值本来是对的，却被当成"没转场"硬换掉。
-        //   音乐同理：「ひとときの安息」被换成「她的日常.Quiet Version」。
+        // 运行时★ 一个典型症状：
+        // 教学结束 → 章间日常，她给「课间的课室」，引擎换成「神社」
+        // ——两个人明明还在教室里说话，背景一帧跳到神社，
+        // 而且她给的那个值本来是对的，却被当成"没转场"硬换掉。
+        // 音乐同理：「ひとときの安息」被换成「她的日常.Quiet Version」。
         //
         // 场景和音乐不像立绘那样会"表情穿帮"，但会"地点穿帮"，
         // 一样扎眼。所以三件一律交给她：她换就换，她没换就保持。
         //
         // 转场要求写进 prompt（Director::SceneHint 的 ★转场 小节），
-        // 并且明说"不会再有人替你换"——她不换，画面就停在原地。
+        // 并且明说"不会再有人替
         if (a.dir.StageChangePending()) {
             // 销账即可：标记只用来触发那一轮的 prompt 提示，不触发换素材。
             // 不销的话标记会一直挂着，之后每一轮都以为"刚转场"。
@@ -28209,53 +27340,50 @@ static void OnChatDone(HWND hwnd) {
             // 只管这一轮。清掉后下一轮回到"她说了算"。
             a.dir.ClearStageChange();
         }
-
         //
-        // ---- 【这里原来有一段"同一张脸连用太久，引擎随机换一张"】
+        // ---- 这里
         //
-        // 【已删除。理由：引擎挑出来的脸经常很奇怪】
+        // 已删除。理由：引擎挑出来的脸经常很奇怪
         // 它只做两件事：避开当前那张，然后按计数器从清单里挑另一张。
         // 它完全不知道这一轮台词是什么情绪，于是经常挑出
-        //   "她正在害羞地否认，画面却是叹气脸"
-        // 这种穿帮。玩家看到的是"返回的跟实际对不上"，
-        // 而日志里每次都打 [换脸]，看起来像程序在工作——
+        // "她正在害羞地否认，画面却是叹气脸"
+        // 这种穿帮。
+        // 而运行时每次都打 [换脸]，看起来像程序在工作
         // 前几轮那个"总是差一轮"的现象，一大半是这个造成的。
         //
-        // 现在改成：换脸这件事【完全交给她】。
+        // 现在改成：换脸这件事完全交给她。
         // 引擎不再插手，只在 prompt 里把要求讲清楚：
-        //   · 列出她最近几轮用过的（她自己没有跨轮记忆）
-        //   · 连用两轮就点名说破，要求这一轮必须换
-        //   · 讲清后果：不换的话画面会一直挂着同一张脸，很呆板
-        // 她换了就听她的；她没换，画面就保持——
+        // · 列出她最近几轮用过的（她自己没有跨轮记忆）
+        // · 连用两轮就点名说破，要求这一轮必须换
+        // · 讲清后果：不换的话画面会一直挂着同一张脸，很呆板
+        // 她换了就听她的；她没换，画面就保持
         // 至少画面跟她说的话是一致的，不会莫名跳到一张无关的脸。
         //
         // streak 仍然在记（NoteAssets），只用于 prompt 提示，不再触发换脸。
-
-        // ----  diagnostics：她到底给了什么、引擎认了没有
+        // ---- diagnostics：她到底给了什么、引擎认了没有
         //
-        // 【没有这个日志，"她会不会换画面"只能靠猜】
+        // 没有这个日志，"她会不会换画面"只能靠猜
         // 玩家只看到画面没变，无法区分三种完全不同的情况：
-        //   1. 她压根没填这个字段（prompt 没起作用）
-        //   2. 填了但写法不对（神社.png / bg\\神社）被当成瞎编拒绝
-        //   3. 填对了但解析不到文件
+        // 1. 她压根没填这个字段（prompt 没起作用）
+        // 2. 填了但写法不对（神社.png / bg\\神社）被当成瞎编拒绝
+        // 3. 填对了但解析不到文件
         //
-        // ---- 落盘审计：见下面【应用之后】那一处，这里不能写
+        // ---- 落盘审计：见下面应用之后那一处，这里不能写
         //
-        // 【这里原来也调了一次 AppendAssetAudit，那是错的】
-        // 它位于 dv 应用到 a.dirCurBg / a.rs.pose 【之前】，
+        // 这里原来也调了一次 AppendAssetAudit，那是错的
+        // 它位于 dv 应用到 a.dirCurBg / a.rs.pose
         // 于是写进去的"程序生效"还是上一轮的旧值（第一轮则是全空）。
-        // 结果每一轮在日志里留下【两条】记录：
-        //   第一条 全空/旧值 且标 ★   —— 假的
-        //   第二条 新值 且标 ✓         —— 真的
+        // 结果每一轮在运行时留下两条记录：
+        // 第一条 全空/旧值 且标 ★ —— 假的
+        // 第二条 新值 且标 ✓ —— 真的
         // 玩家打开日志看到满屏 ★，会以为程序完全没接住，
         // 而实际上第二条已经生效了。那份日志正是这样，
         // 白白把排查方向带到"解析层"，真正的线索被噪音盖住。
         //
-        // 审计必须在【应用之后】写一次，且只写一次。
-
+        // 审计必须在应用之后写一次，且只写一次。
         // ---- 她第一轮没指定背景时，用大纲第一章的 Bg 兜底
         //
-        // 这份兜底在【她开口时】才生效，不是开场就画（见 dirPendingBg 的说明）。
+        // 这份兜底在她开口时才生效，不是开场就画（见 dirPendingBg 的说明）。
         // 用一次就清掉：之后她自己选的场景不该再被大纲的值盖回来。
         bool usedPendingBg = false;
         if (dv.bg.empty() && !a.dirPendingBg.empty()) {
@@ -28267,16 +27395,16 @@ static void OnChatDone(HWND hwnd) {
         a.dirCurBg  = dv.bg;
         a.dirCurBgm = dv.bgm;
         //
-        // ---- 【兜底：本章锁非空时，dirCurBg 绝不允许是空的】
+        // ---- 兜底：本章锁非空时，dirCurBg 绝不允许是空的
         //
-        // 【这是"开考跳到夜晚神社"能时有时无的真正原因】
-        // 上面 DirEnterTask 的护栏判的是【dirCurBg 是否为空】。
+        // 这是"开考跳到夜晚神社"能时有时无的真正原因
+        // 上面 DirEnterTask 的护栏判的是dirCurBg 是否为空。
         // 而 dirCurBg 只在这里被赋值：她这一轮没给、且大纲也没配时，
         // 它就被写成空串 —— 于是"本章明明已经定过场景（chapterBg_ 非空），
         // 逻辑上的当前背景却是空的"，开考那一下就落到兜底分支去了。
         //
         // 两个值各记一份、互不同步，就是这类偶发穿帮的温床。
-        // 这里每轮收口一次，保证【有锁必有值】。
+        // 这里每轮收口一次，保证有锁必有值。
         if (a.dirCurBg.empty() && !a.dir.ChapterBg().empty()) {
             a.dirCurBg = a.dir.ChapterBg();
             Dbg(L"[舞台] dirCurBg 为空，用本章锁定的「%s」补齐", a.dirCurBg.c_str());
@@ -28289,22 +27417,22 @@ static void OnChatDone(HWND hwnd) {
         // ---- 她开口了：立绘从这一刻起才画
         //
         // 在她第一句台词到达之前画面上不该有人（poseReady），
-        // 否则玩家看到的是"人先站好了，她才说话"。
+        // 否则
         a.rs.poseReady = true;
         // 记下这一轮真正用上的素材，供下一轮 prompt 做"别重复"约束。
         //
-        // 【占位画面不能算"她用过的"】
+        // 占位画面不能算"她用过的"
         // 预置的「平静」如果进了 recentPoses，她下一轮再给平静就会被
         // 判成"连用 2 轮"而强制换脸——可她明明是第一次选。
         // 只有模型真正选过的才记。
         //
-        // ---- 【挑素材模式下，这一步必须跳过】
+        // ---- 挑素材模式下，这一步必须跳过
         //
-        // 素材还没挑，dv 里装的是【上一轮的值】。照记的话：
+        // 素材还没挑，dv 里装的是上一轮的值。照记的话：
         // 上一轮是「认真」，这一轮还没挑就又记一次「认真」
         // → streak 变成 2 → 下一轮把「认真」列进禁用
-        // → 她挑素材时想表达"我在讲课"却选不了「认真」。
-        // 等于【还没开始选就被扣了一次】，正是"换脸全靠打回"的成因之一。
+        // → 她挑素材时想表达"
+        // 等于还没开始选就被扣了一次，正是"换脸全靠打回"的成因之一。
         //
         // 挑素材的结果回来时（WM_APP_STAGE_FIX）才记，那里记的是她真选的。
         if (!splitAsset) {
@@ -28316,21 +27444,19 @@ static void OnChatDone(HWND hwnd) {
             }
         }
         //
-        // ===================================================================
-        //  舞台三件套：bg / pose / bgm —— 【全部在决策时解析成具体文件】
-        // ===================================================================
+        // 舞台三件套：bg / pose / bgm —— 全部在决策时解析成具体文件
         //
-        // 【照抄 BGM 的做法，这是"只有音乐每次都对得上"的原因】
+        // 照抄 BGM 的做法，这是"只有音乐每次都对得上"的原因
         //
-        // 音乐的流程是：ResolveBgmFor 拿到【一个确定文件】→ 立刻落槽 →
+        // 音乐的流程是：ResolveBgmFor 拿到一个确定文件→ 立刻落槽 →
         // 播放器原样播它。找不到就播不出来，绝不会"换一首差不多的"。
-        // 整条链路上只有【一个】文件指针在流动，所以不可能对不上。
+        // 整条链路上只有一个文件指针在流动，所以不可能对不上。
         //
-        // 立绘和背景原来的流程是：只存【名字】→ 等到渲染/定时器再各解析一次，
+        // 立绘和背景
         // 而且各带一条降级链（背景退回 view.bg、立绘退回 6 段候选）。
         // 名字在多个地方被独立解释，只要有一处解释不同，画面就跟调试行分家。
         //
-        // 现在两者都改成：这里解析成路径 → 存路径 → 渲染层【原样画】。
+        // 现在两者都改成：这里解析成路径 → 存路径 → 渲染层原样画。
         // 解析失败就保留当前画面并大声报警，绝不偷偷换成别的图。
         {
             // ---- 背景
@@ -28355,11 +27481,10 @@ static void OnChatDone(HWND hwnd) {
             }
             a.rs.bgPath = a.bgCur;
             a.rs.bgFit  = a.bgCurFit;
-
-            // ---- 立绘：解析成【唯一确定的文件】，不做降级
+            // ---- 立绘：解析成唯一确定的文件，不做降级
             //
             // 渲染层拿到 rs.posePath 后必须原样画它（见 render.cpp）。
-            // 解析不到就保留上一张，不再走 GetCharImage 的降级链——
+            // 解析不到就保留上一张，不再走 GetCharImage 的降级链
             // 那条链正是"调试写平静、画面却是叹气"的来源。
             std::wstring spp = ResolvePoseFile(a.Def(), a.assetDir, dv.pose);
             if (!spp.empty()) {
@@ -28375,14 +27500,13 @@ static void OnChatDone(HWND hwnd) {
         // 无服装分化时 dv.outfit 已被清掉，这里不会再触发换装。
         if (dv.changed) ApplyStageChange(dv.bg, dv.outfit);
         //
-        // ---- 舞台日志：【放在全部应用之后】
+        // ---- 舞台日志：放在全部应用之后
         //
-        // 【原来这行打在三件套之前，而且打的是 dv.pose（她给的意图值）】
         // 于是解析失败时日志写着"生效 pose=害羞"，
         // 画面却还留着上一张——日志和画面各说各话。
-        // 玩家拿着日志来报 bug，我们看着日志也觉得一切正常。
+        // 不报错、不提示，记录里也看不出异常。
         //
-        // 现在放在最后，而且"生效"那一栏打的是【真正写进画面的值】。
+        // 现在放在最后，而且"生效"那一栏打的是真正写进画面的值。
         // 日志说什么，画面就是什么。
         {
             std::wstring t;
@@ -28395,9 +27519,9 @@ static void OnChatDone(HWND hwnd) {
             t += L" bg="    + (a.dirCurBg.empty()  ? std::wstring(L"(空)") : a.dirCurBg);
             t += L" bgm="   + (a.dirCurBgm.empty() ? std::wstring(L"(空)") : a.dirCurBgm);
             //
-            // ---- 【上一张 -> 这一张】
+            // ---- 上一张 -> 这一张
             //
-            // 【这是"表情慢一轮"的诊断关键】
+            // 这是"表情慢一轮"的诊断关键
             // 只打这一张的值，看不出它到底换没换：
             // 日志说"害羞"，可能画面上已经是害羞（换了），
             // 也可能还是上一张（没换成）。加上箭头就能一眼分清。
@@ -28407,7 +27531,7 @@ static void OnChatDone(HWND hwnd) {
                + (a.rs.poseReady ? L"" : L" [还没开口,不画人]");
             t += L" emote=" + (rep.emote.empty() ? std::wstring(L"(空)") : rep.emote);
             //
-            // ---- 立绘 / 背景 能不能解析到【文件】
+            // ---- 立绘 / 背景 能不能解析到文件
             //
             // 状态对了但文件不在，画面会保持原样（走降级链会画出别的图，
             // 现在已经不会了）。这两种情况修法完全不同，必须分开。
@@ -28425,32 +27549,32 @@ static void OnChatDone(HWND hwnd) {
         //
         // ---- 写进 data：她给的 / 程序生效的 / 实际画出来的，三样对齐摆着
         //
-        // ---- 【挑素材模式下这一笔不能写】
+        // ---- 挑素材模式下这一笔不能写
         //
         // 主请求这一轮根本没给素材，写进去就是一行
-        // "她返回 pose=(空) / ✓一致" 的假记录——
+        // "她返回 pose=(空) / ✓一致" 的假记录
         // 排查时很容易被这种假记录带偏方向。
         // 真正的记录由挑素材回调补写（标签写「（挑素材）」）。
         if (!splitAsset) AppendAssetAudit(rep.pose, rep.bg, rep.bgm, rep.say, &dv);
         //
-        // ---- 【素材没接住 -> 打回给模型重填】
+        // ---- 素材没接住 -> 打回给模型重填
         //
-        // ★ 审计必须在打回【之前】写完：那一笔记的是她【第一次】给的值，要留着对照。
-        //   先打回再审计，日志里看到的永远是修正后的值，"她到底错在哪"就永远查不到了——
-        //   而那正是判断"要不要继续调 prompt"的唯一依据。
+        // ★ 审计必须在打回之前写完：那一笔记的是她第一次给的值，要留着对照。
+        // 先打回再审计，运行时看到的永远是修正后的值，"她到底错在哪"就永远查不到了
+        // 而那正是判断"要不要继续调 prompt"的唯一依据。
         //
-        // 挂起期间对话框是空的，只在状态栏说明原因——否则玩家会以为她卡住了。
+        // 挂起期间对话框是空的，只在状态栏说明原因——否则
         // 返回 false（不用打回）时台词照常显示。
         //
-        // ★ 主请求这条路径不涉及 pose2：pose2 只在【挑素材】那次请求里才要。
-        //   这里传 true，打回 prompt 里会凭空多出一项"第二个表情填错了"，
-        //   她看着莫名其妙，还可能乱改真正的 pose。
+        // ★ 主请求这条路径不涉及 pose2：pose2 只在挑素材那次请求里才要。
+        // 这里传 true，打回 prompt 里会凭空多出一项"第二个表情填错了"，
+        // 她看着莫名其妙，还可能乱改真正的 pose。
         //
-        // ★ 日常段不许讲课（讲知识点就打回让她重写这句），且要放在素材打回【之前】：
-        //   素材错了只是画面不对，这一整句的性质错了——改了素材它还是在讲代码。
-        // ★ 告别段【不】走这条打回：判据认"这一章""题目"这类词，而告别最自然的一句
-        //   恰恰是"那这一章就到这儿了，明天见"——一打回，最该出现的那句就被删了。
-        //   告别只有一句，靠 kick 里的约束就够了；打回是为了长段日常防教学惯性。
+        // ★ 日常段不许讲课（讲知识点就打回让她重写这句），且要放在素材打回之前：
+        // 素材错了只是画面不对，这一整句的性质错了——改了素材它还是在讲代码。
+        // ★ 告别段不走这条打回：判据认"这一章""题目"这类词，而告别最自然的一句
+        // 恰恰是"那这一章就到这儿了，明天见"——一打回，最该出现的那句就被删了。
+        // 告别只有一句，靠 kick 里的约束就够了；打回是为了长段日常防教学惯性。
         if (a.dirMode && a.dir.Stage() == DirStage::Daily
             && SaysTeaching(rep.say)) {
             if (StartDailyRewrite(rep.say)) {
@@ -28467,7 +27591,7 @@ static void OnChatDone(HWND hwnd) {
             AppLog(L"[打回] 已发起，台词与画面挂起，等结果一起呈现");
         }
         //
-        // ---- 【素材独立请求】这一轮的画面交给第二次请求
+        // ---- 素材独立请求这一轮的画面交给第二次请求
         //
         // 注意这里是 else if：填错了要走打回（台词挂起、一起呈现），
         // 而挑素材是正常流程（台词已经显示，画面随后跟上）。
@@ -28475,9 +27599,8 @@ static void OnChatDone(HWND hwnd) {
         else if (splitAsset && !rep.say.empty()) {
             if (StartAssetPick(rep.say, rep.scene, rep.beat)) {
                 //
-                // ---- 【台词跟画面一起挂起，不准先出】
+                // ---- 台词跟画面一起挂起，不准先出
                 //
-                // 原来这里是"台词已显示，画面随后跟上"。而挑素材那次请求
                 // 走的是网络，实测常常比玩家翻页还慢——于是玩家先读到新台词，
                 // 脸上还挂着上一句的表情，过一两秒才换过来。
                 // 那跟"闪一下错脸"是同一种观感：话和脸对不上。
@@ -28491,8 +27614,8 @@ static void OnChatDone(HWND hwnd) {
                 a.stageFixPending = true;
                 AppLog(L"[挑素材] 台词与画面一起挂起，等第二次请求回来");
                 //
-                // 【写进会话追踪：AppLog 只上状态栏，落不到文件里】
-                // 判卷那一句到底有没有走挑素材，光看素材调用日志判断不了——
+                // 写进会话追踪：AppLog 只上状态栏，落不到文件里
+                // 判卷那一句到底有没有走挑素材，光看素材调用日志判断不了
                 // 回调模型没给有效值时是直接 return 的，压根不写审计，
                 // 于是"发起了但失败"和"根本没发起"在日志上长得一模一样。
                 // 这里留一行，下次一眼就能分清是哪一种。
@@ -28510,7 +27633,7 @@ static void OnChatDone(HWND hwnd) {
         //
         // ---- pose 生效时清掉 emote
         //
-        // 【emote 是 outfit × emote 时代的遗留字段】
+        // emote 是 outfit × emote 时代的遗留字段
         // 现在 pose（服装+表情捆绑）是主字段，emote 只在 pose 为空时才有意义。
         // 不清的话它会跨轮残留：这一轮 pose=平静，emote 还留着上一轮的"叹气"，
         // 一旦造型分支没命中，降级链就先试 emote —— 画面画出叹气脸，
@@ -28522,9 +27645,8 @@ static void OnChatDone(HWND hwnd) {
         // 而且她回话走的是 OnChatDone 而不是 AfterStep，
         // 所以 AfterStep 里那套 BGM 逻辑根本不会执行——必须在这里单独切。
         {
-            // 【她没给 bgm 时要沿用上一首，不能每轮都重置回主题曲】
-            // 原来这里无条件 ResolveGameBgmFor（固定主题曲），
-            // 于是她上一轮换的曲子在这一轮被悄悄换回来——
+            // 她没给 bgm 时要沿用上一首，不能每轮都重置回主题曲
+            // 于是她上一轮换的曲子在这一轮被悄悄换回来
             // 玩家听到的是"音乐自己跳回去了"，而她明明没说要换。
             // 现在：她给了就用她给的，没给就保持现在的。
             // dirCurBgm 为空（刚进游戏）才用默认主题曲。
@@ -28538,35 +27660,30 @@ static void OnChatDone(HWND hwnd) {
         a.dirReady   = rep.ready;
         a.dirAdvance = rep.advance;
     }
-
     //
-    // ---- 【她在普通对话里宣布"这章过了"】
+    // ---- 她在普通对话里宣布"这章过了"
     //
-    // 【实测日志：章号一直停在 1/5，章间日常一次都没出现】
-    // 18:27:31 她判卷说"你完全做对了"，18:27:55 又说"这章就算你通关啦"——
-    // 可这两句都是【普通对话】路径来的（他把代码贴在对话框里，没走编辑器），
+    // ★ 症状：章号一直停在 1/5，章间日常一次都没出现。
+    // 可这两句都是普通对话路径来的（他把代码贴在对话框里，没走编辑器），
     // phase 不是 Review，下面那段判卷逻辑压根不执行。
     // 结果：章号不动、AfterJudge 没调、章间日常永远不触发。
-    // 玩家看到的就是"她说我通关了，右上角还写着第1章，也没有日常可聊"。
     //
     // 触发条件必须收紧，否则讲课时她夸一句"完全正确"就会直接跳章：
-    //   · 他确实交过代码（lastCode 非空）
-    //   · 当前在教学阶段、本章有题
-    //   · 她的回复里有明确的判卷结论（VerdictFromWords）
+    // · 他确实交过代码（lastCode 非空）
+    // · 当前在教学阶段、本章有题
+    // · 她的回复里有明确的判卷结论（VerdictFromWords）
     if (a.dirMode && a.phase != Phase::Review
         && a.dir.Stage() == DirStage::Lesson
         && !a.lastCode.empty() && !rep.say.empty() && !a.taskPassed
         //
-        // ---- 【至少讲过两轮才认这次判卷】
+        // ---- 至少讲过两轮才认这次判卷
         //
         // ★ 流程 bug 的症状：
-        //   13:47:52 教学【第0轮】，她刚开口问"指针是什么你知道吗"，
-        //   玩家直接把整段 swap2 代码贴进对话框 -> 引擎当即在 13:47:59
-        //   判"对话里判过" -> 整章跳过，直接进章间日常。
+        // 判"对话里判过" -> 整章跳过，直接进章间日常。
         // 于是：这一章的教学一帧都没有，验收题也没出（存档里 quizAnswers=0、
-        //   triesLeft=0），她后面几轮全是在"日常"里把知识点补讲完的——
-        //   玩家要的恋爱环节就这么被讲课吃掉了。
-        // 他贴代码值得表扬，但不等于【这一章讲完了】。
+        // triesLeft=0），她后面几轮全是在"日常"里把知识点补讲完的
+        // 玩家要的恋爱环节就这么被讲课吃掉了。
+        // 他贴代码值得表扬，但不等于这一章讲完了。
         && a.dir.Turn() >= 2) {
         std::wstring judged = rep.say;
         {
@@ -28584,10 +27701,10 @@ static void OnChatDone(HWND hwnd) {
             a.dirVerdict = L"pass";
             a.lastCode.clear();
             //
-            // ---- 【这条路径原来只推进章节，不记账】
+            // ---- 这条路径原来只推进章节，不记账
             //
-            // 【实测存档里的证据】vars 里 "任务通过": 0 ——
-            //   章明明过了，正规流程该记的一样都没记。
+            // 实测存档里的证据vars 里 "任务通过": 0
+            // 章明明过了，正规流程该记的一样都没记。
             // 原因：编辑器那条路径（Review）里写了 任务通过，
             // 而这里（他把代码贴对话框、她在聊天里判的）一行都没写。
             // 于是"打通了却没记通过"只在这一半路径上发生。
@@ -28604,23 +27721,21 @@ static void OnChatDone(HWND hwnd) {
             }
         }
     }
-
     // ---- 点评阶段：她说了算
     //
     // 系统只给出机器判定（用例过没过），最终算不算过由她判断。
     // 空着（老模型 / 解析失败）就退回机器判定，不会卡住。
     //
-    // 【判题结果的落点：全部来自她的 verdict】
-    // 原来这里是"她改判"（拿她的结论跟机器结论对比）。
+    // 判题结果的落点：全部来自她的 verdict
     // 现在没有机器结论了——代码交给她看，她说了算，机器不参与。
     // 所以 verdict 就是唯一结果。
     //
-    // ---- 【选择题：引擎已经判过了，她这句话不是判词】
+    // ---- 选择题：引擎已经判过了，她这句话不是判词
     //
-    // 选择题里我们只让她"说一句"或"讲一下错在哪"，根本没让她填 verdict。
+    // 选择题里只让她"说一句"或"讲一下错在哪"，根本没让她填 verdict。
     // 要是还走下面这套"从回复里读 verdict、读不到就猜"，
     // 猜不出来就是 verdictMissing=true —— 然后 AdvanceClick 会当成没过：
-    // 扣次数，次数用完还要 EnterCodeMode() 把他丢进一个不该存在的编辑器。
+    // 扣次数，次数用完还要 EnterCodeMode 把他丢进一个不该存在的编辑器。
     // 所以对错已由引擎比对选项序号定下的时候，整块跳过。
     if (a.phase == Phase::Review && !a.quizEngineVerdict) {
         a.dirVerdict = rep.verdict;
@@ -28629,14 +27744,14 @@ static void OnChatDone(HWND hwnd) {
             a.verdictMissing = false;
         } else {
             //
-            // ---- 【她话里已经判了，只是没填字段】
+            // ---- 她话里已经判了，只是没填字段
             //
             // ★ 这是"第一轮明明过了却不放人"的根因
             // 她说了"三步全对！完全正确！三个测试用例都跑得通，
-            // 语法也一点问题没有"——这就是通过，可 verdict 字段是空的。
+            // 语法也一点问题没有"
             // 原来一律算没过，把他赶回编辑器重做，同一份代码判两次。
             //
-            // 注意：这里【必须】先剥掉泄漏出来的机器字段再判。
+            // 注意：这里必须先剥掉泄漏出来的机器字段再判。
             // 她偶尔会把 "verdict: pass ✅" 直接写进台词里，
             // 那种情况下词不算数（那是字段泄漏，不是她说的话）。
             std::wstring judged = rep.say;
@@ -28665,7 +27780,7 @@ static void OnChatDone(HWND hwnd) {
 
         // ---- 掌握度画像
         // 原来这些在 OnJudgeDone 里做（那时判题有独立的完成时机）。
-        // 现在判题结果就在这次回复里，所以搬到这里。
+        // 判题结果就在这一轮回复里，所以搬到这里。
         const ck::Instr* t2 = a.dirMode ? nullptr : a.vm.CurrentTask();
         std::wstring topic = a.dirMode ? a.pendingTask.title : (t2 ? t2->text : L"编程");
         a.prof.Bump(topic, a.taskPassed ? 18 : -6);
@@ -28678,20 +27793,17 @@ static void OnChatDone(HWND hwnd) {
     a.view.speaker = a.chatSpeaker;
     // 玩家回显到此结束：她的回复要盖上去，配色也换回角色自己的。
     a.rs.playerEcho = false;
-
-    // 【这里是"对话框里出现 {\"say\":...}"的最后一关】
+    // 这里是"对话框里出现 {\"say\":...}"的最后一关
     // ParseReply 拿不到台词时会把 say 置空（它自己判断这段像机器格式）。
     // 这里必须接住空值换成兜底台词——否则空字符串显示出来是一片空白，
-    // 玩家会以为她没说话、程序卡了。
     if (rep.say.empty()) rep.say = OfflineLine(rep.emote, a.chatTopic);
-
-    // 【同上的第二道闸，但这一道管"完整解析"路径】
+    // 同上的第二道闸，但这一道管"完整解析"路径
     // ParseReply 最后兜底会把 raw 整段当台词（当它判断"这不像机器格式"时）。
     // 那个判断漏过的情况（JSON 前有客套话、字段名不在列表里…）
     // 就会把带 {} 的原文直接送进对话框。
     // 这里在赋值前再判一次，跟渲染层那道闸形成双保险。
     //
-    // ---- 【剥掉开头孤零零的 pass / fail】
+    // ---- 剥掉开头孤零零的 pass / fail
     //
     // 判卷通过后她常把判定标记写在回复第一行，玩家对话框里第一个词就是 pass。
     // 循环剥是因为她偶尔连写两行（pass 再换行 fail）。
@@ -28703,16 +27815,14 @@ static void OnChatDone(HWND hwnd) {
         AppLog(L"[LLM] 台词像机器格式，已用兜底：%s", rep.say.c_str());
         rep.say = OfflineLine(rep.emote, a.chatTopic);
     }
-
     //
-    // ---- 【判卷这一句原来永远没有画面】
+    // ---- 判卷这一句原来永远没有画面
     //
-    // 【运行日志 00:18:59】她说"……等等，你写完了？——三步，先存再盖最后
-    //   还回去，完全正确"，素材调用日志里【没有这一笔】，画面停在上一张脸。
+    // 还回去，完全正确"，素材调用运行时没有这一笔，画面停在上一张脸。
     //
     // 根因：整个素材处理（挑素材 / 打回 / 审计 / NoteTurn）都包在
-    //   `if (a.dirMode && a.phase != Phase::Review)` 这一个块里（见上），
-    // 而判卷回复的 phase 恰恰【就是】Review —— 整块被跳过。
+    // `if (a.dirMode && a.phase != Phase::Review)` 这一个块里（见上），
+    // 而判卷回复的 phase 恰恰就是Review —— 整块被跳过。
     // 于是她宣布通过的那句，是全剧高光时刻之一，却没有配画面。
     //
     // 这里补一次。挑素材用剥掉 pass 之后的台词（上面刚剥完），
@@ -28721,11 +27831,11 @@ static void OnChatDone(HWND hwnd) {
         && !rep.say.empty() && !a.stageFixing && !a.stageFixPending) {
         if (StartAssetPick(rep.say, rep.scene, rep.beat)) {
             //
-            // 【同样挂起，而且要把已经显示的台词收回来】
-            // 这一段在 a.view.body = rep.say 【之后】，台词已经在屏幕上了。
+            // 同样挂起，而且要把已经显示的台词收回来
+            // 这一段在 a.view.body = rep.say 之后，台词已经在屏幕上了。
             // 只能手动清：置标记（让状态栏显示"她在配画面"）、
             // 存进 pendingSay、把对话框清空。
-            // 判卷这句是"你做对了"的高光时刻，台词先出、脸迟两秒换上，
+            // 判卷这句是"
             // 正是点名要修的观感。
             a.pendingSay      = rep.say;
             a.pendingEmote    = rep.emote.empty() ? L"normal" : rep.emote;
@@ -28739,18 +27849,17 @@ static void OnChatDone(HWND hwnd) {
             AppendTurnTrace(L"×挑素材没能发起(判卷这一句),画面保持", nullptr, nullptr, L"");
         }
     }
-
-    // 她的话被长度限制掐断了：明确说出来，别让玩家以为是网络问题。
+    // 她的话被长度限制掐断了：明确说出来，别让
     // 之前这种情况会走到"网络断了"的兜底，玩家完全不知道该怎么办。
     //
-    // ---- 【无上限时这句提示是错的，必须换说法】
+    // ---- 无上限时这句提示是错的，必须换说法
     //
     // 已经选了"无上限"（不发送 max_tokens）却还是被截断，
-    // 那说明是【模型自身】或【服务端】有硬上限，不是本程序的设置问题。
-    // 这时候还提示"去设置里调大一点"，玩家会翻遍设置页也找不到能调的地方
+    // 那说明是模型自身或服务端有硬上限，不是本程序的设置问题。
+    // 这时候还提示"去设置里调大一点"，
     // ——设置里已经是最高档了，他会以为程序坏了。
     //
-    // 【输出一律不限，所以截断只可能是模型 / 服务端自身的上限】
+    // 输出一律不限，所以截断只可能是模型 / 服务端自身的上限
     // 提示必须说准：让玩家去设置页找"回复长度"是找不到的（那一行已移除），
     // 他会翻遍设置页然后以为程序坏了。
     if (rep.truncated) {
@@ -28766,10 +27875,9 @@ static void OnChatDone(HWND hwnd) {
 
     a.view.showChoices = false;
     //
-    // ---- 【打回期间台词先不显示】
+    // ---- 打回期间台词先不显示
     //
-    // 画面和台词必须【一起】出现。台词先出来、脸后跟上，
-    // 玩家看到的就是"新台词配着上一张脸"——那跟"闪一下错脸"一样扎眼。
+    // 画面和台词必须一起出现。台词先出来、脸后跟上，
     // 历史记录不受影响：这句已经说过了，回忆面板里该有的还得有。
     if (a.stageFixPending) {
         a.view.body.clear();
@@ -28788,7 +27896,6 @@ static void OnChatDone(HWND hwnd) {
         a.phase = Phase::Play;
         a.block = ck::VmBlock::Click;
     }
-
     // 做题中途提问：她答完就停在这一句上等玩家读完，
     // 由 AdvanceClick 送他回编辑器。
     // 千万不能在这里走 DirAdvance —— 那会把"问个问题"当成"聊了一轮"，
@@ -28799,33 +27906,29 @@ static void OnChatDone(HWND hwnd) {
     }
     InvalidateRect(hwnd, nullptr, FALSE);
 }
-
 // ---------------------------------------------------------------- 导演模式
 //
 // 进入 / 恢复故事时，把"画面状态"清干净。
 //
-// 【原来这段代码在开局和两处读档里各抄了一份，共 3 处，而且不一致】
 // 不一致的后果很具体：
-//   · 开局那份会重新解析默认造型的文件
-//   · 读档那份只设了 rs.pose，【没动 posePath】
-//     —— 而 posePath 是渲染层"原样画"的路径，留着上一局的值就会画出
-//        上一局的脸，同时 rs.pose 显示的是默认造型。两边各说各话。
-// 这正是"读档后返回和实际对不上"最难查的一种：日志里一切正常。
+// · 开局那份会重新解析默认造型的文件
+// · 读档那份只设了 rs.pose，没动 posePath
+// —— 而 posePath 是渲染层"原样画"的路径，留着上一局的值就会画出
+// 上一局的脸，同时 rs.pose 显示的是默认造型。两边各说各话。
+// 这正是"读档后返回和实际对不上"最难查的一种：运行时一切正常。
 //
 // 抽成一处之后，三个入口走的是同一套，不会再出现"少清了一个字段"。
 static void PromptStageReset() {
     App& a = g_app;
     ResetStageVisuals();
     MarkAssetAuditSession(L"开局 / 读档");
-
-    // 初始背景：【留空】，等她第一轮开口再出现。
+    // 初始背景：留空，等她第一轮开口再出现。
     //
-    // 【跟立绘同理，这是"还没思考完就已经有背景"的根因】
-    // 原来这里先挑一张开场背景（第一章的 Bg，没配就自动挑一张），
+    // 跟立绘同理，这是"还没思考完就已经有背景"的根因
     // 于是她还没说话，教室/走廊已经画好了。等她开口说"去神社吧"，
     // 背景才切过去 —— 玩家的感觉就是"画面比文字慢一轮"。
     //
-    // 第一章的 Bg 不是作废，而是降级成【她没指定时的兜底】，
+    // 第一章的 Bg 不是作废，而是降级成她没指定时的兜底，
     // 出现的时机从"她开口前"挪到"她开口时"。
     a.dirPendingBg = (a.dir.Cur() && !a.dir.Cur()->bg.empty()) ? a.dir.Cur()->bg : PickOpeningBg();
     a.dirCurBg.clear();
@@ -28834,14 +27937,13 @@ static void PromptStageReset() {
     // 之后她自己换的曲子会写进 dirCurBgm，不被重置。
     a.dirCurBgm.clear();
 }
-
 //
 // 纯画面清理：背景转场残留 + 立绘。两种模式都要做。
 //
-// 【剧本模式原来自己手写了一份，漏了两样】
-//   · bgPrev（App 的那个）—— 注释写着"清掉转场残留"却没清它，
-//     于是开局淡入时画面上会闪出【上一周目的背景】
-//   · rs.pose —— 从头到尾没重置过，新周目会带着上一局的表情开场
+// 剧本模式原来自己手写了一份，漏了两样
+// · bgPrev（App 的那个）—— 注释写着"清掉转场残留"却没清它，
+// 于是开局淡入时画面上会闪出上一周目的背景
+// · rs.pose —— 从头到尾没重置过，新周目会带着上一局的表情开场
 // 这正是"每次都错成同一张图"在剧本模式下的版本。
 static void ResetStageVisuals() {
     App& a = g_app;
@@ -28852,33 +27954,29 @@ static void ResetStageVisuals() {
     a.rs.bgPath.clear();      a.rs.bgFit.clear();
     a.rs.bgPrevPath.clear();  a.rs.bgPrevFit.clear();
     a.rs.posePath.clear();
-
     //
-    // ---- 【不再预置立绘】
+    // ---- 不再预置立绘
     //
-    // 【这是"新建存档时还没思考完就已经有立绘"的根因】
-    // 原来这里先设 rs.pose = 默认造型再解析成路径，于是她还没开口，
-    // 画面上已经站着一个"平静"的她。玩家看到的是：
-    //   一句台词都还没有，人先出现了，而且这张脸是引擎猜的。
+    // 这是"新建存档时还没思考完就已经有立绘"的根因
+    // 画面上已经站着一个"平静"的她。
+    // 一句台词都还没有，人先出现了，而且这张脸是引擎猜的。
     // 等她开口换成害羞，体感就是"表情慢了半拍 / 跟文字对不上"。
     //
     // 只把 posePath 清空也没用：渲染层会从降级链里画出一张图，
     // 而降级链必定命中 —— 所以必须靠 poseReady 这个开关来堵。
     //
-    // 现在：在她开口之前【一个人都不画】，她第一轮开口时三件套一起出现。
+    // 现在：在她开口之前一个人都不画，她第一轮开口时三件套一起出现。
     // 谁说话，谁决定画面。
     a.rs.pose.clear();
     a.rs.poseReady = false;
     a.stageIsPlaceholder = true;
 }
-
 //
 // 开输入框等玩家说话。
 //
-// 【原来这 6 行在 DirAdvance 里抄了 5 遍】
 // 抄漏任何一行都会让状态漂移：漏 inputMode=false 会留下一个空输入框，
 // 漏 playerEcho=false 会让上一句的回显渗到下一句。
-// 这类 bug 在日志里完全看不出来，只能靠玩家发现"界面又不对了"。
+// 这类 bug 在运行时完全看不出来，只能靠玩家发现"界面又不对了"。
 static void EnterPendingInput() {
     App& a = g_app;
     a.pendingInput   = true;
@@ -28895,26 +27993,25 @@ static bool TryGraduate() {
     App& a = g_app;
     if (!a.dir.Graduated()) return false;
     //
-    // ---- 【全部章节完成：回主页，不替玩家收尾】
+    // ---- 全部章节完成：回主页，不替玩家收尾
     //
     // 这里原来只做一件事：往对话框里塞一句写死的旁白
     // 「（她把最后一份代码收好了）」，然后就停在那儿。
     // 三个问题：
-    //   ① 她一句话都没说——五章（或十章）积累下来的东西，
-    //      落点是一句系统旁白，跟恋爱一点关系都没有；
-    //   ② 全剧唯一写死的台词正好是结局——我们花了十几轮把素材名、
-    //      课程内容、默认表情全搬进角色包，最后定格的却是硬编码；
-    //   ③ 没有出口：没有结束画面、没有回标题的按钮，玩家只能强退。
+    // ① 她一句话都没说——五章（或十章）积累下来的东西，
+    // 落点是一句系统旁白，跟恋爱一点关系都没有；
+    // ② 全剧唯一写死的台词正好是结局——前面十几轮把素材名、
+    // 课程内容、默认表情全搬进角色包，最后定格的却是硬编码；
+    // ③ 没有出口：没有结束画面、没有回标题的按钮，玩家只能强退。
     //
     // 现在改成回主页。而"故事到哪儿算完"不归代码管：
     // 他点的那个按钮叫「今天就到这里」，是他自己决定今天到此为止。
     // 想接着写，读档回到最后一章的日常就行——那一局还留着。
     //
-    // 【为什么不做"结局画面"】
-    // 这个项目的初衷是让 galgame 里结束了的故事能一直写下去。
+    // 为什么不做"结局画面"
+    // 设计目标是让 galgame 里结束了的故事能一直写下去。
     // 一旦有"结局画面"，就等于代码宣布故事讲完了，
-    // 那正是要避免的——结局交给玩家自己写。
-
+    // 那
     // 这一句可能还在打字机里、挑素材请求可能还在路上。
     // 不清的话回到标题之后旧的画面/台词会突然盖上来。
     ResetTextState(a);
@@ -28925,8 +28022,6 @@ static bool TryGraduate() {
     a.stageFixPending    = false;
     a.quizRetryPending   = false;
     a.rs.showNextDay     = false;
-    a.rs.nextDayReady    = false;
-    a.rs.nextDayIsLast   = false;
     a.rs.quizMode        = false;
 
     AppLog(L"[推进] 全部章节完成，回到主页");
@@ -28935,11 +28030,9 @@ static bool TryGraduate() {
     InvalidateRect(a.hwnd, nullptr, FALSE);
     return true;
 }
-
 //
 // 删存档的二次确认。返回 true 表示"确认过了，可以真删"。
 //
-// 【原来这段在"读存档"和"存存档"两个界面里各写了一遍】
 // 抄漏任何一行后果都挺严重：漏了 slotConfirmDel=false，
 // 下次删别的槽时第一次点就直接删了——二次确认形同虚设。
 static bool ConfirmDeleteSlot(HWND hwnd) {
@@ -28957,13 +28050,10 @@ static bool ConfirmDeleteSlot(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
     return true;
 }
-
 //
 // 把"该轮到玩家说话了"这个标记真正变成输入框。
 //
-// 【原来这 5 行在 AdvanceClick 里抄了 3 遍】
-// 抄漏 pendingGuide.clear() 的话，下一次开输入框会带着上一句的提示语——
-// 玩家看到的是"她明明在讲题，输入框却提示我报名字"。
+// 抄漏 pendingGuide.clear 的话，下一次开输入框会带着上一句的提示语
 static void ConsumePendingInput() {
     App& a = g_app;
     a.pendingInput = false;
@@ -28971,11 +28061,9 @@ static void ConsumePendingInput() {
     a.pendingGuide.clear();
     EnterInputMode(g);
 }
-
 //
 // "第N章 名字"。
 //
-// 原来这个拼装在存档元数据、HUD、读档提示里各写了一遍（3 处）。
 // 分开写的问题是：加"阶段名"之类的改动要同时改 3 处，
 // 漏一处就出现"存档卡片写着第2章、进游戏却是第1章"这种不一致。
 static std::wstring ChapterLabel() {
@@ -28989,25 +28077,22 @@ static std::wstring ChapterLabel() {
     ck::EValue cv = a.vm.GetVar(L"章节");
     return (cv.kind == ck::EValue::VStr) ? cv.s : L"";
 }
-
 //
 // "第二天见面"那一句的开场提示。
 //
-// 【为什么要抽出来】
-// 原来这段写死在 EnterNextDayIntro() 里，只有"点完明天见推进到下一章"
-// 这一条路走得到。而【读档回到第 2 章开场】是同一个剧情位置——
+// 为什么要抽出来
+// 这一条路走得到。而读档回到第 2 章开场是同一个剧情位置
 // 章号 >= 2、阶段是开场、人刚碰头、课还没开始，
-// 走的却是 BuildResumeKick()，那边写的是"你们还在互相认识"。
-// 于是同一句话两套说法，读到第 2 章的档就演砸了（下面有运行日志原文）。
+// 走的却是 BuildResumeKick，那边写的是"
+// 于是同一句话两套说法，读到第 2 章的档就演砸了（下面有运行时原文）。
 // 收口成一处，两条路共用。
 static std::wstring BuildNextDayKick() {
     std::wstring k = L"（新的一天）昨天的课已经上完了，你们各自回过家，"
                      L"现在是【第二天】——你们又见面了。\n";
     //
-    // ---- 【只寒暄，不开讲】
+    // ---- 只寒暄，不开讲
     //
-    // 原来这句要求她"写到碰上，然后转到今天要讲的内容上"，
-    // 于是第二天第一句就是"早，那我们开始讲数组"——问候只有半句，
+    // 于是第二天第一句就是"早，那
     // 隔了一夜这件事等于没演。跟第一章开场对齐：先问候、聊两句，
     // 课等这段聊完（她填 advance=2）再开始，由她自己决定什么时候收。
     k += L"先写你们怎么碰上的（来得早还是晚、在哪儿碰头），"
@@ -29019,22 +28104,20 @@ static std::wstring BuildNextDayKick() {
     k += L"【不要】现在就开始讲知识点——那是你们聊完之后的事。\n";
     return k;
 }
-
 //
 // 读档后让她接上话的提示语。
 //
-// 【必须按【当前阶段】分别措辞】
-// 原来有一处读档入口写死了"自然地接上，然后继续这一章的内容"，
-// 读回自我介绍段的档时她会立刻开始讲课——而存档里明明还在互相认识。
+// 必须按【当前阶段分别措辞】
+// 读回自
 // 三个入口各写一份迟早会出现"两个入口行为不同"，抽成一处。
 static std::wstring BuildResumeKick() {
     App& a = g_app;
     const SyllabusChapter* c = a.dir.Cur();
     std::wstring k;
     //
-    // ---- 【剧情读档：整段话里一个"课"字都不能有】
+    // ---- 剧情读档：整段话里一个"课"字都不能有
     //
-    // 下面三句分别是"还在互相认识""课间休息，不讲题""继续这一章的内容"——
+    // 下面三句分别是"还在互相认识""课间休息，不讲题""继续这一章的内容"
     // 全是课程的说法。读档回到"那块碎片"那一幕，她收到的却是
     // "现在是课间休息，不讲题"，于是开口先把"不讲题"解释一遍，
     // 那一幕的情绪整段跑偏。
@@ -29055,19 +28138,18 @@ static std::wstring BuildResumeKick() {
     }
     if (a.dir.Stage() == DirStage::Intro) {
         //
-        // ---- 【开场段还要再分：第 1 章初识 / 第 2 章起的"第二天见面"】
+        // ---- 开场段还要再分：第 1 章初识 / 第 2 章起的"第二天见面"
         //
-        // 【实测复现如下】
-        //   存档 dirChapter=2（第 2 章 数组）、dirStage=1（开场），读档后她说：
-        //     「早啊——骗你的，其实我等你好久了呢。
-        //       昨天教的指针，你还记得多少？」          <- 对，第 2 章
-        //     「啊，你来了。我是某某，这门编程课的同班同学。
-        //       你也是第一次学 C 语言吗？听说指针那部分
-        //       很多人都会卡住呢……」                    <- 错，重新自我介绍
-        //   前一句来自对话历史，后一句就是下面这句"你们还在互相认识"——
-        //   那是【第 1 章】开场才成立的话。指针是第 1 章、昨天刚教完，
-        //   她却问"你第一次学 C 语言吗"，等于隔了一夜又重新认识一遍。
-        //   两句拼在一起就是那种说不清哪里不对的诡异感。
+        // ★ 症状：
+        // 存档 dirChapter=2（第 2 章 数组）、dirStage=1（开场），读档后她说：
+        // 「早啊——骗
+        // 昨天教的指针，
+        // 「啊，
+        // 很多人都会卡住呢……」 <- 错，重新自
+        // 前一句来自对话历史，后一句就是下面这句"
+        // 那是第 1 章开场才成立的话。指针是第 1 章、昨天刚教完，
+        // 她却问"
+        // 两句拼在一起就是那种说不清哪里不对的诡异感。
         //
         // 第 1 章开场才是初识；第 2 章及以后是"昨天上完了、今天又见面"。
         if (a.dir.Chapter() >= 2)
@@ -29083,39 +28165,37 @@ static std::wstring BuildResumeKick() {
         k = L"（读档继续）他回来了。自然地接上，然后继续这一章的内容。";
         if (c) k += L"当前是第" + WFromInt(a.dir.Chapter()) + L"章「" + c->name + L"」。";
     }
-
     //
-    // ---- 【跳章过来：她必须知道【这一章】讲的是什么】
+    // ---- 跳章过来：她必须知道【这一章讲的是什么】
     //
-    // 【实测复现如下】
-    //   存档里 dirChapter=5（第5章 递归），从流程图跳过去，
-    //   她开口却是「……要不要趁这个气氛，先聊聊你打算怎么学【数组】？」
-    //   ——数组是【第 2 章】，而 hist 最后聊的正是田心屋那段讲数组的话。
+    // ★ 症状：
+    // 存档里 dirChapter=5（第5章 递归），从流程图跳过去，
+    // 她开口却是「……要不要趁这个气氛，先聊聊
+    // ——数组是第 2 章，而 hist 最后聊的正是那家店那段讲数组的话。
     //
     // 根因是开场那句「自然地接上刚才的话题」：
-    //   "刚才的话题"在对话记录里就是上一章的内容，她照着接，于是退回第 2 章。
-    //   而开场段【故意不贴本章教学目标】（贴了她会当场开讲，那段相处就没了），
-    //   于是她连"这一章叫什么"都不知道——被上一章的对话带跑是必然的。
+    // "刚才的话题"在对话记录里就是上一章的内容，她照着接，于是退回第 2 章。
+    // 而开场段故意不贴本章教学目标（贴了她会当场开讲，那段相处就没了），
+    // 于是她连"这一章叫什么"都不知道——被上一章的对话带跑是必然的。
     //
-    // 做法：跳章时【单独】把这一章的名字点出来，并说明先寒暄、别急着讲。
-    //   章名不是教学材料（不给她目标、不给她题面），只是让她知道今天往哪儿走，
-    //   寒暄时才不会顺着上一章的话题往回走。
+    // 做法：跳章时单独把这一章的名字点出来，并说明先寒暄、别急着讲。
+    // 章名不是教学材料（不给她目标、不给她题面），只是让她知道今天往哪儿走，
+    // 寒暄时才不会顺着上一章的话题往回走。
     if (a.jumpJustNow && a.dir.Stage() == DirStage::Intro && c) {
         k += L"\n【注意】他跳过来的地方是第" + WFromInt(a.dir.Chapter())
            + L"章「" + c->name + L"」，这是你们今天要讲的内容。\n";
         k += L"  先自然地问候两句、说点你们之间的事，别急着讲课。\n";
         k += L"  【不要】接着刚才聊到的那个话题往下讲——那一章已经过去了。\n";
     }
-
     //
-    // ---- 【跳章过来的：讲清楚哪些章他没经历过】
+    // ---- 跳章过来的：讲清楚哪些章他没经历过
     //
     // 玩家从流程图直接跳到第 5 章，前面几章他根本没玩过。
-    // 不讲的话，她会用"我们学过了"的口气提起那些内容——
+    // 不讲的话，她会用"
     // 他一头雾水，她却以为他忘了，两头都不对。
     //
     // 反过来也不能让她把这些当真：它们只是"剧情上发生过"，
-    // 不是"你们一起经历过"。所以明确说别当共同回忆讲、也别考。
+    // 不是"
     if (!a.jumpBrief.empty()) {
         k += L"\n【注意：他是从流程图直接跳到这一章的】"
              L"下面这几章他没有经历过，你也没有——不要当成你们一起做过的事讲，"
@@ -29123,14 +28203,13 @@ static std::wstring BuildResumeKick() {
     }
     return k;
 }
-
 //
 // 读档之后让她接上话。
 //
-// ★ 三个读档入口各写一份的话，迟早出现"两个入口行为不同"——以前就是这样：
-//   一处写死了"继续这一章"，读回自我介绍段的档时她立刻开始讲课。抽成一处后不会再分叉。
+// ★ 三个读档入口各写一份的话，迟早出现"两个入口行为不同"——早期版本就是这样：
+// 一处写死了"继续这一章"，读回自
 //
-// ---- 【笔记没到就一起挂起】
+// ---- 笔记没到就一起挂起
 //
 // 读档时笔记通常随存档读回来了，但也有读不到的情况：老存档没这个字段、
 // 或者素材清单变了导致指纹对不上要重新生成。那种情况下原来照样先铺画面再让她开口，
@@ -29138,13 +28217,13 @@ static std::wstring BuildResumeKick() {
 //
 // ---- 读档后把"存档那一刻的画面"铺回去
 //
-// ★ 不能写在 LoadGameNow 里：它跑完紧接着是 PromptStageReset()（专门清画面），
-//   在那边设好会被立刻清掉——表现是"代码写了、日志也打了，画面却还是空的"。
-//   所以铺画面必须排在它【之后】。
-// ★ 跳章不恢复：从流程图跳到另一幕是【新的一幕】，不是"回到当时"，
-//   照着存档那张脸铺上去就成了"换了一幕还挂着上一幕的表情"。
-// ★ 铺不出来的就别硬铺：名字在清单里、但文件解析不到时立绘先空着——
-//   走降级链会画出另一张脸，那比空着更像 bug（见 posePath 的说明）。
+// ★ 不能写在 LoadGameNow 里：它跑完紧接着是 PromptStageReset（专门清画面），
+// 在那边设好会被立刻清掉——表现是"代码写了、日志也打了，画面却还是空的"。
+// 所以铺画面必须排在它之后。
+// ★ 跳章不恢复：从流程图跳到另一幕是新的一幕，不是"回到当时"，
+// 照着存档那张脸铺上去就成了"换了一幕还挂着上一幕的表情"。
+// ★ 铺不出来的就别硬铺：名字在清单里、但文件解析不到时立绘先空着
+// 走降级链会画出另一张脸，那比空着更像 bug（见 posePath 的说明）。
 static void RestoreStageFromSave() {
     App& a = g_app;
     const std::wstring pose = a.loadPose, bg = a.loadBg, bgm = a.loadBgm;
@@ -29236,33 +28315,31 @@ static void ApplyStageChange(const std::wstring& bgSlot, const std::wstring& out
     a.rs.bgPrevFit  = a.bgPrevFit;
     a.rs.bgFade     = a.bgFade;
 }
-
 // 玩家说完一句话、她回完之后，决定下一步。
 // 导演模式下这是唯一的推进点：要么继续聊，要么出题。
 // 进入某一章时，把大纲里配的 Bg / Bgm / Outfit 应用到画面上。
 //
-// 【这三个字段之前是死配置】
-// 大纲里写了 Bg=课、Outfit=私服，但代码从来没读过它们——
+// 这三个字段之前是死配置
+// 大纲里写了 Bg=课、Outfit=私服，但代码从来没读过它们
 // 开局和读档用的是硬编码的 "开场" / "课"，于是作者在 ini 里改了半天
 // 一点效果都没有。
 //
-// 【它们不是"写死"，是初始值】
-//  · 只在这里（进章的瞬间）应用一次
-//  · 之后每一轮模型都可以用 bg / bgm / outfit 字段覆盖它
-//  · 字段【留空就不动】，沿用模型或上一章的选择——
-//    想完全交给模型决定的作者，把这三个字段留空即可
-//  · 而且 Bg/Bgm 是槽位名，由角色包映射成他自己的图，
-//    所以三个角色即使在同一个槽位上也是三套不同的背景
+// 它们不是"写死"，是初始值
+// · 只在这里（进章的瞬间）应用一次
+// · 之后每一轮模型都可以用 bg / bgm / outfit 字段覆盖它
+// · 字段留空就不动，沿用模型或上一章的选择
+// 想完全交给模型决定的作者，把这三个字段留空即可
+// · 而且 Bg/Bgm 是槽位名，由角色包映射成他自己的图，
+// 所以三个角色即使在同一个槽位上也是三套不同的背景
 static void ApplyChapterStage() {
     App& a = g_app;
     const SyllabusChapter* c = a.dir.Cur();
     if (!c) return;
-
     //
-    // ---- 【大纲配的背景，必须先确认文件还在】
+    // ---- 大纲配的背景，必须先确认文件还在
     //
-    // 【"随意减少素材"这条路径上，音乐有保护、背景没有】
-    // 上面进章 BGM 那段做了 BgmFileExists 检查，背景这边却直接赋值——
+    // "随意减少素材"这条路径上，音乐有保护、背景没有
+    // 上面进章 BGM 那段做了 BgmFileExists 检查，背景这边却直接赋值
     // 作者删掉一张背景图、而大纲里引用着它，进章瞬间就是一片黑。
     // 而且它还会被当成"当前背景"播下去，后面每一轮都黑着。
     //
@@ -29273,7 +28350,7 @@ static void ApplyChapterStage() {
         AppLog((L"[大纲] 本章配的背景「" + c->bg
               + L"」找不到文件，沿用当前场景").c_str());
     if (bgUsable) {
-        // ---- 【顺手把它定成本章的场景锁】
+        // ---- 顺手把它定成本章的场景锁
         //
         // 原来只改了 dirCurBg，chapterBg_ 还空着。
         // 于是下一轮挑素材时"本章还没定场景"，她又选了一个地方，
@@ -29297,11 +28374,10 @@ static void ApplyChapterStage() {
     } else if (!c->outfit.empty()) {
         ApplyStageChange(a.dirCurBg, c->outfit);
     }
-
-    // ---- 进章时的 BGM：大纲指定了就用它，没指定【保持现在的】
+    // ---- 进章时的 BGM：大纲指定了就用它，没指定保持现在的
     //
-    // 【这里原来无条件 ResolveGameBgmFor（固定主题曲）】
-    // 于是她上一轮刚换的曲子，一进新章节就被悄悄换回主题曲——
+    // 这里原来无条件 ResolveGameBgmFor（固定主题曲）
+    // 于是她上一轮刚换的曲子，一进新章节就被悄悄换回主题曲
     // 玩家听到的是"音乐自己跳回去了"，而她明明没说要换。
     // 现在：大纲写了 Bgm 且文件存在才切；否则什么都不做。
     if (!c->bgm.empty()) {
@@ -29320,15 +28396,14 @@ static void ApplyChapterStage() {
 static void DirAdvance() {
     App& a = g_app;
     if (!a.dirMode) return;
-
     //
-    // ---- 【告别读完，玩家点一下 -> 真正到第二天】
+    // ---- 告别读完，玩家点一下 -> 真正到第二天
     //
-    // 【这是「明天见」的第二步】
+    // 这是「明天见」的第二步
     // 点按钮（DirGoNextDay）只让她把"再见"说出口；
     // 这一下点击才是"天亮"的开关——章号在这里才推进。
     //
-    // 【必须放在最前面】
+    // 必须放在最前面
     // 告别段没有任何"要不要继续聊"的判断：她那句再见说完了，
     // 剩下的就只有明天。走进下面那些分支（出题 / 转教学 / 继续聊）
     // 会让今天永远结束不了，玩家点半天还停在同一天。
@@ -29337,63 +28412,46 @@ static void DirAdvance() {
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // ---- 推进由她决定，引擎只兜底
     //
-    // 以前是引擎拍板：聊满 kMinLessonTurns 轮就开考。引擎不知道她讲到哪了，
-    // 只能数轮数，结果是她还想讲却被拉去出题，或者她早讲完了却还在硬聊——
-    // 玩家觉得节奏莫名其妙，她也被绑着手脚。
-    // 现在她说 advance=1 就出题，advance=2 就进下一章。
-    // 引擎保留的唯一门槛是"至少聊过一轮"，防止她一开口就开考。
-    // 兜底：她一直不给 advance（老模型 / 离线），聊到 kMinLessonTurns+3 轮时
-    // 引擎替她出题，不至于永远卡在授课。
+    // ★ 不要靠轮数替她判断"讲完了没"：引擎不知道她讲到哪了，
+    // 数轮数只会把她还想讲的内容截断，或让她早讲完了还硬聊。
+    // 她说 advance=1 就出题；右上角出口由 Progress.ready 摆出来，
+    // 点不点是玩家的事。唯一保留的兜底是离线——那时没有模型判断。
     //
-    // ---- 【上课阶段的 advance=2 不能跳过考试】
+    // ---- 上课阶段的 advance=2 不能跳过考试
     //
     // ★ 模型在讲课阶段很爱顺手填 2 / "next"，它想表达的常常只是"这段讲完了"，
-    //   不是"跳过测验直接进下一章"。于是她一说"讲完了"，引擎立刻判通过
-    //   → 直接进章间日常 → 玩家看到"放学后"的相处段，而这一章的题根本没出。
-    //   考试是核心环节，不能让她一句话跳过。
-    //   做法：只有【自我介绍 / 章间日常】这两段（本来就没题可考）认 2；
-    //   上课阶段的 2 一律降级成 1 —— 变成"出题考他"。她真想免考，得先考过。
+    // 不是"跳过测验直接进下一章"。于是她一说"讲完了"，引擎立刻判通过
+    // → 直接进章间日常 →
+    // 考试是核心环节，不能让她一句话跳过。
+    // 做法：只有自
+    // 上课阶段的 2 一律降级成 1 —— 变成"出题考他"。她真想免考，得先考过。
     const bool inLessonNow = (a.dir.Stage() == DirStage::Lesson);
     //
-    // ---- 【教学段：她说"今天就到这里 / 明天见"也要认】
+    // ---- 教学段：她说"今天就到这里 / 明天见"也要认
     //
-    // ★ 这是"她说了明天见，可按钮迟迟不出现"的根因。
-    //   散场话原来只在【章间日常】里算（byLine = inDaily && SaidFarewell()），
-    //   教学段那句"今天就讲到这里吧，明天见"【完全没人理】——
-    //   引擎继续停在 Lesson，而 Lesson 段 CanShowNextDay() 恒 false，
-    //   右上角根本没有按钮。玩家聊了十几轮、她都说了明天见，
-    //   却既走不掉也点不动，只能一直听她讲下去。
-    //
-    //   教学段的出口原来只有三条，且【全部依赖模型主动配合】：
-    //     ① 她填 advance=1 / ready=true
-    //     ② 她把题面完整说出来
-    //     ③ 她直接讲起下一章
-    //   她只顾说话、忘了填字段时，三条一条都不成立（"聊太久就替她开考"
-    //   那条兜底已经去掉了，见下）。现在把她说出口的话也算数。
+    // ★ 散场话不能只在章间日常里算。教学段那句"今天就讲到这里吧"
+    // 同样是收尾：词表见上方 advance::SaidFarewellIn，
+    // 课程与剧情分开（剧情幕之间不隔夜，不会说"明天见"）。
+    // 只认模型字段会漏掉"她演到了却忘了填"这一大类，
+    // 于是台词已经告别、出口却不动。
     const bool sheWantsQuiz = (a.dirAdvance == 1) || (a.dirReady && a.dirAdvance == 0)
                            || (inLessonNow && a.dirAdvance == 2)
                            || (inLessonNow
-                               && SaidFarewellIn(a.lastHerSay, a.dirSyllabus.isStory));
+                               && advance::SaidFarewellIn(a.lastHerSay, a.dirSyllabus.isStory));
     const bool sheWantsNext = (a.dirAdvance == 2) && !inLessonNow;
-
     //
-    // 【引擎不再有"聊太久就替她开考"的兜底】
-    // 原来有一条 tooLong = (Turn() >= kMinLessonTurns + 3)，
-    // 她讲到第 5 轮就被强行拉去考试——哪怕她明明还想继续讲。
-    // 现在完全听她的：她不说 advance，就一直聊下去。
-    //
-    // 唯一保留的兜底是【离线】：那时根本没有模型来判断"教没教懂"，
-    // 没有兜底就永远开不了考，玩家会以为程序坏了。
+    // ---- 教学段不再有"聊太久就替她开考"的兜底
+    // 她不表态就继续聊：讲没讲完由她自己判断。
+    // 唯一保留的兜底是离线：那时根本没有模型来判断"教没教懂"，
+    // 没有兜底就永远开不了考，
     a.dirAdvance = 0;
     a.dirReady   = false;
-
-    // ---- 自我介绍 / 章间日常
+    // ---- 自
     //
-    // 【这两段是"不讲课"的，绝不能走进下面的出题分支】
-    // 否则她说"聊够了开始吧"，引擎却去 ShouldQuiz() 判能不能出题——
+    // 这两段是"不讲课"的，绝不能走进下面的出题分支
+    // 否则她说"聊够了开始吧"，引擎却去 ShouldQuiz 判能不能出题
     // 这两段 turn_ 是 0，ShouldQuiz 恒 false，于是她永远转不进教学。
     {
         const bool inIntro = (a.dir.Stage() == DirStage::Intro);
@@ -29403,9 +28461,9 @@ static void DirAdvance() {
             // 而这两段根本没有题可出，认死 2 只会卡住。
             const bool enough = a.dir.ShouldStartLesson();
             //
-            // ---- 【她在章间日常里开讲下一章：立刻转教学】
+            // ---- 她在章间日常里开讲下一章：立刻转教学
             //
-            // 【实测复现如下】阶段=日常、章号 1/5，
+            // ★ 症状：阶段=日常、章号 1/5，
             // 她却讲起了「数组」（第 2 章内容），右上角一直写着第 1 章。
             //
             // 提示词要求她别这么干，但拦不住——她刚答应过玩家"继续学"，
@@ -29414,7 +28472,7 @@ static void DirAdvance() {
             // 让章号跟内容重新对上。
             // 硬留在"日常"标签下讲下一章，只会让右上角一直显示错的章号。
             //
-            // 这里【不能】受 enough 限制：她第 0 轮就开讲的话
+            // 这里不能受 enough 限制：她第 0 轮就开讲的话
             // enough 是 false，那样照样卡在"日常讲第2章"。
             if (inDaily && a.dir.DailyStartedNextChapter(a.lastHerSay)) {
                 a.dir.EnterLesson();
@@ -29427,129 +28485,29 @@ static void DirAdvance() {
                 InvalidateRect(a.hwnd, nullptr, FALSE);
                 return;
             }
-            // 兜底：聊够了还一直不给推进，超过宽限量就引擎接管。
-            //
-            // ---- 【章间日常【取消这个兜底】——它就是那道"上限"】
-            //
-            // 原来： dailyTurn_ - DailyTarget() >= kDailyGrace(4) 时引擎
-            // 【强行】进下一章，不管她还想不想聊。这正是
-            // "聊到气氛暧昧的时候突然回到上课"——不是她想走，是引擎替她走的。
-            //
-            // 现在日常段 over 取 -1（永不触发），进不进下一章只听她的：
-            // 她填 advance=2 就走，不填就一直聊下去。
-            // 自我介绍保留兜底（那不是恋爱戏，卡住只是干耗）。
-            const int over = inIntro ? (a.dir.IntroTurn() - Director::kIntroMinTurns)
-                                     : -1;
-            const bool overdue = over >= Director::kDailyGrace;
-
-            //
-            // ---- 【她已经在自我介绍里讲起本章内容了】
-            //
-            // 【本地真实日志：阶段一直是「自我介绍」，她第 3 轮却说了
-            //   "那我们来学指针"——她自己已经开课，引擎还在等 advance=2】
-            // 她没填，于是阶段永不转换，连锁后果是：不出题、不判卷、
-            // 没有章间日常、右上角章号不动。
-            // 玩家看到的就是"她在教第2章，右上角写着第1章"。
-            //
-            // 她开口讲本章内容，就是最可靠的"这段该结束了"的信号，
-            // 比等她记得填字段稳——模型经常只顾说话忘了填。
+            // 开场聊过头由引擎接管；日常段不设"聊太久就替她走"的上限。
+            const int  over    = inIntro ? (a.dir.IntroTurn() - advance::kIntroMinTurns) : -1;
+            const bool overdue = over >= advance::kIntroGrace;
             const bool sheStarted = a.dir.IntroSaidLesson(a.lastHerSay);
-            //
-            // ---- 【章间日常不认她填的 advance——推进权归玩家那个按钮】
-            //
-            // 【设计原话】"明明还在恋爱阶段，突然就到了下一章"。
-            //
-            // 【本地真实日志】日常第 7 轮（12:30:18）她返回 advance=2，
-            //   台词是"你、你慢点啦……进了店你就别再说那种话了"——
-            //   她并没有要走，只是顺手填了 2。
-            //   引擎照单全收，12:30:26 直接 EnterLesson() 进第 2 章教学，
-            //   「明天见」按钮和告别那一幕【整个被绕过去】。
-            //
-            // 根源是这里有两条进下一章的路，而它们互相冲突：
-            //   · 她填 advance=2（模型的判断）
-            //   · 玩家点「明天见」（玩家的判断）
-            // 第二条是专门做的：点完先告别，她把"明天见"说出口，
-            // 玩家再点一下才到第二天。第一条一旦生效，第二条就永远走不到——
-            // 玩家看到的就是"聊得好好的，人突然坐回教室了"。
-            //
-            // 章间日常的收场本就该由玩家决定（这也是"没有轮次上限"的前提）：
-            // 按钮在 kNextDayAfter 轮之后常驻，想聊多久聊多久，
-            // 想走了自己点。她在内容上已经开讲下一章，由上面那条
-            // DailyStartedNextChapter 兜底（那是跟着内容走，不是替玩家决定）。
+
+            // ★ 日常段的收场只由玩家点按钮决定。模型填的 advance=2 表示
+            //   "该发生的事发生了"，只点亮出口，不切章、不绕过告别那一幕。
             const bool herAdvanceCounts = inIntro;
-            //
-            // ---- 【章间日常：她填 advance=2 = "可以走了"，只点亮按钮】
-            //
-            // ★ 让她填了就【当场切章】，告别那一幕整个被绕过去；
-            //   一刀切改成"她填什么都不算"，她想走也走不了，
-            //   玩家也看不到任何"她想走"的信号。
-            //   正确的是【两把钥匙】：她给资格（这里记下），玩家做决定
-            //   （点右上角那个按钮才真的走，见 DirGoNextDay）。
-            //   她说了"可以走了"之后照样接着聊——玩家不点，谁也走不掉。
-            //
-            // ---- 【她每一轮重新表态：这一轮说"可以走了"才算数】
-            //
-            // ★ 资格【不跨轮】：她这一轮给了，他没点而是接着聊，
-            //   那这一轮的资格当场作废；下一轮她重新判断，可以收回。
-            //   否则她都已经改主意了按钮还亮着——他点下去用的是【上一轮】的意见，
-            //   两个人并没有在这一轮里同时同意。
-            const bool wasReady = a.dir.DailyReady();
-            //
-            // ---- 【台词兜底：她把"明天见"说出口了，就等于说"可以走了"】
-            //
-            // 【运行日志里反复出现的现象】她台词里已经说了
-            //   「那、那我们走吧？明天见。」——两个人明明互道了再见，
-            //   可那一轮 advance 仍然是 0，按钮就是不亮。
-            // 模型把"演到告别"和"填 advance=2"当成了两件事：
-            // 台词先写完、字段随手填个默认值（下面那个 JSON 示例里
-            // 原本写死的 "advance":0 又给它一个可以直接照抄的锚点）。
-            //
-            // 她都亲口说明天见了，引擎还要求她额外填一个字段才认，
-            // 这不是"尊重她的判断"，是跟她的判断对着干。
-            // 所以这里以【她实际说出的话】为准：告别话出现了就算她同意了。
-            //
-            // 只认最明确的那几个说法——「走吧」这种不收，
-            // 日常里"走吧，去商店街"是换地方，不是散场，收了会误判。
-            // 判据收口到 SaidFarewellIn：教学段也用同一份词表，
-            // 不然"她说了同样一句话，在日常算数、在教学不算数"。
-            auto SaidFarewell = [&]() -> bool {
-                return SaidFarewellIn(a.lastHerSay, a.dirSyllabus.isStory);
-            };
-            const bool byLine = inDaily && SaidFarewell();
-            const bool readyNow = (inDaily && enough && (sheWantsNext || byLine));
-            if (inDaily && byLine && !sheWantsNext) {
-                AppLog(L"[推进] 她台词里说了告别话（advance 没跟上）——按台词为准，算她同意了");
-            }
-            //
-            // ---- 【表态只记一次，不逐轮收回】
-            //
-            // ★ 原来每轮用 SetDailyReady(readyNow) 覆盖一遍：
-            //   她这一轮说了"可以走了"，他没点而是接着聊，
-            //   下一轮她没重复表态，标记就被清掉了——按钮【亮一下立刻转灰】。
-            //   玩家刚看到希望就没了，而她并没有改主意，只是这一轮没再说。
-            //
-            // 说过一次就算数，一直留到这段日常结束（进下一段日常时清）。
-            // 它现在只决定右上角那句提示，不再拦着玩家点按钮——见 CanGoNextDay。
-            if (inDaily && readyNow && !wasReady) {
-                a.dir.MarkDailyReady();
-                AppLog(L"[推进] 她在章间日常里表示「可以走了」（记一次，不收回）");
-                AppendTurnTrace(L"→她说可以走了", nullptr, nullptr, L"");
-                //
-                // ---- 【她说了告别话，就要告诉他出口在哪】
-                //
-                // ★ 玩家视角里"她都说明天见了"和"我该怎么走"是两件事：
-                //   右上角那枚按钮一直在那儿（演够几轮就画出来），
-                //   可他未必知道那就是出口，也没人告诉他"现在能走了"。
-                //   于是两个人一遍遍互道晚安，谁也走不掉——
-                //   这正是"反复说明天见、按钮迟迟不亮"给人的感觉：
-                //   按钮其实在，只是没人把它和她的告别话对上。
-                //
-                // 只在【第一次】说：之后每轮都弹就成了噪音，
-                // 而他已经知道出口在哪了。
-                UiTip(a, L"她说了告别的话 —— 想走就点右上角「"
-                         + NextDayLabelOf(a.dirSyllabus.isStory,
-                                          a.dir.NextDayEndsCourse())
-                         + L"」", 6);
+
+            // done：模型表态，或台词已经把告别说出口（后者为准，
+            // 模型常常演到告别却忘了填字段）。词表见上方 advance::SaidFarewellIn。
+            const bool byLine  = advance::SaidFarewellIn(a.lastHerSay, a.dirSyllabus.isStory);
+            const bool doneNow = inDaily && (sheWantsNext || byLine);
+            const bool wasDone = a.dir.ActDone();
+            if (inDaily && byLine && !sheWantsNext)
+                AppLog(L"[推进] 台词里说了告别话（advance 没跟上）——按台词为准");
+
+            // 置位后在本段内保持；只在第一次出现时告诉他出口在哪。
+            if (doneNow && !wasDone) {
+                a.dir.MarkActDone();
+                AppLog(L"[推进] 这一段该发生的事已完成，出口出现");
+                AppendTurnTrace(L"→这一段可以收了", nullptr, nullptr, L"");
+                UiTip(a, L"想走就点右上角「" + a.dir.Progress().label + L"」", 6);
             }
             if (enough && ((herAdvanceCounts && (sheWantsNext || sheWantsQuiz))
                            || overdue || sheStarted)) {
@@ -29567,13 +28525,9 @@ static void DirAdvance() {
             }
             // 继续聊
             EnterPendingInput();
-            //
-            // 【原来写反了】enough=true 且她要推进，却提示"她还想再聊"。
-            // 该提示的本意是"她表达了想走，但这段还没聊够，引擎让她继续"——
-            // 那应该是【没聊够】的时候才说。
-            // 日常段她填的 advance 已不生效（见上面），更不能拿它提示。
+            // 开场还没聊够时，把"为什么还没有出口"说清楚。
             if (!enough && herAdvanceCounts && sheWantsNext)
-                SetStatus(L"她还想再聊一会儿", 5);
+                SetStatus(a.dir.NextDayReason(), 5);
             InvalidateRect(a.hwnd, nullptr, FALSE);
             return;
         }
@@ -29583,19 +28537,18 @@ static void DirAdvance() {
     // 本章压根没配验收题。ShouldQuiz() 对这种章恒为 false，
     // 所以必须单独拎出来处理，否则她说了"过"引擎也不动。
     const bool noTask = (cur == nullptr) || !cur->task.HasQuiz();
-
     //
-    // ---- 【她在【教学段】里已经讲起下一章：章号跟着内容走】
+    // ---- 她在【教学段里已经讲起下一章：章号跟着内容走】
     //
-    // 例：她说"好——那我们就进第二章。数组。"然后当场讲起数组，
-    //   可存档里 dirChapter 一直是 1，右上角写着"第1章 指针"。
+    // 例：她说"好——那
+    // 可存档里 dirChapter 一直是 1，右上角写着"第1章 指针"。
     // 讲起数组，可存档里 dirChapter 一直是 1，右上角写着"第1章 指针"。
     //
     // 那条"章间日常里开讲下一章"的检测只认日常段，留在教学段就完全没有
     // 兜底——而她跳过日常直接讲下一章，恰恰常发生在教学段（刚判完卷、
     // 顺口接上下一章）。
     //
-    // 【不切阶段、不补一段日常】她已经在讲了，塞一段相处进去只会打断。
+    // 不切阶段、不补一段日常她已经在讲了，塞一段相处进去只会打断。
     // 只把章号挪到内容所在的那章，让她接着讲；那段相处在下一章考完
     // 之后照常发生。
     if (a.dirMode && a.dir.Stage() == DirStage::Lesson
@@ -29612,15 +28565,13 @@ static void DirAdvance() {
             StartChapterAssetReview(from);
         }
     }
-
     // ---- 她判定"不用考了，进下一章"：立刻执行
     //
-    // 【原来它被 ShouldQuiz() 和 quizAnswers 两道门槛挡着，这是"章节号
-    //   永远停在第 1 章"的主因】
-    //   · ShouldQuiz() 要求"本章有题"，没题的章恒 false → 她进不去下一章
-    //   · quizAnswers 是"出题前先让他答几句"的门槛，而她说的是【不用考】
-    //     ——卡在这里的话，她会一轮又一轮地给 advance=2，界面却纹丝不动
-    // 玩家看到的正是：她明明说了"我们进下一章吧"，右上角还是第 1 章。
+    // ★ 它曾被 ShouldQuiz 和 quizAnswers 两道门槛挡着，这是"章节号
+    // 永远停在第 1 章"的主因】
+    // · ShouldQuiz 要求"本章有题"，没题的章恒 false → 她进不去下一章
+    // · quizAnswers 是"出题前先让他答几句"的门槛，而她说的是不用考
+    // ——卡在这里的话，她会一轮又一轮地给 advance=2，界面却纹丝不动
     if (sheWantsNext) {
         a.dir.AfterJudge(true);
         if (TryGraduate()) return;
@@ -29636,31 +28587,30 @@ static void DirAdvance() {
         // 引擎只能判断"名字接没接住"，判断不了"这张脸配这句台词对不对"。
         // 只有她自己知道那句台词是什么情绪——所以让她自己看记录、自己说。
         //
-        // ---- 【这里原来是 Chapter() - 1】
+        // ---- 这里
         // 减一是照抄"告别之后"那条路径（那儿章号已经推进过了）。
-        // 可这里章号【没有】推进——AfterJudge 只把 stage 切成日常，
+        // 可这里章号没有推进——AfterJudge 只把 stage 切成日常，
         // ++chapter_ 发生在 EnterLesson（从日常进教学时）。
         // 于是第 1 章通过时会去复盘"第 0 章"，而第 0 章根本不存在：
-        //   复盘请求照样发出去、照样写回 assetReview，
-        //   只是复的是空记录，关系曲线也永远拿不到（存成"第0章"）。
+        // 复盘请求照样发出去、照样写回 assetReview，
+        // 只是复的是空记录，关系曲线也永远拿不到（存成"第0章"）。
         // 现在统一：AfterJudge 之后章号没动，复盘就是当前这一章。
         StartChapterAssetReview(a.dir.Chapter());
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     //
-    // ---- 【她把题面完整说出来了，就等于开考】
+    // ---- 她把题面完整说出来了，就等于开考
     //
     // 原来开考只认她填的 advance 字段。可她经常只顾讲题忘了填，
-    // 题面都摆出来了（"题目是…函数模板…在这里写你的代码"），
+    // 题面都摆出来了（"题目是…函数模板…在这里写
     // 引擎却还在等字段——他根本进不了编辑器，只能把代码贴在对话框里，
     // 于是同一份代码被判两次（见 WM_APP_INPUT_SEND 里的说明）。
     //
     // 题面本身就是最强的开考信号，比字段可靠。
-    // 这里【不】再走"先让他答两次"的门槛：题都出好了还让人答，很怪。
+    // 这里不再走"先让他答两次"的门槛：题都出好了还让人答，很怪。
     //
-    // ---- 【SaidChoiceTask 是选择题改动之后补的】
+    // ---- SaidChoiceTask 是选择题改动之后补的
     //
     // SaidTaskPrompt 认的是"填空占位"那类说法，选择题一个都没有，
     // 于是她把选择题摆出来时它恒 false —— 开考整条被跳过。
@@ -29668,33 +28618,33 @@ static void DirAdvance() {
     if (a.dirMode && a.dir.Stage() == DirStage::Lesson && !noTask
         && (SaidTaskPrompt(a.view.body) || SaidChoiceTask(a.view.body))) {
         //
-        // ---- 不能再要求"先讲够 kMinLessonTurns 轮"
+        // ---- 不能再要求"先讲够 advance::kMinTurnsBeforeExit 轮"
         //
         // ★ 那条门槛的本意是"别她讲两句就考"，可题面都摆出来了还拦着不考，结果是：
-        //   引擎不开考 → 他进不了编辑器 → 只能把代码贴在普通对话框里 →
-        //   引擎当闲聊发给她，她在对话框里判了卷 → 靠兜底进了日常，
-        //   正规判卷路径一次都没走（存档里「任务通过: 0」就是这么来的）。
+        // 引擎不开考 → 他进不了编辑器 → 只能把代码贴在普通对话框里 →
+        // 引擎当闲聊发给她，她在对话框里判了卷 → 靠兜底进了日常，
+        // 正规判卷路径一次都没走（存档里「任务通过: 0」就是这么来的）。
         //
         // 题面本身就是最强的开考信号，出了题就该开考。
-        // 本章有没有题由 EnterQuiz() 自己判断（没题它返回 false）。
+        // 本章有没有题由 EnterQuiz 自己判断（没题它返回 false）。
         //
         // ---- 但她出完题还跟着问了一句时，先让他答
         //
         // ★ 她抛口头小练习、末尾问一句「x 和 y 各是多少？」时，那一句是要他开口答的，
-        //   不是要他进编辑器。这时候开考等于替他把话说了：他准备好的答案没处填，
-        //   编辑器里却换了一道他没准备的题（存档里「任务通过: 0」就是这么来的）。
+        // 不是要他进编辑器。这时候开考等于替他把话说了：他准备好的答案没处填，
+        // 编辑器里却换了一道他没准备的题（存档里「任务通过: 0」就是这么来的）。
         //
-        // ★ 正式题面不能被这条挡住。区分依据很硬：正式题面里一定有【要他填空的代码模板】
-        //   （「在这里写你的代码」这类占位），那是"进编辑器写"的意思。
-        //   口头小练习没有这种占位，才需要他先答。
+        // ★ 正式题面不能被这条挡住。区分依据很硬：正式题面里一定有要他填空的代码模板
+        // （「在这里写
+        // 口头小练习没有这种占位，才需要他先答。
         if (!SaidChoiceTaskHard(a.view.body) && !SaidFillInTask(a.view.body)
             && OwedAnswer(a.view.body)) {
             // 上面必须是 Hard 不能是 SaidChoiceTask：
             //
             // ★ 她讲完知识点随口问「哪个是在声明指针、哪个是在解引用？」时，
-            //   那是她自己出的口头小练习，题库选项的原文在她那句话里一个字都没出现。
-            //   可软判据认「哪个是」，SaidChoiceTask 为真，把"先让他答"压掉 ——
-            //   结果是她问 A、引擎考 B，她那句提问再也没人回答。
+            // 那是她自己出的口头小练习，题库选项的原文在她那句话里一个字都没出现。
+            // 可软判据认「哪个是」，SaidChoiceTask 为真，把"先让他答"压掉
+            // 结果是她问 A、引擎考 B，她那句提问再也没人回答。
             //
             // 所以按"那句话里有没有题库选项的原文"分：有就是她在念这道题（开考），
             // 没有就是她自己编的题（先让他开口答）。
@@ -29725,13 +28675,13 @@ static void DirAdvance() {
         // 她的每轮回复都带钩子（多半是一个问题），
         // 而同一条回复里可能就写着 advance=1。
         // 玩家点一下画面本来是想"回答她"，
-        // 结果引擎直接 DirEnterTask()，他连开口的机会都没有。
+        // 结果引擎直接 DirEnterTask，他连开口的机会都没有。
         //
         // 做法：她说该考了也不立刻考，先开输入框让他答。
-        // 答够 kQuizMinAnswers 次才开考——这是保底的教学节奏，
+        // 答够 kQuizMinAnswers 次才开考
         // 免得她讲两句就考、玩家还没反应过来。
         //
-        // 【超过最低次数之后就没有上限了】：
+        // 超过最低次数之后就没有上限了：
         // 引擎不再拦，她继续给 advance=1 就继续聊，
         // 直到她认为教懂了为止。
         if (a.quizAnswers < kQuizMinAnswers) {
@@ -29759,29 +28709,27 @@ static void DirAdvance() {
     }
     // 继续聊：不在这里直接开输入框。
     //
-    // 【改这个是为了修"角色文本和输入框打架"】
-    // 原来这里直接 EnterInputMode()，而此时她的回复刚设置完、
+    // 改这个是为了修"角色文本和输入框打架"
     // 打字机可能才显示了几个字——白编辑框立刻压在对话框上，
     // 玩家读到一半就被打断了。
     //
     // 现在只打个标记，等玩家点一下画面（AdvanceClick）再真正进输入。
-    // 这样节奏是：她说完 → 你读完 → 点一下 → 轮到你打字。
+    // 这样节奏是：她说完 →
     EnterPendingInput();
     SetStatus(L"点击画面，轮到你说话", 6);
 }
-
 //
-// ---- 玩家点右上角「明天见」：进下一章，而且是【第二天二人再次见面】
+// ---- 玩家点右上角「明天见」：进下一章，而且是第二天二人再次见面
 //
-// 【为什么要有这个按钮】
+// 为什么要有这个按钮
 // 推进剧情本来靠她填 advance=2，可她要填就得先意识到"该走了"，
-// 于是日常段里她总在某个瞬间冒出一句"要不要继续学？"——
+// 于是日常段里她总在某个瞬间冒出一句"要不要继续学？"
 // 那句话每次都把气氛打断，玩家刚进入状态就被问要不要走。
 // 有了按钮，她不必问：想多聊就聊，想走了玩家自己点。
 // 推进权在玩家手里，剧情也不会卡住。
 //
-// 【为什么不是"直接进教学"】
-// 直接切的话，场景还停在刚才闲聊的地方，她却开口讲下一章了——
+// 为什么不是"直接进教学"
+// 直接切的话，场景还停在刚才闲聊的地方，她却开口讲下一章了
 // 那正是"画面先于叙事跳"。
 // 而且"考完接着上第二章"等于一天学完五章，时间感是断的。
 // "第二天"给了她写转场的余地：她开口写见面，画面跟着她的台词走。
@@ -29789,47 +28737,30 @@ static void DirAdvance() {
 static void DirGoNextDay() {
     App& a = g_app;
     if (!a.dirMode) return;
-    //
-    // ---- 【推进入口：先把输入模式退干净】
-    //
-    // 详细成因见 LeaveInputMode 的注释：inputMode 不退的话，
-    // 之后每一次点击都会落进"点对话框=呼出输入框 / 点别处=收起"那条分支，
-    // 整局再也推不动——那就是"编辑对话框时按明天见会卡死"。
-    //
-    // 放在这里而不是调用方，是因为【推进只有这一个入口】：
-    // 无论从哪条路径进来都退得干净，不会漏。
-    // 也正因为现在退得干净，按钮才不需要再画成灰的（见渲染层 canPress）。
-    if (LeaveInputMode()) UiTip(a, L"你打了一半的那句话没有发出去", 4);
-    if (!a.dir.CanGoNextDay()) {
-        //
-        // ---- 【防守：正常情况下走不到这里】
-        //
-        // CanGoNextDay 现在等于 CanShowNextDay，而按钮不画就点不到，
-        // 所以"画着却点不动"这条路径已经不存在了。
-        // 留着是为了判据将来再分开时不会退化成"点了没反应、也没解释"。
-        //
-        // 【必须带上"还要几轮"】
-        //
-        // ★ 只说"她还想再聊"，玩家不知道要等到什么时候，
-        //   也分不清"还没到时候"和"程序没画出来"——
-        //   那种不确定最磨人，看着就像卡住了。给个数字等待就可预期。
-        const int w = a.dir.NextDayWaitTurns();
-        std::wstring tail = (w > 0)
-            ? (L"（再聊 " + WFromInt(w) + L" 轮就能走了）")
-            : std::wstring(L"");
-        SetStatus(a.dirSyllabus.isStory
-                      ? (L"这一幕她还没演完" + tail)
-                      : (L"她还想再聊一会儿" + tail), 5);
+    // ★ 推进只有这一个入口。任何"临时拦一下"都放在这里，
+    //   不要在渲染层另加灰态：画出来却点不动是最难自查的失效。
+    if (a.chatting) { UiTip(a, L"等她把这句话说完再走", 3); return; }
+
+    // 点之前取一次快照：文案、原因、本地确认都来自同一份判据。
+    const advance::Result prog = a.dir.Progress();
+    if (!prog.ready) {
+        // 说明还差什么；此时不动输入态，别白丢他打了一半的字。
+        SetStatus(prog.reason, 5);
         return;
     }
 
+    // inputMode 不退的话，之后每次点击都会变成呼出/收起输入框，整局推不动。
+    // ★ 只在确认要推进之后才清：判据没过时先清会白丢玩家的输入。
+    if (LeaveInputMode()) UiTip(a, L"你打了一半的那句话没有发出去", 4);
+
+    // 本地确认，不等网络回包（StartChat 随后会把状态栏改成"她在想…"）。
+    UiTip(a, prog.confirm, 3);
     //
-    // ---- 【教学段：这枚按钮是"这节课上完了"】
+    // ---- 教学段：这枚按钮是"这节课上完了"
     //
     // 有题 -> 开考；没题 -> 进章间日常。
     // ★ 不能走下面"告别 -> 第二天"那套：课还没上完就演告别，
-    //   章号没推进却被宣布"今天结束了"，
-    //   玩家会看到"说了明天见、右上角还停在原来那一章"。
+    // 章号没推进却被宣布"今天结束了"，
     if (a.dir.Stage() == DirStage::Lesson) {
         a.quizAnswers     = 0;
         a.dirAdvance      = 0;
@@ -29861,10 +28792,10 @@ static void DirGoNextDay() {
 
     const int from = a.dir.Chapter();
     //
-    // ---- 章号【不动】：告别还属于今天，第二天是玩家点完之后的事
+    // ---- 章号不动：告别还属于今天，第二天是玩家点完之后的事
     //
-    // 章号推进放在 DirEnterNextDay()（玩家点完画面才发生）。
-    // 这里只进【告别】阶段，让她把"明天见"这句话说出口。
+    // 章号推进放在 DirEnterNextDay（玩家点完画面才发生）。
+    // 这里只进告别阶段，让她把"明天见"这句话说出口。
     a.dir.EnterFarewell();
     a.quizAnswers = 0;
     a.dirAdvance  = 0;
@@ -29880,52 +28811,46 @@ static void DirGoNextDay() {
     a.pendingSay.clear();
     a.pendingEmote.clear();
     a.stageFixPending = false;
-
     //
-    // 【告别段本身不会是毕业】
-    // 章号在这里不动，所以告别永远发生在【今天】。
-    // 毕业只可能出现在 DirEnterNextDay() 里——玩家点完画面、
-    // 章号 ++ 之后发现后面没有章节了，那时候才回主页。
+    // 告别段本身不会是毕业
+    // 章号在这里不动，所以告别永远发生在今天。
+    // 毕业只可能出现在 DirEnterNextDay 里——玩家点完画面、
+    // 章号 ++ 之后发现后面没有章节了，
     const bool lastChapter = a.dir.NextDayEndsCourse();
-    //
-    // ---- 【日志/状态栏也用同一份文案】
-    // 课程里这枚按钮叫「明天见」，剧情里叫「下一幕」。
-    // 按钮上写着「下一幕」、日志却写「明天见」，玩家只会以为自己点错了。
-    const std::wstring lbl = NextDayLabelOf(a.dirSyllabus.isStory, lastChapter);
+    // 日志用点之前那份快照的文案，避免按钮、日志、状态栏各写一份。
     // %ls：MSVC 和 GCC 的 wprintf 都认，%s 在 GCC 下会被当成窄字符串。
+    const std::wstring lbl = prog.label;
     AppLog(lastChapter
                ? L"[推进] 点「%ls」：先告别（仍在第%d章），玩家点完 -> 回主页"
                : L"[推进] 点「%ls」：先告别（仍在第%d章），玩家点完 -> 第%d章",
            lbl.c_str(), from, from + 1);
     AppendTurnTrace((L"→" + lbl + L"(先说再见)").c_str(), nullptr, nullptr, L"");
-    SetStatus(lastChapter ? L"今天就到这里了" : lbl + L"了", 4);
-
     //
-    // ---- 【让她先开口，不是等玩家说话】
+    // ---- 让她先开口，不是等玩家说话
     //
-    // 其它进章路径都是 EnterPendingInput()（等玩家点一下、轮到他打字），
-    // 因为那时是玩家说"我们开始吧"才进的章。
+    // 其它进章路径都是 EnterPendingInput（等玩家点一下、轮到他打字），
+    // 因为那时是玩家说"
     // 但"第二天见面"必须由她来写——玩家点的是「明天见」，
     // 下一幕理应是她出现在场景里打招呼。他开口就成了"他叫她来上课"。
     //
-    // kick 里只说"这一幕该干什么"，【不写死任何角色名 / 地点名】：
+    // kick 里只说"这一幕该干什么"，不写死任何角色名 / 地点名：
     // 具体在哪儿碰头、说什么，由她决定，换角色包照样成立。
     //
-    // ---- 【说再见的人必须是她】
+    // ---- 说再见的人必须是她
     //
-    // 按钮是玩家点的，可"明天见"这三个字该由她说出口——
+    // 按钮是玩家点的，可"明天见"这三个字该由她说出口
     // 让玩家来说就成了"他宣布今天结束"，味道整个反过来。
     //
-    // kick 只说"这一幕该干什么"，【不写死任何角色名 / 地点名】：
+    // kick 只说"这一幕该干什么"，不写死任何角色名 / 地点名：
     // 怎么告别、在哪儿告别，由她决定，换角色包照样成立。
     //
-    // ---- 【告别不该只有一句】
+    // ---- 告别不该只有一句
     //
-    // 【这是"分别写得干巴巴"的另一半，两边必须一起改】
+    // 这是"分别写得干巴巴"的另一半，两边必须一起改
     // SceneHint 里那段是 system 侧，这一句是 user 侧、离输出更近、更管用。
-    // 两边都写「【短】一句就好」时，她真的只给了「……明天见。」——
+    // 两边都写「短一句就好」时，她真的只给了「……明天见。」
     // 只改 system 那一处，会被这句更近的指令压回去。
-    // 现在两边一致要求【慢下来、分两段】：说完再见，又回头补一句。
+    // 现在两边一致要求慢下来、分两段：说完再见，又回头补一句。
     std::wstring kick = L"（今天要结束了）你们聊了这一阵子，该回去了。\n";
     kick += L"写你的告别——这一句【要写得慢一点】：先说一句「那，明天见」，\n";
     kick += L"再走两步又停下来、回头补一句，或者小声说一句今天很开心。\n";
@@ -29940,11 +28865,10 @@ static void DirGoNextDay() {
 
     StartChat(kick, a.persona.charName, a.dir.Guide(), true);
 }
-
 //
-// ---- 第【二】步：告别读完，玩家点一下画面 -> 真正到第二天
+// ---- 第二步：告别读完，玩家点一下画面 -> 真正到第二天
 //
-// 【为什么拆成两步】
+// 为什么拆成两步
 // 一步到位的话，"今天"从来没有结束过：上一句还在甜品店聊得正好，
 // 下一句她已经在第二天的教室里打招呼了。中间少了"再见"，
 // 玩家点的那个按钮就像瞬移——而按钮上明明写着「明天见」，
@@ -29965,7 +28889,6 @@ static void DirEnterNextDay() {
     a.dirReady    = false;
     a.dirVerdict.clear();
     a.askedDuringTask = false;
-
     //
     // ---- 挂起的东西一律作废
     //
@@ -29975,14 +28898,13 @@ static void DirEnterNextDay() {
     a.pendingSay.clear();
     a.pendingEmote.clear();
     a.stageFixPending = false;
-
     //
-    // ---- 【复盘必须在"毕业"那条 return 之前】
+    // ---- 复盘必须在"毕业"那条 return 之前
     //
     // ★ EnterNextDayIntro 已经把章号推进过了（from 是刚说完再见的那一章），
-    //   于是最后一章走进来时 stage_ 已经是 Graduate —— 复查写在毕业判定【之后】
-    //   会被那句 return 整条跳过。表现是：前面几章的关系都在，唯独最后一章没记，
-    //   而最后一章恰恰是最该留下点什么的一章。现在提到前面，并用 from。
+    // 于是最后一章走进来时 stage_ 已经是 Graduate —— 复查写在毕业判定之后
+    // 会被那句 return 整条跳过。表现是：前面几章的关系都在，唯独最后一章没记，
+    // 而最后一章恰恰是最该留下点什么的一章。现在提到前面，并用 from。
     StartChapterAssetReview(from);
 
     if (a.dir.Stage() == DirStage::Graduate) {
@@ -29995,56 +28917,51 @@ static void DirEnterNextDay() {
     AppLog(L"[推进] 告别之后：第%d章 -> 第%d章（第二天再见）",
            from, a.dir.Chapter());
     AppendTurnTrace(L"→第二天见面", nullptr, nullptr, L"");
-
     //
-    // ---- 【让她先开口，不是等玩家说话】
+    // ---- 让她先开口，不是等玩家说话
     //
-    // 其它进章路径都是 EnterPendingInput()（等玩家点一下、轮到他打字），
-    // 因为那时是玩家说"我们开始吧"才进的章。
+    // 其它进章路径都是 EnterPendingInput（等玩家点一下、轮到他打字），
+    // 因为那时是玩家说"
     // 但"第二天见面"必须由她来写——玩家点的是「明天见」，
     // 下一幕理应是她出现在场景里打招呼。他开口就成了"他叫她来上课"。
     //
-    // kick 里只说"这一幕该干什么"，【不写死任何角色名 / 地点名】：
+    // kick 里只说"这一幕该干什么"，不写死任何角色名 / 地点名：
     // 具体在哪儿碰头、说什么，由她决定，换角色包照样成立。
     //
-    // 【跟读档共用同一份措辞】
+    // 跟读档共用同一份措辞
     // 点「明天见」推进到第二天、和读档回到第二天的开场，是同一个剧情位置，
     // 说法必须一致——否则又变成"同一处两套话"，读到档就演砸。
     std::wstring kick = BuildNextDayKick();
 
     StartChat(kick, a.persona.charName, a.dir.Guide(), true);
 }
-
 // 导演模式：出当前章节的验收题
-// ---------------------------------------------------------------------------
-//  开场 / 出题 / 卡壳 的背景与音乐：从扫出来的真实名字里挑
-// ---------------------------------------------------------------------------
+// 开场 / 出题 / 卡壳 的背景与音乐：从扫出来的真实名字里挑
 //
 // ★ 不再写死槽位名（"开场"/"课"/"题"/"卡住" + [Bg] 段映射成文件名）的原因是双向失效：
-//   作者得照着配置画素材，画了配置里没有的词那张图永远用不上；
-//   反过来配置写了而文件不存在，画面就黑一下。
-//   现在先扫目录拿到真实名字，再按意境关键词挑——关键词只是偏好，不是要求。
-//   片段来自 char.ini [AssetRole]；留空 = 不挑（用池子里第一个）。代码不认识任何素材名。
+// 作者得照着配置画素材，画了配置里没有的词那张图永远用不上；
+// 反过来配置写了而文件不存在，画面就黑一下。
+// 现在先扫目录拿到真实名字，再按意境关键词挑——关键词只是偏好，不是要求。
+// 片段来自 char.ini [AssetRole]；留空 = 不挑（用池子里第一个）。代码不认识任何素材名。
 //
 // ★ 关键词里不要放「夜」「暗」这种通用字：池子里没有「题」「紧张」时它们会成为唯一
-//   命中项，开考那一瞬画面直接跳到夜景。而且它只在【dirCurBg 为空】时才触发，
-//   所以时有时无——玩家会看到"突然跳走、下一轮又自己切回来"，极难描述。
-//   考场就是本章那间教室，"夜"跟"考试"没有任何关系，是纯粹的误导项。
-//   挑不到时宁可返回空（保持当前画面）。卡住 / 补习同理：还在这一章收尾，地点不该变。
-
+// 命中项，开考那一瞬画面直接跳到夜景。而且它只在dirCurBg 为空时才触发，
+// 所以时有时无
+// 考场就是本章那间教室，"夜"跟"考试"没有任何关系，是纯粹的误导项。
+// 挑不到时宁可返回空（保持当前画面）。卡住 / 补习同理：还在这一章收尾，地点不该变。
 static std::wstring PickOpeningBg() {
-    // 【角色包必须配 [AssetRole] 开场】
+    // 角色包必须配 [AssetRole] 开场
     //
-    // 一个关键词都没给时，PickFromPool 会退回 pool.front()——背景目录里
+    // 一个关键词都没给时，PickFromPool 会退回 pool.front——背景目录里
     // 排第一张。作者图越多、名字越杂，越容易开局跳到一个莫名其妙的地方，
     // 等她开口给了场景名又切回来：因为这里只改了渲染用的图，dirCurBg 仍
     // 是空的，下一轮她给了背景名画面就自己回去了，来回一次。
     //
-    // 实测：「万圣节会场」的「万」是 U+4E07，在那份包的所有背景名里排最前，
-    // 于是每次开局都先跳万圣节再回教室——每次都一样，因为 pool.front()
+    // 实测：「某个背景名」的「万」是 U+4E07，在那份包的所有背景名里排最前，
+    // 于是每次开局都先跳万圣节再回教室——每次都一样，因为 pool.front
     // 是确定的，不是随机。
     //
-    // 包里没配就退回【教学地点指向的那一类】：开场接着就是上课，
+    // 包里没配就退回教学地点指向的那一类：开场接着就是上课，
     // 从同一个地方起步，比"挑到什么算什么"合理，也顺带省掉一次换景。
     const std::vector<std::wstring>* prefs = &gRole.openBg;
     std::vector<std::wstring> fallback;
@@ -30056,21 +28973,20 @@ static std::wstring PickOpeningBg() {
     }
     return PickBgForMood(g_app.Def(), g_app.assetDir, *prefs, true);
 }
-
 //
-// ---- 【引擎替她挑背景的唯一入口】
+// ---- 引擎替她挑背景的唯一入口
 //
-// 【为什么要有这一层】
+// 为什么要有这一层
 // 上面三处（开场 / 开考 / 卡住）原本各自直接调 PickBgForMood，
-// 而它们都只有在"当前还没有背景"时才该兜底——这是分散在三个地方的判断，
+// 而它们都只有在"当前还没有背景"时才该兜底
 // 漏一个就出现"明明本章已经定过场景，开考却又挑了一张"。
 //
 // 现在统一在这里判，顺序是硬的：
-//   ① 本章锁定的场景  → 直接用
-//   ② 当前生效的背景  → 直接用（并顺手补记成本章锁，免得下轮再问她）
-//   ③ 都没有          → 才按意境挑，而且挑到什么都要留日志
+// ① 本章锁定的场景 → 直接用
+// ② 当前生效的背景 → 直接用（并顺手补记成本章锁，免得下轮再问她）
+// ③ 都没有 → 才按意境挑，而且挑到什么都要留日志
 //
-// 【留日志这一条很重要】这类 bug 只在"两个值同时为空"时才冒出来，
+// 留日志这一条很重要这类 bug 只在"两个值同时为空"时才冒出来，
 // 复现极不稳定。没有日志，下次只能靠玩家描述去猜。
 static std::wstring EngineFallbackBg(const std::vector<std::wstring>& prefs,
                                      const wchar_t* why) {
@@ -30087,28 +29003,27 @@ static std::wstring EngineFallbackBg(const std::vector<std::wstring>& prefs,
               + L"」兜底挑了「" + p + L"」").c_str());
     return p;
 }
-
 //
-// ---- 【新的一章开场：把画面拉回本章该在的地方】
+// ---- 新的一章开场：把画面拉回本章该在的地方
 //
-// 【实测现象：现象】点了「明天见」进第 2 章，她已经在讲数组了，
+// 实测现象：现象点了「明天见」进第 2 章，她已经在讲数组了，
 // 背景却还是昨天那条「去角色A家的小路_夜晚」。
 //
-// 【根因】进新章时 chapterBg_ 被清空（好让她重新定一次场景），
+// 根因进新章时 chapterBg_ 被清空（好让她重新定一次场景），
 // 可 dirCurBg 还留着昨天的地点。而挑素材请求一旦失败（网络不通 / 超时），
 // 画面就"沿用上一轮"——于是新的一章整章都站在昨天那条路上。
 // 那不是"她选错了"，是"她还没来得及选"，画面却已经错了。
 //
-// 【为什么必须收口成一个函数】
+// 为什么必须收口成一个函数
 // 一条对话有两个结束出口：挑到了（走应用分支）和没挑到（走失败分支）。
 // 两个出口各写一遍，迟早漏掉一个——而漏掉的正好是网络失败那次，
 // 也就是玩家真会遇到的那次。现在两处都调它。
 //
-// 【只在"本章场景还没定下来"这个窗口里生效】
-// 判据跟给她的清单、校验、打回共用同一份 BgAcceptNow()：
-//   · 已经定了（chapterBg_ 非空）-> 走锁定，不插手
-//   · 恋爱段（日常 / 告别 / 毕业）-> 她本来就该能换地方，不插手
-// 所以这条只在【开场 / 教学还没定场景】那几轮起作用。认不出任何教室类时
+// 只在"本章场景还没定下来"这个窗口里生效
+// 判据跟给她的清单、校验、打回共用同一份 BgAcceptNow：
+// · 已经定了（chapterBg_ 非空）-> 走锁定，不插手
+// · 恋爱段（日常 / 告别 / 毕业）-> 她本来就该能换地方，不插手
+// 所以这条只在开场 / 教学还没定场景那几轮起作用。认不出任何教室类时
 // BgAcceptNow 会退回全量清单，那时 dirCurBg 一定在清单里，等于不插手。
 static void PullBgIntoChapterPool() {
     App& a = g_app;
@@ -30126,20 +29041,19 @@ static void PullBgIntoChapterPool() {
     AppLog(L"[舞台] 新的一章还没定场景，画面还停在「%s」——拉回本章该在的「%s」",
            from.empty() ? L"（还没有）" : from.c_str(), a.dirCurBg.c_str());
 }
-
 // ---------------------------------------------------------------- 选项打乱
 //
-// 【为什么要在出题这一刻打乱】
+// 为什么要在出题这一刻打乱
 // syllabus.ini 里写题时，正确项很容易不自觉地聚在同一个位置
 // （之前四份剧本 36 章的答案全在第 1 项，玩家点两次就发现规律，
-//   之后一路选第一项就能通关——题库形同虚设）。
+// 之后一路选第一项就能通关——题库形同虚设）。
 //
-// 【为什么打乱放在这一处，而不是渲染层和点击层各维护一份映射】
+// 为什么打乱放在这一处，而不是渲染层和点击层各维护一份映射
 // pendingTask 是 App 自己的副本（按值拷贝自 c->task），
 // 打乱它不会污染 syllabus 里的原始题目，每次出题都重新拷贝、重新洗。
 // 而下游读的全是同一份：画出来的选项、给模型看的选项清单、判对错用的 answer。
 // 若在渲染层存一份"显示顺序"、点击层再反查一次，两处一旦对不上就是
-// "选项 A 的文本配了选项 B 的答案"——那正是这个项目反复栽的错位 bug。
+// "选项 A 的文本配了选项 B 的答案"
 static void ShuffleTaskOpts(SyllabusTask& t) {
     if (t.opts.size() < 2) return;
     std::vector<int> ord(t.opts.size());
@@ -30175,31 +29089,30 @@ static void DirEnterTask() {
     a.pendingTask  = c->task;                 // 判题线程会读它
     ShuffleTaskOpts(a.pendingTask);           // 每次出题重新洗一次，正确项不在固定位置
     a.curHint      = c->task.hint;
-
     //
-    // ---- 【开考不换背景：考场就是本章那间教室】
+    // ---- 开考不换背景：考场就是本章那间教室
     //
-    // 【实测现象：穿帮：考试开始前背景突然切到「夜晚神社」，随后又切回来】
+    // 实测现象：穿帮：考试开始前背景突然切到「夜晚神社」，随后又切回来
     //
     // 根因就是下面这一行。它按"意境关键词"去扫真实背景名挑一张，
-    // kQuizBgPrefs 里有「夜」，而作者的清单里有「神社夜晚」——
+    // kQuizBgPrefs 里有「夜」，而作者的清单里有「神社夜晚」
     // 于是开考那一瞬画面跳到神社。
     //
-    // 为什么"最后又切回来了"：ApplyStageChange 只改了【渲染用的图】
-    // （a.bgCur），没改【逻辑上的当前背景名】（a.dirCurBg，仍是教室）。
+    // 为什么"最后又切回来了"：ApplyStageChange 只改了渲染用的图
+    // （a.bgCur），没改逻辑上的当前背景名（a.dirCurBg，仍是教室）。
     // 下一轮挑素材时 dv.bg 取的是 dirCurBg，再被本章锁定值覆盖，
-    // 于是画面又回到教室——来回一次，玩家看到的就是穿帮了一下又好了。
+    // 于是画面又回到教室——来回一次，
     //
     // 而且它跟"同一章内只用一个场景"这条规则直接冲突：
     // 做题属于本章，考场就该是本章那间教室，不该另找一张。
     //
-    // 所以：只要当前已经有背景就【一个字都不动】；
+    // 所以：只要当前已经有背景就一个字都不动；
     // 只有真的连开场都没定（dirCurBg 为空）时才挑一张，免得画面空白。
     //
-    // 【上一版只挡住了"dirCurBg 非空"这一种情况，所以 bug 还在】
+    // 早期版本只挡住了"dirCurBg 非空"这一种情况，所以 bug 还在
     // 挡不住的那一种才致命：dirCurBg 为空（她前几轮都没给成背景），
     // 于是照样走进 PickBgForMood，而 kQuizBgPrefs 里的「夜」
-    // 在作者的清单里【唯一命中「神社夜晚」】——开考瞬间跳神社。
+    // 在作者的清单里唯一命中「神社夜晚」——开考瞬间跳神社。
     // 现在走 EngineFallbackBg：先问本章锁、再问当前值，都不空就绝不多此一举。
     const std::wstring quizBg = EngineFallbackBg(gRole.classBg, L"考场");
     if (quizBg.empty()) {
@@ -30212,11 +29125,9 @@ static void DirEnterTask() {
         Dbg(L"[开考] 本章场景已定，考场沿用「%s」，不另换背景",
             quizBg.c_str());
     }
-
     //
-    // ---- 【开考：进选择题，不再把他丢进编辑器】
+    // ---- 开考：进选择题，不再把他丢进编辑器
     //
-    // 原来是 EnterCodeMode()。编辑器能改到题干【以外】的地方——
     // 他随手改坏一行题干，判卷标准就跟着漂了：她对着一份被改过的题判，
     // 判出来的对错没有意义，而且她还不知道题被改过。
     //
@@ -30225,18 +29136,17 @@ static void DirEnterTask() {
     a.quizWrong = 0;
     EnterQuizChoice();
 }
-
 // ---------------------------------------------------------------- 选择题
 //
-// 【为什么整个环节没有一处让模型判对错】
+// 为什么整个环节没有一处让模型判对错
 // 让他写代码、再交给模型判，是整套流程里最不稳的一环：
 // 模型要读一段学生代码、理解意图、判断对错、再组织评语，
 // 每一环都可能漂 —— 之前"考完又考一次"就是这么来的。
 //
 // 现在分工很清楚：
-//   · 题目、选项、正确答案  -> 写在 syllabus.ini，属于内容
-//   · 他选了第几个          -> 是事实，引擎比对一下就行
-//   · 她说什么              -> 她只负责"选对了夸一句 / 选错了讲清楚错在哪"
+// · 题目、选项、正确答案 -> 写在 syllabus.ini，属于内容
+// · 他选了第几个 -> 是事实，引擎比对一下就行
+// · 她说什么 -> 她只负责"选对了夸一句 / 选错了讲清楚错在哪"
 // 内容归包、判定归引擎、表达归模型，各干各擅长的。
 static void EnterQuizChoice() {
     App& a = g_app;
@@ -30266,13 +29176,13 @@ static void QuizPick(int idx) {
 
     a.rs.quizMode = false;                      // 选项收起来，先听她说
     //
-    // ---- 【题面 / 选项 / 标题立刻清掉】
+    // ---- 题面 / 选项 / 标题立刻清掉
     //
-    // ★ 不要再留到下一句：对话框在作答期间显示的不是台词而是【题面】
-    //   （见渲染层 showTaskStmt）。这三个值清得晚了，就会出现"她已经在聊别的了，
-    //   回想 / 对话框里还夹着上一道题的题面和选项"——玩家看到的就是考试题的内容
-    //   莫名其妙插在台词中间。
-    //   判卷还要用 pendingTask（讲错在哪要用题面），所以只清【显示用】的那份。
+    // ★ 不要再留到下一句：对话框在作答期间显示的不是台词而是题面
+    // （见渲染层 showTaskStmt）。这三个值清得晚了，就会出现"她已经在聊别的了，
+    // 回想 / 对话框里还夹着上一道题的题面和选项"
+    // 莫名其妙插在台词中间。
+    // 判卷还要用 pendingTask（讲错在哪要用题面），所以只清显示用的那份。
     a.rs.taskStmt.clear();
     a.rs.taskTitle.clear();
     a.rs.quizOpts.clear();
@@ -30296,13 +29206,13 @@ static void QuizPick(int idx) {
              L"用你自己的话说一句：先确认他答对了（可以嘴硬两句，\n"
              L"  别生硬地报「正确答案」，像平时说话那样）。\n"
              //
-             // ---- 【然后你主动收课、主动约他】
+             // ---- 然后
              //
-             // 【这是运行日志里最扎眼的一处】
-             // 她原话："那接下来呢？指针你已经掌握得差不多了。
-             //         要不要继续？还是说你想先休息一下？"
-             // ——考完试的第一句，本该是"课结束了、我们去做点别的"，
-             //   她却把球踢回去问他还要不要学。
+             // 这是典型现象：的一处
+             // 她原话："那接下来呢？指针
+             // 要不要继续？还是说
+             // ——考完试的第一句，本该是"课结束了、
+             // 她却把球踢回去问他还要不要学。
              // 玩家刚过一关，正等着她给一个"走吧"的台阶，
              // 结果被问了一道选择题，气氛当场断在教室里。
              //
@@ -30318,20 +29228,20 @@ static void QuizPick(int idx) {
         AppendTurnTrace(L"√验收题答对", nullptr, nullptr, L"");
     } else {
         //
-        // ---- 选错了：她讲清楚【这个选项】错在哪，然后让他再选
+        // ---- 选错了：她讲清楚这个选项错在哪，然后让他再选
         //
-        // 【答错不算失败】
+        // 答错不算失败
         // 这是游戏不是考试。答错只是还没想通，她讲完再选就是了，
-        // 不该扣次数、更不该退回本章重讲（那是原来的 fail 路径）。
+        // 不该扣次数、更不该退回本章重讲（那是
         a.taskPassed        = false;
         a.dirVerdict        = L"fail";
         a.quizEngineVerdict = true;
         a.quizRetryPending  = true;             // 她讲完，玩家点一下 -> 重出选项
         ++a.quizWrong;
         //
-        // 【不能设成 Review】
+        // 不能设成 Review
         // Review 在 AdvanceClick 里会走"判卷推进"分支：
-        // 没过就 --triesLeft，次数用完还要 EnterCodeMode() 把他丢回编辑器。
+        // 没过就 --triesLeft，次数用完还要 EnterCodeMode 把他丢回编辑器。
         // 选择题没有编辑器，也没有"失败"这回事，所以停在 Play。
         a.phase = Phase::Play;
         user = L"【他答错了】这一章的验收题，他选的是第 " + WFromInt(idx + 1)
@@ -30350,40 +29260,34 @@ static void QuizPick(int idx) {
     StartChat(user, a.persona.charName);
     InvalidateRect(a.hwnd, nullptr, FALSE);
 }
-
-//
-// 【原来的 SkipLine() 已删除】
 //
 // 那是"玩家按 Esc 主动跳过这一轮"时她说的话。Esc 跳过机制已按要求
 // 整体移除，这个函数成了死代码（留着 MSVC 会给 C4505 未引用静态函数警告）。
 //
-// 它当初存在的理由值得留一句话：OfflineLine 是【网络真的出问题】时才用的兜底，
+// 它当初存在的理由值得留一句话：OfflineLine 是网络真的出问题时才用的兜底，
 // 台词里明写着"网络断了"。两套兜底绝不能混用——曾经把 OfflineLine 拿去当
 // "跳过台词"，结果网络一直是好的她却说"接不上话"，玩家真去查了网线。
 // 现在只剩 OfflineLine 一套，反而不会再搞混了。
-
-// ============================================================================
-//  交代码给她看
-// ============================================================================
+// 交代码给她看
 //
-// 【这里原来是"本机编译运行"，已整体移除】
+// 这里
 // 原来会开一个工作线程，调 cl.exe 编译 + 逐个跑测试用例：
-//   Judge::Run → Detect()（跑 vswhere.exe 找工具链）→ Compile()（call vcvarsall.bat）
-//   → RunCase() × N
+// Judge::Run → Detect（跑 vswhere.exe 找工具链）→ Compile（call vcvarsall.bat）
+// → RunCase × N
 // 每一步都是 WaitForSingleObject 阻塞，单次超时 15 秒，串行下来最坏几十秒，
-// 而界面上只有一个转圈提示——玩家看到的就是"点了运行，程序死了"；
-// 工具链没装好时 Detect() 会失败并等满超时，一次运行卡半分钟。
+// 而界面上只有一个转圈提示
+// 工具链没装好时 Detect 会失败并等满超时，一次运行卡半分钟。
 // 现在：代码原样交给大模型，她自己读、自己判。没有任何本地进程。
 //
 // 当前是不是有一道题在等他交。
 // 判"对话框里贴的东西算不算交作业"要用它——没题在等的时候他贴一段代码
 // 很可能只是想讨论，不该强行开判卷。
 //
-// 她这句话是不是【把题面完整说出来了】。
-// ★ 她明明出好了题（"题目是「交换两个整数」。我给你一个函数模板…看好了：```c …"）
-//   却没填 advance 字段，引擎等不到字段就不开考，他只能把代码贴在对话框里。
+// 她这句话是不是把题面完整说出来了。
+// ★ 她明明出好了题（"题目是「交换两个整数」。
+// 却没填 advance 字段，引擎等不到字段就不开考，他只能把代码贴在对话框里。
 // ★ 判据取得很严：讲知识点时也常带代码块（"比如这样写：int a = 10;"），
-//   那种没有"题目/模板/在这里写"这些出题标志，不会误触发。
+// 那种没有"题目/模板/在这里写"这些出题标志，不会误触发。
 static bool SaidTaskPrompt(const std::wstring& s) {
     if (s.empty()) return false;
     const std::wstring::size_type n = std::wstring::npos;
@@ -30393,10 +29297,10 @@ static bool SaidTaskPrompt(const std::wstring& s) {
     if (s.find(L"函数模板")      != n) return true;
     if (s.find(L"题目")          != n && s.find(L"```") != n) return true;
     //
-    // ---- 【她用自己的话出题时，上面那些标志一个都没有】
+    // ---- 她用自己的话出题时，上面那些标志一个都没有
     //
-    // 【运行日志里的原话】
-    //   「模板已经给你了，自己填进去。写好了叫我～」
+    // ★ 症状：她会这样说：
+    // 「模板已经给
     // 一句"代码模板""函数模板""在这里写"都没出现，于是引擎没开考。
     // 玩家没进做题界面，只能把代码贴在对话框里 —— 少了一整个做题环节。
     // 她出题的方式是自由发挥的，判据必须跟着她的说法放宽。
@@ -30407,19 +29311,19 @@ static bool SaidTaskPrompt(const std::wstring& s) {
     if (s.find(L"填进去")        != n) return true;
     if (s.find(L"把它补完")      != n) return true;
     //
-    // ---- 【"小练习"这种说法：整个做题环节被跳过】
+    // ---- "小练习"这种说法：整个做题环节被跳过
     //
-    // 【运行日志里的原话】
-    //   「来，我给你一个小练习：写两行代码，让 b 的值变成和 a 一样（用指针），
-    //     但**不许**写 b = a。」
+    // ★ 症状：她会这样说：
+    // 「来，
+    // 但**不许**写 b = a。」
     // 上面那些标志一个都没有，于是引擎没开考、没进黑色编辑器，
-    // 他只能把整段代码贴在普通对话框里（日志里那行 `#include <stdio.h>…`）。
-    // 聊天路径里判出来的结果不会写进"任务通过"——
+    // 他只能把整段代码贴在普通对话框里（运行时那行 `#include <stdio.h>…`）。
+    // 聊天路径里判出来的结果不会写进"任务通过"
     // 表面看聊得挺顺，实际上这一章的考试根本没发生。
     //
-    // 判据仍然要躲开讲知识点时的"你可以这样写"：
-    // 下面每条都带【交给他的动作】（练习 / 你来写 / 试着写），
-    // 而讲解时说的是"我这样写""你看这段代码"，不会命中。
+    // 判据仍然要躲开讲知识点时的"
+    // 下面每条都带交给他的动作（练习 /
+    // 而讲解时说的是"
     if (s.find(L"小练习")        != n) return true;
     if (s.find(L"个练习")        != n) return true;
     if (s.find(L"练习题")        != n) return true;
@@ -30433,17 +29337,16 @@ static bool SaidTaskPrompt(const std::wstring& s) {
     if (s.find(L"写个函数")      != n) return true;
     return false;
 }
-
-// 她这句话是不是【要他进编辑器填空】的正式题面。
+// 她这句话是不是要他进编辑器填空的正式题面。
 //
 // 跟 SaidTaskPrompt 的分工：
-//   SaidTaskPrompt = "她出题了"（口头小练习也算）
-//   SaidFillInTask = "她给了需要填空的代码模板"（只有正式题面才算）
+// SaidTaskPrompt = "她出题了"（口头小练习也算）
+// SaidFillInTask = "她给了需要填空的代码模板"（只有正式题面才算）
 //
-// 【为什么必须分开——这一轮日志的教训】
-// 上一版为了防止"她出小练习问一句，引擎抢着开考"，加了 OwedAnswer 豁免：
+// 为什么必须分开
+// 早期版本为了防止"她出小练习问一句，引擎抢着开考"，加了 OwedAnswer 豁免：
 // 只要她的话里有问号就先让他答。可正式题面末尾也常有问号
-// （「——函数里怎么写？给你三秒想。」），于是【正式题面也被挡住了】：
+// （「——函数里怎么写？给
 // 做题界面整局一次没出现，他只能把代码贴对话框，走闲聊路径判卷。
 //
 // 判据全部取自"填空占位"这类只有正式题面才有的标志：
@@ -30453,13 +29356,13 @@ static bool SaidFillInTask(const std::wstring& s) {
     const std::wstring::size_type n = std::wstring::npos;
     if (s.find(L"在这里写")   != n) return true;
     //
-    // ---- 【"你的代码"必须配着"在这里写/填"才算，不能单独算】
+    // ---- "
     //
-    // 她讲课时常说"把你写的代码给我看看""你的代码里这一行有问题"——
-    // 单独命中「你的代码」不代表她出了题，可一旦它点亮了这条判据，
+    // 她讲课时常说"把
+    // 单独命中「
     // 就会绕过下面的 OwedAnswer 豁免：她那句"现在想到怎么下手了吗？"
     // 还没人回答，引擎就开考了。
-    // 只有"在这里写你的代码""把它填进去"这类【交给他动手】的说法才算。
+    // 只有"在这里写
     if (s.find(L"你的代码")   != n
         && (s.find(L"在这里写") != n || s.find(L"填") != n)) return true;
     if (s.find(L"代码模板")   != n) return true;
@@ -30471,22 +29374,21 @@ static bool SaidFillInTask(const std::wstring& s) {
     if (s.find(L"TODO")       != n) return true;
     return false;
 }
-
-// 她这句话是不是【把本章这道选择题摆出来了】。
+// 她这句话是不是把本章这道选择题摆出来了。
 //
-// 【为什么必须单独有一个判据——选择题改动引入的回归】
-// 改成选择题之后，开考判定整条失效了，实测（用她日志里的原话）：
-//   SaidTaskPrompt=1  SaidFillInTask=0  OwedAnswer=1  -> 走"先让他答"，不开考
+// 为什么必须单独有一个判据——选择题改动引入的回归
+// 改成选择题之后，开考判定整条失效了，实测（用她的原话）：
+// SaidTaskPrompt=1 SaidFillInTask=0 OwedAnswer=1 -> 走"先让他答"，不开考
 // 而填空题时代同一句话是 SaidFillInTask=1 -> 开考。
 //
-// 根因：SaidFillInTask 只认【填空占位】（"在这里写你的代码"），
+// 根因：SaidFillInTask 只认填空占位（"在这里写
 // 选择题根本没有占位 -> 恒 false；
-// 而选择题【必然带问号】（"你觉得选哪个？"）-> OwedAnswer 恒 true。
+// 而选择题必然带问号（"
 // 两者一组合，选择题时代 100% 命中"先让他答"，开考永远不会发生
 // （填空题时代只是"有时"命中，因为只有口头小练习才带问号）。
 // 会话追踪里那行 `→先让他答(她问了问题)` 就是证据，全程没有 →开考。
 //
-// 判据取自"她说的是不是我们交给她的那道题"：
+// 判据取自"她说的是不是交给她的那道题"：
 // 选项文本是 syllabus.ini 里的原文，她照着念的话一定包含它。
 // 这比猜她的措辞可靠得多——措辞是她的，内容是包的。
 static bool SaidChoiceTaskHard(const std::wstring& s) {
@@ -30494,20 +29396,19 @@ static bool SaidChoiceTaskHard(const std::wstring& s) {
     const SyllabusChapter* c = g_app.dir.Cur();
     if (!c || c->task.opts.size() < 2) return false;
     //
-    // ---- 硬判据：【她把这道题的几个选项都念出来了】
+    // ---- 硬判据：她把这道题的几个选项都念出来了
     //
     // ★ 不能"命中一个选项就算"：选择题几个选项去掉空白后，前 20 个字符可能
-    //   【一模一样】（void swap(int*a,int*b) 的签名部分），而她讲指针交换时
-    //   几乎必然会写这么一句（讲例题、讲签名、讲"参数要带星号"都会写）。
-    //   于是讲课举的例子直接把硬判据点亮 -> "先让他答"被绕过 ->
-    //   她那句"懂了吗？"还没人回答，引擎就把另一道题摆上了按钮。
-    //   玩家看到的就是：她刚问完，话还没说出口，就开考了。
+    // 一模一样（void swap(int*a,int*b) 的签名部分），而她讲指针交换时
+    // 几乎必然会写这么一句（讲例题、讲签名、讲"参数要带星号"都会写）。
+    // 于是讲课举的例子直接把硬判据点亮 -> "先让他答"被绕过 ->
+    // 她那句"懂了吗？"还没人回答，引擎就把另一道题摆上了按钮。
     //
     // 判据改成两道关：
-    //   1) 【用选项的完整原文当指纹】，不再截前 20 个字符——
-    //      签名撞车撞不到函数体，讲课举例立刻失效；
-    //   2) 【要命中足够多的不同选项】——她念一道选择题必然把几个选项都列出来，
-    //      而讲课举例最多只会写出其中一个。
+    // 1) 用选项的完整原文当指纹，不再截前 20 个字符
+    // 签名撞车撞不到函数体，讲课举例立刻失效；
+    // 2) 要命中足够多的不同选项——她念一道选择题必然把几个选项都列出来，
+    // 而讲课举例最多只会写出其中一个。
     // 两边都抹掉空白再比：她念的时候换行/缩进可能跟 ini 里不完全一致。
     std::wstring sFlat;
     for (wchar_t ch : s)
@@ -30522,7 +29423,7 @@ static bool SaidChoiceTaskHard(const std::wstring& s) {
             if (ch != L' ' && ch != L'\t' && ch != L'\r' && ch != L'\n') t += ch;
         if (t.size() < 8) continue;
         //
-        // 【只比完整原文，不比"前 N 个字符"】
+        // 只比完整原文，不比"前 N 个字符"
         // 试过加一条"前 20 个字符"的回退（想着她改一两个词时也能认出来），
         // 结果正是它把判据打回原形：第一章四个选项的前 20 个字符里
         // 有三个完全相同，回退一开，她讲课写的那句签名又把三个全点亮了。
@@ -30538,7 +29439,7 @@ static bool SaidChoiceTaskHard(const std::wstring& s) {
     }
     //
     // 需要命中几个才算"她在念这道题"：
-    //   2 个选项的题 -> 两个都要有；4 个选项 -> 至少 3 个。
+    // 2 个选项的题 -> 两个都要有；4 个选项 -> 至少 3 个。
     // 定得比"全都要"松一档，是因为她偶尔会把某个选项换个说法；
     // 漏一个仍然认得出来，漏一半就当她没在念这道题。
     int need = (int)c->task.opts.size() - 1;
@@ -30546,13 +29447,12 @@ static bool SaidChoiceTaskHard(const std::wstring& s) {
     if (need > 3) need = 3;
     return (int)hit.size() >= need;
 }
-
 // 软判据：她在问"选哪个"。
 //
 // 她可能把选项换了个说法复述，上面的指纹就漏了。
 // 这几条都是"摆出选择题"时才有的措辞，讲知识点时不会这么说。
 //
-// 【它不能单独决定开考——只能当"她大概在出题"的弱信号】
+// 它不能单独决定开考——只能当"她大概在出题"的弱信号
 // 她讲课时随口问「哪个是在声明指针、哪个是在解引用？」也命中这些词，
 // 可那道题跟题库这道毫无关系（选项原文一个字都没出现）。
 // 拿它去压"先让他答"，就会变成：她问 A、引擎考 B，她那句提问没人回答。
@@ -30576,18 +29476,15 @@ static bool SaidChoiceTaskSoft(const std::wstring& s) {
 static bool SaidChoiceTask(const std::wstring& s) {
     return SaidChoiceTaskHard(s) || SaidChoiceTaskSoft(s);
 }
-
-// 她这句话是不是【在等他开口回答】。
+// 她这句话是不是在等他开口回答。
 //
-// 【运行日志里刚发生的事】
-//   12:29:12 她：「来做个小练习巩固一下：```c int x=3,y=7; …```
-//                 执行完这三行，x 和 y 各是多少？」
-//   12:29:18（6 秒后）引擎 →开考(题面)，直接进了黑色编辑器
-//   ——他连"10 和 7"都没来得及说，就被塞进另一道题（交换两个整数）里。
-//   后面那一整段判的其实还是小练习，正经任务一次都没做。
+// ★ 症状：她刚问完一句：
+// 执行完这三行，x 和 y 各是多少？」
+// ——他连"10 和 7"都没来得及说，就被塞进另一道题（交换两个整数）里。
+// 后面那一整段判的其实还是小练习，正经任务一次都没做。
 //
 // 也就是说："她出了题" 和 "她出了题还问了一句" 是两回事。
-// 前者要开编辑器；后者她要的是【他开口答】，引擎抢着开考就抢了他的话。
+// 前者要开编辑器；后者她要的是他开口答，引擎抢着开考就抢了他的话。
 //
 // 判据取得很宽（整句里有问号就算）：漏判的代价是他来不及回答，
 // 而误判的代价只是晚一轮开考——宁可晚一轮。
@@ -30603,25 +29500,24 @@ static bool HasPendingTask() {
     if (a.dirMode) return !a.pendingTask.title.empty();
     return a.vm.CurrentTask() != nullptr;
 }
-
 //
-// 【他把【没做的模板】原样交上来了】
+// 他把【没做的模板原样交上来了】
 //
-// 她出题给了代码框架 void swap2(...){ /* 在这里写你的代码 */ }，
+// 她出题给了代码框架 void swap2(...){ /* 在这里写
 // 编辑器里预填的就是那个空框架，他一个字没写直接交，她就对着一个空函数判了满分。
         // 后果很严重：章过了，可他其实什么都没做，
-// 而且玩家会一脸茫然（"我还没写呢怎么就过了"）。
+// 而且
 //
 // 判据：把占位标记从两份代码里都抹掉之后，仍然跟模板一字不差。
 //
 // ★ 不能"看到占位标记就拦"——那是"提交交不上去"的根因。玩家最自然的写法就是
-//   【保留那行注释、在它下面写自己的三行】。旧判据只要代码里出现「在这里写你的代码」
-//   就判"没写"，于是他明明写完了，点"交给她看"却被拦下、还被说"你还没写代码呢"。
-//   而且这毛病【有时】才犯——取决于他有没有顺手删注释，所以极难定位。
-//   正确做法是【两边同时抹掉占位再比】：
-//     · 写了答案、注释还在 -> 抹掉后仍比模板多出内容 -> 放行
-//     · 只删了注释、没写   -> 抹掉后跟模板一模一样 -> 拦下
-//     · 原样交上来         -> 抹掉后跟模板一模一样 -> 拦下
+// 保留那行注释、在它下面写自己的三行。旧判据只要代码里出现「在这里写
+// 就判"没写"，于是他明明写完了，点"交给她看"却被拦下、还被说"
+// 而且这毛病有时才犯——取决于他有没有顺手删注释，所以极难定位。
+// 正确做法是两边同时抹掉占位再比：
+// · 写了答案、注释还在 -> 抹掉后仍比模板多出内容 -> 放行
+// · 只删了注释、没写 -> 抹掉后跟模板一模一样 -> 拦下
+// · 原样交上来 -> 抹掉后跟模板一模一样 -> 拦下
 static void StripPlaceholder(std::wstring& s) {
     static const wchar_t* const ph[] = {
         L"在这里写你的代码", L"在这里写你的答案", L"在这里写",
@@ -30688,7 +29584,7 @@ static void SyncInputEdit();
 void StartJudge(const std::wstring& code) {
     App& a = g_app;
     //
-    // ---- 【导演模式已经没有代码题了】
+    // ---- 导演模式已经没有代码题了
     //
     // 题改成选择题之后，判定完全在引擎侧（比对选项序号），
     // 她不该再收到"请判这段代码"——那正是最不稳的一环。
@@ -30703,23 +29599,22 @@ void StartJudge(const std::wstring& code) {
     //
     // ---- 空模板交上来：直接拦下，不让她判
     //
-    // 【不能让她看到这段代码】她对着空函数十有八九会判"做对了"
+    // 不能让她看到这段代码她对着空函数十有八九会判"做对了"
     // （模型倾向于顺着给正面反馈），那样整章就白过了。
     const ck::Instr* tplInstr = a.dirMode ? nullptr : a.vm.CurrentTask();
     const std::wstring tplCode = a.dirMode ? a.pendingTask.tpl
                                            : (tplInstr ? tplInstr->taskTpl : L"");
     if (IsUnansweredTemplate(code, tplCode)) {
         //
-        // ---- 【这里原来写 a.phase = Phase::Play，是"提交了没反应"的根因】
+        // ---- 这里
         //
-        // 拦下之后【没有】LeaveCodeMode()：代码面板和"交给她看"按钮都还在，
+        // 拦下之后没有LeaveCodeMode：代码面板和"交给她看"按钮都还在，
         // 也就是 a.rs.codeMode 仍是 true，可 a.phase 已经不是 CodeInput 了。
         // 两个标记一旦错位，做题界面就整个瘫掉：
-        //   · EditProc / WndProc 的 F5 判的都是 phase == CodeInput -> 按 F5 没反应
-        //   · WM_APP_RUN_CODE 同样判 phase == CodeInput -> 点"交给她看"直接 return
-        //   · 滚轮那句 `if (phase == CodeInput) break` 也不成立 -> 滚一下弹出回想面板
-        // 玩家看到的就是：交不上去、滚动还跟回想打架。
-        // 而且它【只在被拦过一次之后】才发作，所以表现为"有时"。
+        // · EditProc / WndProc 的 F5 判的都是 phase == CodeInput -> 按 F5 没反应
+        // · WM_APP_RUN_CODE 同样判 phase == CodeInput -> 点"交给她看"直接 return
+        // · 滚轮那句 `if (phase == CodeInput) break` 也不成立 -> 滚一下弹出回想面板
+        // 而且它只在被拦过一次之后才发作，所以表现为"有时"。
         //
         // 正确做法：拦下就老老实实留在做题界面，让他改完再交。
         a.lastCode.clear();
@@ -30746,11 +29641,11 @@ void StartJudge(const std::wstring& code) {
         a.dirMode ? a.pendingTask.tpl   : (t ? t->taskTpl   : L""),
         code);
     //
-    // ---- 【第二次判卷：别再把整段评语说一遍】
+    // ---- 第二次判卷：别再把整段评语说一遍
     //
-    // 上一轮她已经看过这份代码、说过评语，只是【没填 verdict 字段】，
+    // 上一轮她已经看过这份代码、说过评语，只是没填 verdict 字段，
     // 程序判不出结论才让他原样再交一次。
-    // 这时候她若照着老样子从头夸一遍，玩家看到的就是"这一章考了两次"。
+    // 这时候她若照着老样子从头夸一遍，
     // 明确告诉她：这次只补结论，说一句不一样的。
     if (a.verdictAsked) {
         user += L"\n【注意】这份代码你上一轮已经看过了，也说过评语。\n";
@@ -30760,23 +29655,20 @@ void StartJudge(const std::wstring& code) {
         user += L"  2) say 里说一句跟上次不同的话：确认一下结论，然后自然地把话题接走\n";
         user += L"比如「嗯……再看一遍，确实没问题，那就这样吧。」之类，一两句即可。\n";
     }
-
     //
-    // 【必须退出做题界面，这是"点了交给她看没反应"的根因】
+    // 必须退出做题界面，这是"点了交给她看没反应"的根因
     // 旧流程里 OnJudgeDone 会把画面切回对话；那个函数随本地判题一起删了，
-    // 于是 rs.codeMode 一直是 true：
-    //   · 编辑器还压在画面上，她的点评被挡在后面
-    //   · AdvanceClick 开头的 `if (a.rs.codeMode) return;` 直接返回——
-    //     玩家怎么点都没反应，永远进不了下一环节。
+    // · 编辑器还压在画面上，她的点评被挡在后面
+    // · AdvanceClick 开头的 `if (a.rs.codeMode) return;` 直接返回
+    // 玩家怎么点都没反应，永远进不了下一环节。
     // 现在在这里显式退出。
     LeaveCodeMode();
-
     // 直接进入点评阶段：她的回复回来了就由 OnChatDone 收 verdict。
     // 不再经过 "judging → WM_APP_JUDGE_DONE → OnJudgeDone → StartChat" 那条链，
     // 那条链里 judging 是"等本地进程"，现在没有本地进程可等。
     //
     // judging 仍然置位，但语义变了：它现在是"等她读代码"，
-    // 界面上那行提示也改成了"她在看你的代码"。
+    // 界面上那行提示也改成了"她在看
     a.phase = Phase::Review;
     a.judging = true;
     a.rs.judging = true;
@@ -30843,37 +29735,35 @@ void LeaveCodeMode() {
     a.rs.inputGuide.clear();
     if (a.hEdit) ShowWindow(a.hEdit, SW_HIDE);
 }
-
 // ---------------------------------------------------------------- 输入框收起/呼出
 //
-// 【为什么需要这个状态，而不是直接 ShowWindow(SW_HIDE)】
+// 为什么需要这个状态，而不是直接 ShowWindow(SW_HIDE)
 // 编辑框是 EDIT 子窗口，永远浮在 GDI+ 绘制之上——回想面板画得再晚也盖不住它。
 // 于是打开回想时，编辑框会挡住面板底部（正好是"继续下滑或按 Esc 返回对话"
 // 那行提示）。散在各处各写一遍 ShowWindow，迟早漏掉一个组合。
 //
-// 【做题界面也必须算进来 —— 这是"滚动之后编辑器消失"的根因】
+// 做题界面也必须算进来
 // 之前这里只认 inputMode。而做题时用的是 codeMode，
-// 于是关掉回想面板那句 SyncInputEdit() 会按"不该显示"把代码编辑框藏掉：
+// 于是关掉回想面板那句 SyncInputEdit 会按"不该显示"把代码编辑框藏掉：
 // 玩家滚了一下再点一下，写着答案的编辑框就凭空不见了，
 // 他只能对着一块空面板发呆，自然会以为"提交坏了"。
-// 该不该显示 = （做题中 或 轮到你说话且没收起）且回想没开。
+// 该不该显示 = （做题中 或 轮到
 static bool InputEditShouldShow() {
     App& a = g_app;
     if (a.rs.histOpen) return false;
     //
-    // ---- 【她还没准备好，就不该有输入框】
+    // ---- 她还没准备好，就不该有输入框
     //
-    // 【这是"能打字但回车发不出去"的根因】
-    // 开局（和读档）会先把画面、台词一起挂起，等素材笔记回来——
+    // 这是"能打字但回车发不出去"的根因
+    // 开局（和读档）会先把画面、台词一起挂起，等素材笔记回来
     // 那几秒里 pendingStage 为 true，phase 还是 Play。
     // 而编辑框的显示判据只看 inputMode：上一周目结束在"轮到他说话"，
     // 这个标记就还是 true，于是编辑框照常弹出来、他也能打字，
     // 可回车那条路要求 phase == InputFree，怎么按都没反应。
-    // 玩家看到的就是"能输入、发不出去"，只会以为程序坏了。
     // 所以这里直接把闸门关掉：没准备好就没有输入框，也就不存在发不出去。
     if (a.pendingStage) return false;
     //
-    // 【选择题不显示编辑框】
+    // 选择题不显示编辑框
     // 选择题没有"写代码"这回事，编辑框冒出来纯属多余：
     // 它压在对话框下半部分，还会把"点一下重出选项"的区域挡掉一块。
     // 而且它在 codeMode 那条判据之前——quizMode 时 codeMode 一定是 false，
@@ -30909,11 +29799,10 @@ static void ExpandInput() {
     a.rs.inputCollapsed = false;
     SyncInputEdit();
 }
-
 // guide 是 @free 给的话题。它同时充当两个角色：
-//   · 给玩家看：作为输入框上方的引导，告诉他"现在可以聊什么"
-//   · 给 LLM 看：作为本轮的【当前情境】，让它知道该往哪个方向回应
-// 之前带话题的 @free 会直接让 LLM 替玩家说话，玩家一句都插不上嘴——
+// · 给
+// · 给 LLM 看：作为本轮的当前情境，让它知道该往哪个方向回应
+// 之前带话题的 @free 会直接让 LLM 替玩家说话，玩家一句都插不上嘴
 // 这是"游戏里根本没有对话入口"的根因。
 static void EnterInputMode(const std::wstring& guide) {
     App& a = g_app;
@@ -30924,13 +29813,13 @@ static void EnterInputMode(const std::wstring& guide) {
     a.rs.inputGuide = guide;
     a.chatHint = guide;
     //
-    // ---- 【可选话术】：从当前幕取，只在这里填充
+    // ---- 可选话术：从当前幕取，只在这里填充
     //
-    //  【为什么只在这一处填】
-    //  渲染和命中的判据都依赖 inputMode——inputMode 一变 false，
-    //  这排按钮自然就不画了。所以不需要在七八个 inputGuide.clear() 的地方
-    //  挨个清一遍（那正是"改一处忘一处"的温床，这项目栽过太多次）。
-    //  唯一要守的是：【换幕时这里会被重新填一次】，而每轮对话都会走到这里。
+    // 为什么只在这一处填
+    // 渲染和命中的判据都依赖 inputMode——inputMode 一变 false，
+    // 这排按钮自然就不画了。所以不需要在七八个 inputGuide.clear 的地方
+    // 挨个清一遍（那正是"改一处忘一处"的温床，这项目代价很高）。
+    // 唯一要守的是：换幕时这里会被重新填一次，而每轮对话都会走到这里。
     a.rs.candoOpts.clear();
     a.rs.hoverCanDo = -1;
     if (a.dir.Syl().isStory) {
@@ -30940,11 +29829,11 @@ static void EnterInputMode(const std::wstring& guide) {
     if (a.hEdit) {
         SetWindowTextW(a.hEdit, L"");
         ShowWindow(a.hEdit, InputEditShouldShow() ? SW_SHOW : SW_HIDE);
-        // 【这里是"看不到输入框"的根因】
+        // 这里是"看不到输入框"的根因
         //
         // 编辑框在 WM_CREATE 里是 0,0,10,10 建出来的（还没定位置），
-        // 真正的位置/尺寸由 LayoutEdit() 按当前 phase 摆。
-        // EnterCodeMode 里调了，EnterInputMode 里漏了——
+        // 真正的位置/尺寸由 LayoutEdit 按当前 phase 摆。
+        // EnterCodeMode 里调了，EnterInputMode 里漏了
         // 于是自由对话时编辑框一直停在左上角那个 10x10 的小点上：
         // 看不见、点不到，玩家自然以为"根本没有输入入口"。
         LayoutEdit();
@@ -30953,29 +29842,13 @@ static void EnterInputMode(const std::wstring& guide) {
     SetStatus(guide.empty() ? L"输入你想说的话"
                             : L"想说点什么？", 8);
 }
-
 //
 // 彻底退出输入模式。返回 true = 编辑框里还有他打了一半、没发出去的话。
 //
-// 【这是"明天见按钮迟迟不亮"的根因，也是"编辑对话框时按明天见会卡死"的根因】
+// ★ 推进前必须退干净输入态：否则之后每次点击都会变成"呼出/收起输入框"，
+// 整局推不动。灰态曾用来绕开这个根因，代价是按钮几乎恒灰，现已移除。
 //
-// ★ 卡死那一版的处理是【拦下来】：轮到他打字时点按钮，先把对话框收起，
-//   提示"再点一次就能走"。根因其实一直没动——真正致命的是
-//   【发起了新对话，inputMode 却还是 true】：
-//   此后每一次点击都落进"点对话框=呼出输入框 / 点别处=收起"那条分支，
-//   剧情再也推不动。拦下来只是绕开了它。
-//
-// ★ 绕开的代价落在按钮颜色上：为了避免玩家撞进那条卡死分支，
-//   按钮被画成灰的（canPress 里带 !nextDayBlocked，该字段现已删除）。
-//   而"轮到你说话"时输入框是默认展开的（见 EnterInputMode），
-//   章间日常里几乎每一刻都在等他打字——于是按钮【几乎永远是灰的】。
-//   玩家看到的正是"她都说明天见了、按钮迟迟不亮"，
-//   而且他分不清那是"还没到时候"还是"程序没画出来"。
-//
-// 现在治根因：推进入口一律先走这里把输入模式退干净，
-// 按钮也就不需要灰态了——画出来就能点。
-//
-// 【为什么连 phase 一起退】
+// 为什么连 phase 一起退
 // phase 停在 InputFree 的话，回车那条路还开着，
 // 他随手按一下回车就会往已经翻篇的那一轮里塞一句话。
 static bool LeaveInputMode() {
@@ -30998,15 +29871,14 @@ static bool LeaveInputMode() {
     SyncInputEdit();
     return draft;
 }
-
 // 给编辑框换字体。
 //
-// 【为什么不能只在 WM_CREATE 里设一次】
-// 编辑框是子窗口，字体用的是【物理像素】，而游戏画面是按逻辑分辨率
+// 为什么不能只在 WM_CREATE 里设一次
+// 编辑框是子窗口，字体用的是物理像素，而游戏画面是按逻辑分辨率
 // 1280x720 布局再整体缩放的。固定字号的话，窗口放大后字会显得很小、
 // 缩小后又会溢出框外。所以每次摆位置（LayoutEdit）时按当前缩放重算一次。
 //
-// 对话输入用雅黑（跟正文一致），代码编辑器用等宽——
+// 对话输入用雅黑（跟正文一致），代码编辑器用等宽
 // 代码不等宽的话缩进对不齐，看着很痛苦。
 static void UpdateEditFont(bool code) {
     App& a = g_app;
@@ -31154,16 +30026,13 @@ static void RemoveTray() {
     if (g_trayAdded) Shell_NotifyIconW(NIM_DELETE, &g_nid);
     g_trayAdded = false;
 }
-
-// ============================================================================
-//  推进剧情
-// ============================================================================
+// 推进剧情
 // 打字机的推进上限。
 //
 // 页数和页末位置由渲染层实测写回：分页单位是"行"，只能靠 GDI+ 真实折行得到，
 // main.cpp 按字数估算必然对不上（估少漏末页，估多出空白页）。
 //
-// 上限是【整段】而不是"本页末"：打完第 1 页就停的话，翻到第 2 页时游标
+// 上限是整段而不是"本页末"：打完第 1 页就停的话，翻到第 2 页时游标
 // 正好等于第 2 页起点、shown 算出来是 0 → 整页空白。
 // 而翻页本就是回头看已经说过的话，文字早该显示完，所以一次打完。
 static size_t TypeEnd(App& a) {
@@ -31176,10 +30045,10 @@ static size_t TypeEnd(App& a) {
 //
 // ------------------------------------------------------- 恋爱段：第二个表情
 //
-// 【切换点怎么定】
+// 切换点怎么定
 //
 // 她写长台词时本来就会用分隔线（---）或空行分段，那是她自己的叙事节奏。
-// 拿第一个分隔线当切换点，比任何"按字数控"都准——
+// 拿第一个分隔线当切换点，比任何"按字数控"都准
 // 玩家翻到她自己划开的那一拍，脸就跟着变，两者天然对齐。
 //
 // 整段没有分隔线时退而求其次：按页均分（3 页在第 2 页切，2 页也在第 2 页切）。
@@ -31187,12 +30056,12 @@ static size_t TypeEnd(App& a) {
 //
 // 节拍点上把背景一起换过去。
 //
-// 【只做一件事：把 bgBeatName 落进 dirCurBg】
+// 只做一件事：把 bgBeatName 落进 dirCurBg
 // 真正的"画出来"由 WM_TIMER 每帧照 dirCurBg 解析，这里有值它就会淡入。
 //
-// 【必须在换脸的【同一时刻】调用】
+// 必须在换脸的【同一时刻调用】
 // 脸和背景是同一拍的事：她划的 --- 就是叙事里的"换场"，
-// 两者分开切，玩家看到的就是"脸已经换了、脚还在原地"。
+// 两者分开切，
 static void ApplyBeatBgChange() {
     App& a = g_app;
     if (a.bgBeatName.empty() || a.bgBeatDone) return;
@@ -31202,11 +30071,10 @@ static void ApplyBeatBgChange() {
            a.bgBeatName.c_str());
     a.bgBeatName.clear();
 }
-
 //
 // 这一句彻底说完了（翻页到底、点跳过、或者压根没有节拍）时的兜底。
 //
-// 【没有它背景就永远切不过去】
+// 没有它背景就永远切不过去
 // 她划了节拍却没翻到那一页（玩家一路点跳过），换脸那条路也走不到，
 // 于是背景卡在旧地方——比"早切半句"更糟，是整句都不对。
 static void FlushBeatBg() {
@@ -31232,10 +30100,9 @@ static int Pose2SwitchPage() {
     if (page > last) page = last;
     return page;
 }
-
 // 翻到第 p 页时决定要不要换脸。
 //
-// 【往回翻也要还原】
+// 往回翻也要还原
 // 她这句台词可能是"害羞 -> 心动"。玩家按 ← 翻回前半句想重看，
 // 画面却已经是心动——那就对不上了。所以往回翻要退回 pose1，
 // 翻过去再切回 pose2，双向都得对。
@@ -31258,7 +30125,7 @@ static void ApplyPose2ForPage(int p) {
         //
         // ---- 往回翻：背景也要退回去
         //
-        // 【跟表情同一个道理】翻回前半句重看，脚下却已经是后半句那个地方，
+        // 跟表情同一个道理翻回前半句重看，脚下却已经是后半句那个地方，
         // 那半句就不成立了。退回去才能"看到哪、人在哪"。
         if (a.bgBeatDone && !a.bgBeatOld.empty()) {
             a.dirCurBg   = a.bgBeatOld;
@@ -31266,17 +30133,16 @@ static void ApplyPose2ForPage(int p) {
         }
     }
 }
-
 // 单页台词（没有翻页这个触发点）时的第二个表情。
 //
-// 【为什么要单独一条路】
+// 为什么要单独一条路
 // 翻页是切脸的唯一触发点，Pose2SwitchPage 在 pages <= 1 时返回 -1。
 // 短台词——尤其是开场那句寒暄——一页就装完了，于是她填的 pose2
 // 从头到尾没机会出现：日志写着"第二个表情=心动"，玩家只看到害羞。
 //
-// 【只在她自己划了节拍时才切】
+// 只在她自己划了节拍时才切
 // pose2MarkerChar > 0 表示她写了分隔线（或空行分段），
-// 那个位置是她自己定的转折。她没写就不切——
+// 那个位置是她自己定的转折。她没写就不切
 // 一句话说到一半毫无理由地变脸，比不变更怪。
 static void ApplyPose2ForTyping() {
     App& a = g_app;
@@ -31304,14 +30170,12 @@ static void AdvanceClick() {
         if (a.hEdit) SetFocus(a.hEdit);
         return;
     }
-
     // 做题时点画面 = 想继续写代码，不是"推进剧情"。
     //
-    // 【这是对话框照搬之后带出来的】
+    // 这是对话框照搬之后带出来的
     // 做题时底部也画对话框了（里面是题面）。而 textDone 多半还是上一句的 true，
-    // 点一下就会穿过 !textDone / 翻页 两道判据，直接走到下面的 DirAdvance()——
+    // 点一下就会穿过 !textDone / 翻页 两道判据，直接走到下面的 DirAdvance
     // 于是"在编辑器外面点一下，题目没了，剧情自己往下走了"。
-    // 之前 codeMode 不画对话框，没人会在那个区域点，所以这个洞一直没暴露。
     if (a.rs.codeMode) {
         if (a.hEdit) SetFocus(a.hEdit);
         InvalidateRect(a.hwnd, nullptr, FALSE);
@@ -31325,19 +30189,18 @@ static void AdvanceClick() {
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // 她正在思考（或画面上正显示玩家自己刚说的话）时，点击不推进。
     //
-    // 【这是玩家回显带出来的新 bug】
+    // 这是玩家回显带出来的新 bug
     // 玩家回车提交后，画面显示的是他自己那句话、textDone = true，
-    // 而她还在等大模型返回。这时候点一下画面就会走下面的推进分支——
-    // 导演模式下是 DirAdvance()，可能直接跳去出题；
-    // 等她的回复回来又会盖掉画面。玩家看到的是"剧情自己跳了一下"。
+    // 而她还在等大模型返回。这时候点一下画面就会走下面的推进分支
+    // 导演模式下是 DirAdvance，可能直接跳去出题；
+    // 等她的回复回来又会盖掉画面。
     //
-    // ---- 【打回期间也不能推进】
+    // ---- 打回期间也不能推进
     //
     // 挂起时对话框是空的、textDone 已经是 true，
-    // 玩家点一下就会当成"这句读完了"往下走——导演模式下是 DirAdvance()，
+    // 玩家点一下就会当成"这句读完了"往下走——导演模式下是 DirAdvance，
     // 可能直接出题；等打回回来台词又盖上来。
     // 表现跟上面那条一模一样："剧情自己跳了一下"。
     if (a.chatting || a.rs.playerEcho || a.stageFixPending) {
@@ -31354,16 +30217,15 @@ static void AdvanceClick() {
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // ---- 还有下一页：先翻页，不要推进剧情
     //
     // 顺序必须对：玩家点一下是想"继续看她说了什么"，
-    // 如果这时候直接推进剧情，后半段话就永远看不到了——
-    // 这正是【对话框截断输出】的另一种表现形式。
+    // 如果这时候直接推进剧情，后半段话就永远看不到了
+    // 这正是对话框截断输出的另一种表现形式。
     //
-    // 【这里原来有一行 a.rs.textPage = 0，就是"点了不翻页"的元凶】
-    // 那是我做批量插入时加的：给每个 textShown=0 后面补一句 textPage=0。
-    // 补到翻页块里就变成了"刚 ++ 完立刻清零"——
+    // 这里
+    // 那是
+    // 补到翻页块里就变成了"刚 ++ 完立刻清零"
     // 页号永远是 0，于是每次点的都是同一页，看起来就是"把话重新打一遍"。
     //
     // 判据改用渲染层实测的页数（st.textPageCount），
@@ -31371,18 +30233,16 @@ static void AdvanceClick() {
     if (a.rs.textPage + 1 < a.rs.textPageCount) {
         ++a.rs.textPage;
         ApplyPose2ForPage(a.rs.textPage);   // 恋爱段：这一页该换第二个表情了
-        // 【不要重置 textShown】——它是整段游标，翻页只是换显示区间。
-        // 重置成 0 会让下一页从头再打一遍，玩家看到的就是"又打了一遍"。
+        // 不要重置 textShown——它是整段游标，翻页只是换显示区间。
+        // 重置成 0 会让下一页从头再打一遍，
         //
-        // 【也不要重置 textDone】——走到这里说明整段已经打完了
+        // 也不要重置 textDone——走到这里说明整段已经打完了
         // （上面的 !textDone 分支会先把整段补全）。
-        // 原来这里设 textDone=false 想让新页"重新打一遍"，
         // 但翻页的语义是回头看已经说过的话，重打一遍只会让人以为卡住了。
         a.rs.textPageAtEnd = (a.rs.textPage + 1 >= a.rs.textPageCount);
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // ---- 选择题答错了：她刚讲完错在哪，点一下把选项放出来让他再选
     //
     // 顺序跟上面一样讲究：必须等她的话显示完（!textDone 分支先跑过），
@@ -31396,7 +30256,6 @@ static void AdvanceClick() {
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // ---- 做题中途问过她：读完回答，点一下回编辑器
     //
     // 顺序很讲究：必须等她的话显示完（上面那个 !textDone 分支先跑过），
@@ -31415,7 +30274,6 @@ static void AdvanceClick() {
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // ---- 点击后才切到玩家输入
     //
     // 上一步（角色回复 / 剧本推进）只是设了标记，这里才真正打开输入框。
@@ -31429,14 +30287,13 @@ static void AdvanceClick() {
 
     if (a.phase == Phase::Review) {
         a.phase = Phase::Play;
-
         // ---- 导演模式：进度由 Director 管，绝不能调 vm.TaskDone
         //
-        // 【这里之前是必卡死的 bug】
-        // 原代码不分模式一律走 a.vm.TaskDone()，可导演模式下剧本根本没在跑
+        // 这里之前是必卡死的 bug
+        // 原代码不分模式一律走 a.vm.TaskDone，可导演模式下剧本根本没在跑
         // （Vm 停在初始位置，当前指令根本不是 Task）。调它要么什么也不发生、
         // 要么从当前 ip 往下跑出一堆莫名其妙的台词——玩家做完第一道题
-        // 就再也推进不了了，而 a.dir.AfterJudge() 全项目只在"本章没题"
+        // 就再也推进不了了，而 a.dir.AfterJudge 全项目只在"本章没题"
         // 那个分支里被调用过一次。
         if (a.dirMode) {
             if (a.taskPassed) {
@@ -31449,19 +30306,19 @@ static void AdvanceClick() {
                 if (TryGraduate()) return;
                 ApplyChapterStage();          // 新章节：应用它的初始场景
                 //
-                // ---- 【这是"关系曲线永远是空的"的根因】
+                // ---- 这是"关系曲线永远是空的"的根因
                 //
-                // 章末复盘（以及写在复盘末尾的那句"现在我对他是……"）
+                // 章末复盘（以及写在复盘末尾的那句"现在
                 // 一共挂在五条进章路径上：对话里判过、教学段开讲下一章、
                 // 她说进下一章、本章无题、告别之后。
-                // 唯独【这条】漏了——而它恰恰是选择题时代的主路：
-                //   她念题 -> 玩家点按钮 -> 引擎判对错 -> 她说一句 -> 点一下 -> 这里。
+                // 唯独这条漏了——而它恰恰是选择题时代的主路：
+                // 她念题 -> 玩家点按钮 -> 引擎判对错 -> 她说一句 -> 点一下 -> 这里。
                 // 实测存档里 bond 是空串、bondChapter 是 0，就是这个漏掉的后果：
                 // 五章跑下来她对自己的状态没有任何积累，
                 // 第 5 章还在用第 1 章的反应——因为引擎从没问过她。
                 //
-                // 【为什么不是 Chapter() - 1】同上：AfterJudge 不推进章号，
-                // 此刻 Chapter() 就是刚考完的那一章。
+                // 为什么不是 Chapter - 1同上：AfterJudge 不推进章号，
+                // 此刻 Chapter 就是刚考完的那一章。
                 StartChapterAssetReview(a.dir.Chapter());
             } else {
                 // 【她没给结论时不扣次数】
@@ -31487,12 +30344,12 @@ static void AdvanceClick() {
                 a.verdictAsked = false;
                 a.dir.AfterJudge(false);
                 //
-                // ---- 【同上：章内锁定时不换，"卡住"也是本章的一部分】
+                // ---- 同上：章内锁定时不换，"卡住"也是本章的一部分
                 //
-                // 而且原来这两行有个更直接的毛病：
-                // PickBgForMood 挑不到就返回空串，而它被【直接赋给 dirCurBg】
+                // 而且
+                // PickBgForMood 挑不到就返回空串，而它被直接赋给 dirCurBg
                 // ——于是"挑不到"的兜底变成了"把当前背景名写成空"，
-                //   画面整片黑掉，比不换糟得多。
+                // 画面整片黑掉，比不换糟得多。
                 // 现在只有当前真的没有背景时才挑，且挑到空就不动。
                 // 同上：走统一入口，先问本章锁 / 当前值，
                 // 别在这章快结束的时候把人挪到神社去。
@@ -31537,18 +30394,16 @@ static void AdvanceClick() {
         InvalidateRect(a.hwnd, nullptr, FALSE);
         return;
     }
-
     // 导演模式：她说完一句话、玩家点了一下之后，
     // 由 DirAdvance 决定"继续聊"还是"该出题了"。
-    // 绝不能走 vm.Continue()——导演模式下剧本根本没在推进，
+    // 绝不能走 vm.Continue——导演模式下剧本根本没在推进，
     // 调它只会让 Vm 从当前位置往下跑，跑出一堆莫名其妙的台词。
     if (a.dirMode) {
-        // 【先让她决定下一步，再决定要不要重置游标——顺序不能反】
+        // 先让她决定下一步，再决定要不要重置游标——顺序不能反
         //
-        // 【这就是"她讲完了我点一下，画面又跳回她那句话的开头"的根因】
-        // 原来先 textShown = 0 再 DirAdvance()。而"继续聊"这个分支
+        // 这就是"她讲完了
+        // 原来先 textShown = 0 再 DirAdvance。而"继续聊"这个分支
         // 并不改 view.body，只是设 pendingInput，于是同一句话被从头再打一遍：
-        // 玩家看到的就是"点完又回到开头"，而且还得再点一次才能打字。
         //
         // 现在反过来：她那句话已经显示完了就别动游标，直接把输入框给玩家。
         DirAdvance();
@@ -31571,22 +30426,19 @@ static void AdvanceClick() {
     AfterStep();
     InvalidateRect(a.hwnd, nullptr, FALSE);
 }
-
 // CG / 成就的解锁同步已随收集玩法一起移除，这里不再有任何同步逻辑。
-
 // 停掉 BGM 并同步记录。所有停播都必须走这里，
 // 否则 g_bgmNow 会残留旧值，下次回标题时会误判成"已经在播了"。
 static void StopBgm() {
     g_app.audio.Stop(Audio::SLOT_BGM);
     g_bgmNow.clear();
 }
-
 // ---------------------------------------------------------------- 界面音
 //
-//  hover 和 click 分成两个音、两个槽：
-//   · hover 是"划过"，要轻、要短，且允许被下一个 hover 顶掉（不然会叠成糊音）
-//   · click 是"确认"，要更明确，且不能被 hover 打断
-//  共用槽的话，点下去的一瞬间鼠标仍在菜单上，hover 音会把点击音吃掉。
+// hover 和 click 分成两个音、两个槽：
+// · hover 是"划过"，要轻、要短，且允许被下一个 hover 顶掉（不然会叠成糊音）
+// · click 是"确认"，要更明确，且不能被 hover 打断
+// 共用槽的话，点下去的一瞬间鼠标仍在菜单上，hover 音会把点击音吃掉。
 static void PlayHoverSe() {
     App& a = g_app;
     a.audio.PlayUi(PathJoin(a.assetDir, L"se\\hover.wav"), Audio::SLOT_HOVER);
@@ -31596,19 +30448,17 @@ static void PlayClickSe() {
     App& a = g_app;
     a.audio.PlayUi(PathJoin(a.assetDir, L"se\\click.wav"), Audio::SLOT_UI);
 }
-
 // ---------------------------------------------------------------- 主页 BGM
 //
-//  主页（标题画面）的曲子由【当前角色】决定，而且跟游戏内的 BGM 是分开配的：
-//  游戏里的槽位是"某个场景的音乐"（上课 / 紧张 / 结局），
-//  放在标题页会显得莫名其妙；商业 VN 的标题曲都是单独一首。
+// 主页（标题画面）的曲子由当前角色决定，而且跟游戏内的 BGM 是分开配的：
+// 游戏里的槽位是"某个场景的音乐"（上课 / 紧张 / 结局），
+// 放在标题页会显得莫名其妙；商业 VN 的标题曲都是单独一首。
 //
-//  角色包用 [Bgm] Title = 名字 指定，没配就退回该角色的 Default。
+// 角色包用 [Bgm] Title = 名字 指定，没配就退回该角色的 Default。
 static std::wstring g_titleBgm;
-
 // BGM 加载失败时给一次可见提示。
 //
-// 之前失败只走 Dbg()（VS 输出窗口），玩家那边是完全静音、什么提示都没有，
+// 之前失败只走 Dbg（VS 输出窗口），玩家那边是完全静音、什么提示都没有，
 // 于是"主页 BGM 能响、游戏里不响"就只能靠猜——到底是代码问题还是没放文件？
 // 现在会明确说出来，并且只提示一次：每句台词都弹一次会盖住正常的状态信息。
 static bool g_bgmWarned = false;
@@ -31620,8 +30470,8 @@ bool PlayBgm(const std::wstring& pathNoExt) {
     std::wstring full = pathNoExt + L".wav";
     if (!a.audio.Load(Audio::SLOT_BGM, full)) {
         //
-        // 【这里原来直接 return false，是"主页播的是游戏曲"的根因】
-        // 加载失败时槽里【还留着上一首曲子】在播——从游戏回标题时，
+        // 这里原来直接 return false，是"主页播的是游戏曲"的根因
+        // 加载失败时槽里还留着上一首曲子在播——从游戏回标题时，
         // 主页曲加载失败，槽里那首她_主题就这么一路播下去。
         // 玩家听到的是游戏的音乐，而代码这边"已经切换过了"，
         // 日志和状态都看不出异常，于是变成最难查的那种问题：
@@ -31647,29 +30497,27 @@ bool PlayBgm(const std::wstring& pathNoExt) {
 
 static void RefreshTitleBgm() {
     App& a = g_app;
-
     // 门面曲（assets\title\主页曲.wav）和角色主页曲都算出来，再决定用哪首。
     //
-    // 【两首都要算，不能只算一首就 return】
-    // 优先级是"先用该用的那一首，它没有才退回另一首"——
+    // 两首都要算，不能只算一首就 return
+    // 优先级是"先用该用的那一首，它没有才退回另一首"
     // 只算一首的话，冷启动没放门面素材就会变成静音，
     // 那是从"有音乐"倒退成"没音乐"，比不实现这个功能还糟。
     std::wstring generic = GenericTitleBgm(a.assetDir);
     std::wstring mine    = a.Def() ? ResolveTitleBgmFor(a.Def(), a.assetDir) : L"";
     std::wstring p = TitleUseChar(a) ? (mine.empty()    ? generic : mine)
                                      : (generic.empty() ? mine    : generic);
-
-    // 【比较对象必须是"槽里现在是什么"，不是"上次主页曲是什么"】
+    // 比较对象必须是"槽里现在是什么"，不是"上次主页曲是什么"
     // 从游戏回标题时槽里是游戏曲，跟 g_titleBgm（主页曲）比必然不等，
     // 于是会重新加载主页曲 —— 游戏曲被顶掉，这正是要的效果。
     // 而在标题页里来回切子界面时槽里已经就是主页曲，相等 → 不重启，
     // 避免每次回标题音乐都从头播。
     //
-    // ---- 【门面素材缺了要说一句】
+    // ---- 门面素材缺了要说一句
     //
-    //  主页曲 / 主页插画住在 assets\title\，不属于任何角色包，
-    //  所以"没放"不会被任何扫描发现——表现只是标题页安安静静、插画区空一块。
-    //  跟素材名对不上是同一类失效：不报错，只能主动记一笔。
+    // 主页曲 / 主页插画住在 assets\title\，不属于任何角色包，
+    // 所以"没放"不会被任何扫描发现——表现只是标题页安安静静、插画区空一块。
+    // 跟素材名对不上是同一类失效：不报错，只能主动记一笔。
     if (!TitleUseChar(a)) {
         if (generic.empty())
             Dbg(L"[标题] 没找到门面主页曲：assets\\title\\主页曲.wav（现在播的是角色主页曲）");
@@ -31688,7 +30536,6 @@ static void RefreshTitleBgm() {
 // Step / Continue / Choose 之后统一要做的收尾：播放音效、进入对应模式、自动存档
 static void AfterStep() {
     App& a = g_app;
-
     // 剧本模式下每一句台词进回想。
     // 放在最前面：后面的分支会 EnterCodeMode / EnterInputMode 改掉画面状态，
     // 但这一句已经说完了，该记的是它。
@@ -31703,7 +30550,7 @@ static void AfterStep() {
     }
     // BGM 切换：名字变了就换（同一个名字重复出现不重启，避免每句都从头播）
     //
-    // 剧本里写的是【槽位名】，由角色包映射成他自己的那首。
+    // 剧本里写的是槽位名，由角色包映射成他自己的那首。
     // 三个角色的 BGM 情绪调性完全不一样，共用一首等于抹掉"听觉性格"。
     //
     // 跟 g_bgmNow（槽里实际是什么）比，不是跟"上次打算播什么"比。
@@ -31731,11 +30578,11 @@ static void AfterStep() {
         //
         // 旧逻辑是"有话题就让 LLM 直接说"，结果是玩家全程只能点鼠标看文本，
         // 剧本里 5 个 @free 全带话题，等于一个对话入口都没有。
-        // 现在话题降级成【引导】：显示给玩家看，同时作为情境喂给 LLM。
+        // 现在话题降级成引导：显示给
         // 玩家说的话 + 话题 一起送过去，她回应的是"玩家说了什么"，
         // 而不是凭空念一句台词。
         // 同样延后：剧本模式下的 @free 也等玩家点一下再开输入框。
-        // 两个入口行为必须一致，否则玩家会觉得"有时要点有时不要"。
+        // 两个入口行为必须一致，否则
         a.pendingInput = true;
         a.pendingGuide = topic;
         a.rs.inputMode = false;
@@ -31769,13 +30616,12 @@ static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         //
-        // ---- 【Esc 在输入框里：什么都不做】
+        // ---- Esc 在输入框里：什么都不做
         //
-        // 原来这里是"按 Esc = 跳过这一轮对话"，界面上也写着「Esc 跳过」。
         // 已整体移除——那句话纯属噪音，而且"跳过"会让剧情在她
         // 没开口的情况下往前走，玩家反而搞不清发生了什么。
         //
-        // 【但绝不能什么都不改就删掉这个分支】下面的兜底是
+        // 但绝不能什么都不改就删掉这个分支下面的兜底是
         // `phase != Play 就 PostMessage(WM_CLOSE)`，而 InputFree / CodeInput
         // 都不等于 Play——直接落到那里就是【在输入框里手滑按一下 Esc 就把
         // 整个游戏关掉】。这正是当初加这个分支的原因。
@@ -31805,7 +30651,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         a.hwnd = hwnd;
         a.rend.Init();
         a.rend.SetAssetDir(a.assetDir);
-
         // 代码 / 输入共用的编辑框。用 EDIT 而不是自己画光标：
         // 选区、右键菜单、IME 中文输入这些都是自己实现会后悔的东西。
         // 不用 WS_EX_CLIENTEDGE：它会画一圈系统色的立体边框，
@@ -31820,14 +30665,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowWindow(a.hEdit, SW_HIDE);
         }
         a.hEditBrush = CreateSolidBrush(RGB(250, 250, 252));
-
         // ---- 编辑框的"深色版"：跟对话框 / 代码面板一个色
         //
-        // 【为什么要两套】
+        // 为什么要两套
         // 设置页那一行的底色是画成浅色的（白底黑字），编辑框必须是浅色，
         // 否则白底行上盖一个深色框非常难看。
         // 而游戏里的对话框和代码面板都是深色（kPanelFill = 18,16,26），
-        // 编辑框用系统白就会在深色画面上戳出一块刺眼的亮斑——
+        // 编辑框用系统白就会在深色画面上戳出一块刺眼的亮斑
         // 玩家第一眼看到的不是她的话，是那个白框。
         //
         // 取值跟 render.cpp 的 kPanelFill 对齐，改一边记得改另一边。
@@ -31869,13 +30713,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-
         // 把编辑框区域从裁剪区里挖掉。
         //
-        // 【为什么 WS_CLIPCHILDREN 之外还要这一条】
+        // 为什么 WS_CLIPCHILDREN 之外还要这一条
         // WS_CLIPCHILDREN 是窗口 style，写在 CreateWindowExW 那一行，
-        // 很容易在改窗口样式时被顺手删掉（这个项目里就真的漏过一次）。
-        // 而这里的代码属于【绘制逻辑】，跟 style 解耦：
+        // 改窗口样式时容易被顺手删掉。
+        // 而这里的代码属于绘制逻辑，跟 style 解耦：
         // 哪怕 style 丢了，这一条仍然挡得住闪烁。两条互为备份。
         if (a.hEdit && IsWindowVisible(a.hEdit)) {
             RECT er;
@@ -31893,15 +30736,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const SyllabusChapter* c = a.dir.Cur();
                 std::wstring chName = c ? c->name : L"";
                 //
-                // ---- 章间日常显示为【第N章 → 第N+1章】
+                // ---- 章间日常显示为第N章 → 第N+1章
                 //
                 // 章间日常既不属于上一章也不属于下一章（见 Director::AfterJudge
                 // 的说明：章号在 EnterLesson 才推进，日常期间 chapter_ 仍是刚考完
                 // 的那一章）。只显示"第1章"的话，玩家刚考完第1章、正在休息，
                 // 看到右上角还写着第1章，会以为进度没动、程序卡了。
                 //
-                // ---- 【剧情大纲里这个单位是「幕」】
-                // 右上角写着「第3章」的话，玩家会以为自己在上课。
+                // ---- 剧情大纲里这个单位是「幕」
+                // 右上角写着「第3章」的话，
                 const std::wstring un = ChapterUnit(a.dirSyllabus.isStory);
                 if (a.dir.Stage() == DirStage::Daily) {
                     const SyllabusChapter* nx = a.dir.Next();
@@ -31925,8 +30768,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 // ---- 阶段要显示出来
                 //
-                // 【不显示的话玩家会以为程序坏了】
-                // 章间日常里她一直不讲课，玩家看到的只有"她突然不教了"，
+                // 不显示的话
+                // 章间日常里她一直不讲课，
                 // 加上"· 日常"三个字，他就知道这是设计好的休息段。
                 {
                     std::wstring sn = a.dir.StageName();
@@ -31936,62 +30779,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 a.vm.SetVar(L"章节", ck::EValue(
                     L"第" + WFromInt(a.dir.Chapter()) + ChapterUnit(a.dirSyllabus.isStory)
                     + L"·" + chName));
-                //
-                // ---- 右上角「明天见」的显示条件
-                //
-                // 每帧问 Director，不在别处另算一份——
-                // 显示条件和点击时能点的条件是【同一个函数】，
-                // 不会出现"按钮画出来了但点了没反应"。
-                //
-                // 【她正在说话 / 在等她回复时也要在】
-                // 玩家可能读到一半就想走了，按钮跟着消失很莫名。
-                // 真正要挡的只有"这一句还没说完她就要跳章"的情况——
-                // 那种由 DirGoNextDay 里的状态判断处理，不是靠隐藏按钮。
-                //
-                // ---- 【画和点必须是同一个判据】
-                //
-                // ★ 原来这两个用的是不同函数：
-                //     showNextDay  = CanShowNextDay()   （演够 3 轮）
-                //     nextDayReady = DailyReady()       （她还说了"可以走了"）
-                //   而点击走的是 DirGoNextDay -> CanGoNextDay()（含第 7 轮兜底）。
-                //   结果：按钮画成灰的，可第 7 轮之后【其实点得动】——
-                //   玩家看到的永远是灰的，得不到"现在能走了"的任何信号。
-                //   同一个"能不能点"在两处各算一遍，必然对不上。
-                //
-                // 现在都问 CanGoNextDay()：画出来 = 能点。
-                // 画和点问同一个函数：能画出来就能点。
-                // 教学段那枚（CanShowEndLesson）也走这里，
-                // 不再出现"教学段不画按钮、玩家没有出口"的情况。
-                //
-                // 【不再有 nextDayBlocked 这一态】
-                // 它原来是"他正在打字 -> 按钮按不下去"，而"轮到你说话"时
-                // 输入框默认展开，于是章间日常里按钮几乎永远是灰的——
-                // 那就是"她都说明天见了、按钮迟迟不亮"。
-                // 根因（inputMode 没退出）已在 DirGoNextDay 里治掉，
-                // 这一态连同字段一起删：留着只会让"能不能点"又变成两处描述。
-                a.rs.showNextDay   = a.dir.CanGoNextDay();
-                a.rs.nextDayReady  = a.dir.CanGoNextDay();
-                // 按钮写「明天见」还是「今天就到这里」，同一个判据决定。
-                // 分开算迟早出现"写着明天见、点了却回主页"这种对不上。
-                if (a.dir.Stage() == DirStage::Lesson) {
-                    // 教学段这枚按钮是"这节课上完了"：有题就考，没题就进日常。
-                    // ★ 文案必须点之前就看出会发生什么——
-                    //   点下去进考场却写着「明天见」，玩家只会以为自己点错了。
-                    a.rs.nextDayIsLast = false;
-                    a.rs.nextDayLabel  = (a.dir.Cur() && a.dir.Cur()->task.HasQuiz())
-                                       ? std::wstring(L"考考我吧")
-                                       : std::wstring(L"今天就到这里");
-                } else {
-                    a.rs.nextDayIsLast = a.dir.NextDayEndsCourse();
-                    a.rs.nextDayLabel  = NextDayLabelOf(a.dirSyllabus.isStory,
-                                                        a.rs.nextDayIsLast);
-                }
+                // ---- 右上角推进按钮：渲染、命中、点击都读同一份 Progress()
+                // ★ showNextDay 直接取 ready，不另存一份可点性状态。
+                const advance::Result prog = a.dir.Progress();
+                a.rs.showNextDay    = prog.ready;
+                a.rs.nextDayLabel   = prog.label;
+                a.rs.nextDayWhy     = prog.reason;
+                a.rs.nextDayWait    = prog.wait;
             } else {
-                    a.rs.hud = a.vm.GetVar(L"章节").toStr();
-                a.rs.showNextDay = false;   // 剧本模式没有"章间日常"这一说
-                a.rs.nextDayReady = false;
-                a.rs.nextDayIsLast = false;
+                a.rs.hud = a.vm.GetVar(L"章节").toStr();
+                a.rs.showNextDay  = false;   // 剧本模式没有章间推进
+                a.rs.nextDayWait  = -1;
                 a.rs.nextDayLabel.clear();
+                a.rs.nextDayWhy.clear();
             }
             // Esc 能开存档界面这件事必须让玩家知道，否则等于没有这个入口。
             // 挪进 HUD 而不是单独画一个按钮，是为了不挡右上角本来就不宽的位置。
@@ -32009,7 +30809,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!sp) sp = d;
             a.rs.spriteDef = sp;
             //
-            // ---- 【剧本模式：poseReady 从来没人置位】
+            // ---- 剧本模式：poseReady 从来没人置位
             //
             // poseReady 是导演模式那套"她开口了才画人"的开关，
             // 全项目只有 AI 回复那一处置它（别的都在复位）。
@@ -32023,18 +30823,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             //
             // ---- 是不是剧情模式（按"幕"推进，不是按"章"上课）
             //
-            //  渲染层拿不到 Director，只能读这里。每帧同步一次，
-            //  不留"上一局的剧本是剧情模式、这一局换课程却还按剧情画"的残留。
-            //  目前唯一用途：剧情模式不画输入框上方那条引导语。
+            // 渲染层拿不到 Director，只能读这里。每帧同步一次，
+            // 不留"上一局的剧本是剧情模式、这一局换课程却还按剧情画"的残留。
+            // 目前唯一用途：剧情模式不画输入框上方那条引导语。
             a.rs.storyMode = a.dirSyllabus.isStory;
             a.rend.Draw(hdc, a.view, a.rs);
             //
             // ---- HUD 里显示"请求 vs 实际画出来的图"
             //
             // 这样一眼就能分辨三种情况，不用去翻日志：
-            //   请求=害羞 实际=...害羞   -> 正常
-            //   请求=害羞 实际=...平静   -> 文件缺失，走了降级链
-            //   请求=平静 实际=...叹气   -> 缓存错配或 emote 残留
+            // 请求=害羞 实际=...害羞 -> 正常
+            // 请求=害羞 实际=...平静 -> 文件缺失，走了降级链
+            // 请求=平静 实际=...叹气 -> 缓存错配或 emote 残留
             if (a.dirMode) {
                 std::wstring fn = a.rs.spritePath;
                 size_t sl = fn.find_last_of(L"\\/");
@@ -32050,19 +30850,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_TIMER: {
         a.rs.tick++;
-
         //
-        // ---- 【等素材笔记的兜底：等太久就不再等】
+        // ---- 等素材笔记的兜底：等太久就不再等
         //
         // 开场（和读档）会把画面跟台词一起挂起，等笔记回来才放出来。
         // 挂起唯一的出口是「笔记回来了」那条消息。而那条消息可能永远不来：
-        //   · 请求线程没起来（_beginthreadex 失败时会把 busy 复位，但别处
-        //     已经按 busy=true 挂起了）
-        //   · 结果被判成"上一局的"而丢弃（代号对不上）
-        //   · 网络超时后线程没回、也没发消息
+        // · 请求线程没起来（_beginthreadex 失败时会把 busy 复位，但别处
+        // 已经按 busy=true 挂起了）
+        // · 结果被判成"上一局的"而丢弃（代号对不上）
+        // · 网络超时后线程没回、也没发消息
         // 只要它不来，pendingStage 就永远留在 true：画面不铺、她不开口，
-        // 而状态栏那句"她在翻笔记"还会在 75 秒后自己消失——
-        // 玩家看到的就是"读档读不出来"，日志里却一点错都没有。
+        // 而状态栏那句"她在翻笔记"还会在 75 秒后自己消失
         //
         // 所以给挂起加一个上限：超时就自己走一次那个出口。
         // 宁可让她照着裸清单开场（笔记这一轮白等），
@@ -32077,7 +30875,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // ---- 打字机
         if (!a.rs.textDone) {
             if (a.chatting) {
-                // ---- 思考期间【一律不显示任何文本】
+                // ---- 思考期间一律不显示任何文本
                 //
                 // 流式期间收到的是 JSON 的前缀，可能断在任何位置（转义符中间、
                 // key 只写一半、包在代码块里……）。试过从半截 JSON 里抠台词，
@@ -32094,11 +30892,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 a.view.speaker = a.chatSpeaker;
                 a.rs.textDone = false;
             } else {
-                // ---- 打字机在【整段】内推进
+                // ---- 打字机在整段内推进
                 //
                 // 上限是渲染层实测的 textTotalChars（所有行字符数之和），
-                // 不是 body.size()——规范化换行之后这两个数不相等，
-                // 用 body.size() 会让末页显示不全。
+                // 不是 body.size——规范化换行之后这两个数不相等，
+                // 用 body.size 会让末页显示不全。
                 // 也不是"本页末"——那会让翻页后出现空白页（见 TypeEnd 的说明）。
                 size_t pageEnd = TypeEnd(a);
                 double per = (double)a.textSpeed / 30.0;
@@ -32112,9 +30910,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     //
                     // ---- 整句打完了：节拍换景还没做的话在这里收尾
                     //
-                    // 【不收的话背景就永远切不过去】
+                    // 不收的话背景就永远切不过去
                     // 她填了第二个表情却没写分隔线时，换脸那条路走不到
-                    //（ApplyPose2ForTyping 见 markerChar==0 直接返回），
+                    // （ApplyPose2ForTyping 见 markerChar==0 直接返回），
                     // 背景就会一直卡在上一句的地方——比"早切半句"更糟。
                     FlushBeatBg();
                 }
@@ -32126,24 +30924,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_statusTimer > 0) {
             if (--g_statusTimer == 0) {
                 //
-                // ---- 【还在等网络，就不能把状态栏清空】
+                // ---- 还在等网络，就不能把状态栏清空
                 //
-                // 【这是"等了半天什么都没有，退出重开就好了"的根因】
+                // 这是"等了半天什么都没有，退出重开就好了"的根因
                 // "她在想…"只挂 60 秒，而一次请求最长要走到
                 // LLM.TimeoutSec（默认 180 秒——网关攒够整段才转发时
                 // 确实会走满，实测告辞那句就等了 67 秒才回来）。
                 // 60 秒一到状态栏就空了，可请求还在飞。
-                // 玩家看到的是：状态栏没了、对话框也是空的、画面一动不动
                 // ——跟崩了没有区别，于是退出重开。
                 // 重开确实"好了"，但那只是把请求作废重发了一次，
                 // 故障本身从头到尾没被看见过。
                 //
-                // 【挑素材那次请求同样会等超时】
+                // 挑素材那次请求同样会等超时
                 // "她在为这句话配画面…"只挂 6 秒，而它实测能跑 20 多秒，
                 // 失败重问一次就更久。那段时间同样是"什么都没有"。
                 //
                 // 所以清空之前先看还有没有请求在飞：有就换成"还在想"并续期，
-                // 让等待【一直可见】。宁可提示啰嗦，也不能让玩家以为崩了。
+                // 让等待一直可见。宁可提示啰嗦，也不能让
                 if (a.chatting || a.rs.thinking) {
                     g_statusText  = L"她还在想…（这次有点慢，稍等一下）";
                     g_statusTimer = 30 * 30;   // 再挂 30 秒；还慢就再续
@@ -32167,7 +30964,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         //      硬切在视觉小说里非常突兀——画面一闪会让人以为程序卡了。
         if (a.ui.screen == Screen::Play) {
             // 剧本里写的是"槽位名"（课 / 题 / 结局_真……），
-            // 这里按当前角色翻译成真正要加载的路径——
+            // 这里按当前角色翻译成真正要加载的路径
             // 三个角色来自三款游戏，各有自己的一套背景。
             // 换装：剧本 @outfit 切完由 vm 记在 view 里，这里喂给渲染层。
             // 服装只影响立绘文件名的中缀，所以换装是瞬间的，没有转场。
@@ -32197,18 +30994,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 a.bgCurFit = fit;
             } else if (path.empty() && !bgSlot.empty() && a.bgMissName != bgSlot) {
                 //
-                // ---- 解析失败：必须说出来，而且【不能清空当前背景】
+                // ---- 解析失败：必须说出来，而且不能清空当前背景
                 //
-                // 【这就是"调试写的是教室、画面却是乡间小道"的机制】
-                // 原来这里无条件 a.bgCur = path，解析失败时 path 是空串，
-                // 于是 bgCur 被清成空 → a.rs.bgPath 也空
+                // 这就是"调试写的是教室、画面却是乡间小道"的机制
                 // → 渲染层退化到 "bg\\" + view.bg（通用的 assets/bg 目录）
-                // → 画面画出【通用目录里那张同名的旧图】——比如「乡村的小道」。
+                // → 画面画出通用目录里那张同名的旧图——比如「乡村的小道」。
                 //
-                // 玩家看到的是：调试行写着"上课期间的课室"，画面却是小道。
                 // 两边各自都对得上自己的数，没有任何报错。
                 //
-                // 名字明明在白名单里却解析不到，只可能是【运行时目录】和
+                // 名字明明在白名单里却解析不到，只可能是运行时目录和
                 // 白名单扫描时用的目录不是同一个（素材没复制到 exe 旁边）。
                 // 这种情况必须告诉玩家，否则他只会以为程序有 bug。
                 a.bgMissName = bgSlot;
@@ -32230,7 +31024,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // ---- 非游戏界面：只驱动装饰动画（光晕漂移），不做打字机 / 计时
         if (a.ui.screen != Screen::Play) {
-            // 【"点了编辑框却打不了字"就是这一行的锅】
+            // "点了编辑框却打不了字"就是这一行的锅
             // 原来只认 Settings 的 editingRow：角色卡的注释框 / 人设行
             // 用的是 noteEdit、personaRow，editingRow 一直是 -1，
             // 于是刚 ShowWindow 出来的编辑框在下一个 tick 就被这一句藏回去了
@@ -32262,11 +31056,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // ---- 自动存档
         if (now - a.lastSaveMs > 60000) { a.lastSaveMs = now; SaveGameNow(); }
-
-        // ---- 【主页静止后降帧】
+        // ---- 主页静止后降帧
         //
         // 入场动画放完、又没有提示在倒计时，主页就是一帧静态图
-        //（插画已缓存、铺满时连光晕都看不见）。这时还 30FPS 全屏重画，
+        // （插画已缓存、铺满时连光晕都看不见）。这时还 30FPS 全屏重画，
         // 是纯烧 CPU——风扇转起来跟"卡"是同一种体感，而主页恰恰是
         // 玩家停留最久的界面。
         //
@@ -32300,30 +31093,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-
         // ---- 右上角「明天见」：玩家自己推进剧情
         //
-        // 放在所有"点画面推进"的判定【之前】：这块区域是按钮，
+        // 放在所有"点画面推进"的判定之前：这块区域是按钮，
         // 不是"点一下继续"。落到后面会被当成翻页，玩家点了没反应，
         // 或者更糟——翻页的同时跳了章。
         if (a.ui.screen == Screen::Play && a.rs.showNextDay
             && a.rend.HitNextDay(a.rs, lx, ly)) {
             //
-            // ---- 【正在打字也能直接走】
+            // ---- 打字时也能直接走
             //
-            // ★ 原来这里拦一道：inputMode 还开着就只收起对话框、
-            //   提示"再点一次"。那是为了挡住"按明天见会卡死"
-            //   （发起了新对话而 inputMode 没退，之后每次点击都变成
-            //   呼出/收起输入框，整局推不动）。
-            //
-            //   可拦下来的代价是按钮被画成灰的，而"轮到你说话"时
-            //   输入框默认展开——章间日常里几乎每一刻都在等他打字，
-            //   于是按钮【几乎永远是灰的】。玩家看到的就是
-            //   "她都说明天见了、按钮迟迟不亮"，还分不清是没到时候
-            //   还是程序没画出来。
-            //
-            // 现在根因在 DirGoNextDay 里治掉了（推进入口一律 LeaveInputMode），
-            // 这里不再需要拦：点一下就走，正在打的字由那边提示没发出去。
+            // ★ showNextDay 是唯一的可点性判据，与绘制、命中同源。
+            // 推进入口统一先退输入态（DirGoNextDay -> LeaveInputMode），
+            // 这里不再拦、也不画灰，打了一半的字由入口提示。
             PlayClickSe();
             DirGoNextDay();
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -32461,20 +31243,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         PlayClickSe();
                     } else {
                         //
-                        // 【必须拷一份，不能持有引用】——这是"切换剧本时卡住/报错"的根因。
+                        // 必须拷一份，不能持有引用
                         //
-                        // ApplySyllabus -> LoadSyllabus 的【第一件事】就是
-                        //     a.syllabusPacks = ScanSyllabusPacks(a.assetDir);
+                        // ApplySyllabus -> LoadSyllabus 的第一件事就是
+                        // a.syllabusPacks = ScanSyllabusPacks(a.assetDir);
                         // 整个 vector 被重新赋值，旧元素当场析构，
                         // 而下面这几行用的正是旧 vector 里那个元素。
                         // 切完再读 p.title / p.id 就是在读一块已经释放的内存
-                        // （std::wstring 的内部指针已失效）——
+                        // （std::wstring 的内部指针已失效）
                         // 轻则显示乱码或空串，重则访问违例直接崩。
                         //
-                        // 而且它【只在切到另一份时才发作】：切当前这份时
+                        // 而且它只在切到另一份时才发作：切当前这份时
                         // ApplySyllabus 第一行就 return，不会重扫，指针还有效。
                         // 所以现象是"有时一切就崩"，很难想到是这里。
-                        //
                         const SyllabusPack p = a.syllabusPacks[(size_t)hit];
                         if (p.id != a.syllabusId) {
                             PlayClickSe();
@@ -32650,12 +31431,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (a.ui.screen == Screen::CharSelect) {
                 if (hit < 0) { InvalidateRect(hwnd, nullptr, FALSE); return 0; }
                 std::vector<const CharDef*> sel = a.chars.Selectable();
-
-                // 【原来这里有表情 / 服装预览的点击分支（命中码 <= -20）】
                 // 选角界面的预览带已移除（见 ui.cpp DrawCharSelect），
                 // 这两个分支也就永远不会命中了，一并删掉。
                 // 注意：hit 现在只会是卡片下标，下面的比较直接成立。
-
                 if (hit >= (int)sel.size()) return 0;
                 // 两段式：第一次点选中看详情，第二次点同一个才真的开始。
                 // 避免"随便点一下就被扔进游戏"，也给了对比的余地。
@@ -32699,10 +31477,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 // ---- 切到别的角色的存档
                 //
-                //  【为什么必须在读档页里就能切】
-                //  存档按角色分目录，而"当前角色"是 config 的 LastChar 决定的。
-                //  只写一句"去角色卡切"等于让玩家退出去再回来，
-                //  而角色一旦被解绑，角色卡里根本没有她——线索有了，门没有。
+                // 为什么必须在读档页里就能切
+                // 存档按角色分目录，而"当前角色"是 config 的 LastChar 决定的。
+                // 只写一句"去角色卡切"等于让玩家退出去再回来，
+                // 而角色一旦被解绑，角色卡里根本没有她——线索有了，门没有。
                 if (hit <= -30 && hit > -40) {
                     int idx = -30 - hit;
                     std::vector<OtherSaveEntry> others = OtherCharsWithSaves(a);
@@ -32755,9 +31533,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             a.ui.flowOpen   = true;
                             a.ui.flowScroll = 0;
                             //
-                            // ---- 【把滚动定位到当前章】
+                            // ---- 把滚动定位到当前章
                             // 章节多于一屏时，打开就停在第 1 页的话，
-                            // 玩家想回到"我正玩到哪"还得自己翻——
+                            // 玩家想回到"
                             // 而流程图最常用的操作恰恰是往回跳。
                             const SaveSlotInfo* fs = SlotAt(a.ui.flowSlot);
                             const int vis = FlowVisRows();
@@ -32775,15 +31553,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                 return 0;
                             }
                             //
-                            // ---- 【读档前必须先把剧本切回存档里那份】
+                            // ---- 读档前必须先把剧本切回存档里那份
                             //
-                            // 这条路上原来【没有】这一步——只有流程图跳章做了。
+                            // 这条路上原来没有这一步——只有流程图跳章做了。
                             // 于是：在剧本页选了 Python，再读一个 C 语言的档，
                             // 引擎会用 Python 的大纲去解释存档里的章号，
                             // 她开口讲的是 Python 第 3 章，而进度、对话历史、
                             // 关系曲线全是 C 语言第 3 章的。
                             //
-                            // 这种错【不报错】：章号合法、剧本也在，
+                            // 这种错不报错：章号合法、剧本也在，
                             // 只是内容对不上——跟"流程图跳章不切剧本"是同一个病，
                             // 那条路修了，这条路漏了。
                             //
@@ -32810,10 +31588,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             a.askedDuringTask = false;
     a.quizAnswers     = 0;
                             //
-                            // 【这里原来有一行 a.hist.clear()，是"读档看不到历史"的元凶】
+                            // 这里
                             // LoadFromSlot 已经把该槽的对话历史读进 a.hist 了，
                             // 紧接着又 clear 一次，等于刚读出来就扔掉。
-                            // 那行注释写的"历史不跨存档"是更早版本的逻辑——
+                            // 那行注释写的"历史不跨存档"是更早版本的逻辑
                             // 那时存档根本不存历史，清一下是为了不串档；
                             // 现在存档存了历史，这句就成了纯粹的破坏。
                             //
@@ -32855,13 +31633,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             if (a.ui.slotPick < 0) { UiTip(a, L"先选一个槽", 3); return 0; }
                             int s = a.ui.slotPick + 1;
                             //
-                            // ---- 【这里原来只查了 slotPick < 0，没查上界】
+                            // ---- 这里原来只查了 slotPick < 0，没查上界
                             //
-                            //  它依赖"a.slots 的长度恒等于 kSaveSlots"这个隐式契约。
-                            //  而槽列表会在换角色 / 删剧本 / 清数据之后被整个换掉，
-                            //  界面状态里那个下标却还是上一次留下的——
-                            //  契约一破就是 vector subscript out of range，Debug 下直接断言失败。
-                            //  现在走 SlotAt：越界就明确告诉他重选，而不是崩。
+                            // 它依赖"a.slots 的长度恒等于 kSaveSlots"这个隐式契约。
+                            // 而槽列表会在换角色 / 删剧本 / 清数据之后被整个换掉，
+                            // 界面状态里那个下标却还是上一次留下的
+                            // 契约一破就是 vector subscript out of range，Debug 下直接断言失败。
+                            // 现在走 SlotAt：越界就明确告诉他重选，而不是崩。
                             const SaveSlotInfo* sp = SlotAt(a.ui.slotPick);
                             if (!sp) {
                                 a.ui.slotPick = -1;
@@ -32927,13 +31705,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                        L"回来点「重新扫描」", 8);
                             AppLog(L"新建角色卡：%s（assets\\char\\%s）", nr.id.c_str(), nr.id.c_str());
                             //
-                            // ---- 【建完就把文件夹打开】
+                            // ---- 建完就把文件夹打开
                             //
-                            //  "已经建好了"这句话没有画面，作者不知道接下来干什么：
-                            //  还得自己去 assets\char 里找那个新目录，
-                            //  而它跟角色B / 角色A并排躺着，不看名字分不出哪个是新的。
-                            //  直接打开它，下一步（丢素材）就在眼前。
-                            //  三个子目录里各有一份 _放这里.txt 说明该放什么。
+                            // "已经建好了"这句话没有画面，作者不知道接下来干什么：
+                            // 还得自己去 assets\char 里找那个新目录，
+                            // 而它跟角色B / 角色A并排躺着，不看名字分不出哪个是新的。
+                            // 直接打开它，下一步（丢素材）就在眼前。
+                            // 三个子目录里各有一份 _放这里.txt 说明该放什么。
                             ShellExecuteW(hwnd, L"open",
                                           PathJoin(a.charDir, nr.id).c_str(),
                                           nullptr, nullptr, SW_SHOW);
@@ -33018,7 +31796,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     // ---- bi == 3：解绑 / 重新绑定
                     //
-                    // 【这里沿用 fallthrough（不写 if），是因为它是最后一档】
+                    // 这里沿用 fallthrough（不写 if），是因为它是最后一档
                     // 危险在于：上面任何一个分支编号错了，都会落到这里，
                     // 而"解绑"是会改数据的动作——角色会当场从列表里消失。
                     // 之前删掉「装角色包」按钮时正是漏改了编号：点「重新扫描」
@@ -33045,7 +31823,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         AppLog(L"角色包重新绑定：%s", cid.c_str());
                     } else {
                         //
-                        // 【解绑不删任何文件】
+                        // 解绑不删任何文件
                         // 目录一个字节都不动，只是记进名单让它不出现在游戏里。
                         // 想彻底删除去 assets\char 下手动删——游戏内不给这个权利，
                         // 因为包是玩家一张张攒起来的，误删无法撤销。
@@ -33053,16 +31831,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         SaveConfig();
                         a.ui.cardPick = -1;
                         //
-                        // ---- 【解绑会连带隐藏它的剧情剧本，要说一句】
+                        // ---- 解绑会连带隐藏它的剧情剧本，要说一句
                         //
-                        //  剧情大纲住在角色包里（story.ini），而"锁死角色"的实现
-                        //  是 Selectable() 里那句过滤——角色一解绑，可选角色为空，
-                        //  那份剧本就再也选不到了，所以扫描时直接不列它。
-                        //  作者若是记得自己写过 story.ini，会发现它凭空消失了，
-                        //  而界面上原本不说为什么。
+                        // 剧情大纲住在角色包里（story.ini），而"锁死角色"的实现
+                        // 是 Selectable 里那句过滤——角色一解绑，可选角色为空，
+                        // 那份剧本就再也选不到了，所以扫描时直接不列它。
+                        // 作者若是记得自己写过 story.ini，会发现它凭空消失了，
+                        // 而界面上原本不说为什么。
                         //
-                        //  文件一个都没动，重新绑定它就回来——这句话必须带上，
-                        //  否则"剧本不见了"听起来像被删了。
+                        // 文件一个都没动，重新绑定它就回来
+                        // 否则"剧本不见了"听起来像被删了。
                         std::wstring note = L"已解绑：" + nm + L"（文件都还在，「已解绑」里能绑回来）";
                         if (FileExists(PathJoin(a.assetDir, L"char\\" + cid + L"\\story.ini")))
                             note += L"　·　它的剧情剧本也一并隐藏了，重新绑定就回来";
@@ -33150,7 +31928,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (hit == -4) {                  // 删除
                     if (CardDelete(a)) {
                         //
-                        // 【删完了要说清注解有没有跟着删】
+                        // 删完了要说清注解有没有跟着删
                         // 一律提示"已删除"的话，"图没了、注解还留在 char.ini"这种情况
                         // 永远发现不了——作者只会觉得同步坏了。
                         // 最常见的其实是键名对不上：删「神社白天.png」，
@@ -33484,7 +32262,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 // 她手里有完整题目（SceneHint 给了题面、模板、测试用例），
                 // 所以这里问什么她都答得了——思路、某行为什么报错、某个语法。
                 //
-                // 关键是【答完要回到编辑器】，不能把玩家丢在对话界面：
+                // 关键是答完要回到编辑器，不能把玩家丢在对话界面：
                 // 他正在写代码，被打断一次就已经够烦了。
                 std::wstring code;
                 if (a.hEdit) {
@@ -33501,7 +32279,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 a.rs.inputGuide = L"问她什么都行：思路、报错、某个语法。答完会自动回到代码。";
                 a.pendingGuide = a.rs.inputGuide;
                 a.phase = Phase::InputFree;
-                // 【这里原来直接 ShowWindow(SW_SHOW)，没重置 inputCollapsed】
+                // 这里原来直接 ShowWindow(SW_SHOW)，没重置 inputCollapsed
                 // 玩家上一轮把输入框收起过，这个标记就还是 true：
                 // 画面按"收起态"绘制（只画右下角那句"点击对话框输入"），
                 // 可白色 EDIT 子窗口被强行显示出来了——一个没有边框的白框
@@ -33529,9 +32307,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;      // 代码模式下点空白不推进剧情，免得误触跳走
         }
         //
-        // ---- 【她还在准备：这一局还不能跟他说话】
+        // ---- 她还在准备：这一局还不能跟他说话
         //
-        // 笔记没回来之前画面是空舞台，这时候点什么都不该有反应——
+        // 笔记没回来之前画面是空舞台，这时候点什么都不该有反应
         // 尤其是"点对话框 = 呼出输入框"那条路：呼出来的框发不出话，
         // 是最误导人的一种状态（看着能聊，其实聊不了）。
         // 与其让他对着一个发不出话的输入框猜，不如直接说清楚在等什么。
@@ -33540,12 +32318,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-
         //
-        // ---- 【可选话术必须先判】
+        // ---- 可选话术必须先判
         //
-        // 它画在对话框【上方】，而下面那条规则是
-        // "点对话框 = 呼出 / 点别处 = 收起"——
+        // 它画在对话框上方，而下面那条规则是
+        // "点对话框 = 呼出 / 点别处 = 收起"
         // 点在这排按钮上会被当成"点别处"，于是输入框当场收起，
         // 刚填进去的那句话连同按钮一起消失：点了却又像没点。
         // 所以这条必须排在收起规则之前。
@@ -33567,8 +32344,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (a.phase == Phase::InputFree) {
             // ---- 点对话框 / 输入区 = 呼出输入框；点画面别处 = 收起
             //
-            // 【原来这里直接 return 0，点击在输入阶段完全没用】
-            // 想回头看她上一句说了什么就只能收起它——
+            // 想回头看她上一句说了什么就只能收起它
             // 没有收起入口就等于"说过的话看不了第二遍"。
             //
             // 收起时才真正解决问题：编辑框是子窗口，永远浮在绘制之上，
@@ -33583,7 +32359,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-
         //
         // ---- 选择题：点选项
         //
@@ -33610,17 +32385,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
-
         //
-        // ---- 【可选话术】：点了只填进输入框，【不发送】
+        // ---- 可选话术：点了只填进输入框，不发送
         //
-        //  填进输入框之后光标落进去、内容全选：他可以直接改这句，
-        //  也可以按一下退格全删了自己写。这排按钮是【脚手架】不是【选择肢】，
-        //  所以它唯一的职责是把这句话放到他手边，剩下的事交给他。
+        // 填进输入框之后光标落进去、内容全选：他可以直接改这句，
+        // 也可以按一下退格全删了自己写。这排按钮是脚手架不是选择肢，
+        // 所以它唯一的职责是把这句话放到他手边，剩下的事交给他。
         //
-        //  放在 showChoices 之后、AdvanceClick 之前：
-        //  这排按钮画在对话框上方，不点它的时候点击照常是"推进对话"，
-        //  不会因为多画了一排按钮就把原来的交互吃掉。
+        // 放在 showChoices 之后、AdvanceClick 之前：
+        // 这排按钮画在对话框上方，不点它的时候点击照常是"推进对话"，
+        // 不会因为多画了一排按钮就把
         if (a.block == ck::VmBlock::Click || a.block == ck::VmBlock::End) AdvanceClick();
         return 0;
     }
@@ -33690,13 +32464,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (wp == VK_SPACE || wp == VK_RETURN) { AdvanceClick(); return 0; }
-
         // ---- 台词分页：← → 前后翻页
         //
-        // 【为什么要能往回翻】
+        // 为什么要能往回翻
         // 分页原本是单向的：点一下走一页，翻过去就回不来了。
         // 她讲透一个知识点常要三四页，玩家读到后面想不起来前面那句比喻，
-        // 唯一的办法是打开回想面板——但回想是另一个界面，
+        // 唯一的办法是打开回想面板
         // 很多人压根想不到去那里找"她三十秒前刚说过的话"。
         // 于是体验上就成了"前面被截断了"。
         if (a.rs.textPageCount > 1 && (wp == 0x25 || wp == 0x27)) {
@@ -33718,7 +32491,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(a.hwnd, nullptr, FALSE);
             return 0;
         }
-
         // ---- 回想里 Home / End 跳到最早 / 最新
         //
         // 长对话光靠滚轮翻太慢（一次 1/4 屏），而且玩家不知道自己翻到哪了。
@@ -33768,7 +32540,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (a.ui.screen != Screen::Play) { UiWheel(a, d); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-
         // ---- 记忆面板开着时，滚轮归它
         //
         // 记忆面板是覆盖层，如果不先拦下来，滚轮会穿透去打开文本回想，
@@ -33785,7 +32556,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-
         // ---- 游戏内滚轮 = 文本回想
         //
         // 上滑（d > 0）打开并往回翻，下滑往回最新处翻，翻到底自动关闭。
@@ -33794,9 +32564,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         //
         // ---- 做题界面：滚轮归代码编辑器，绝不打开回想
         //
-        // 【为什么两个标记都要看】
+        // 为什么两个标记都要看
         // 原来只判 phase == CodeInput。而"提交被拦下"那条路径会把 phase 改成 Play
-        // 却留着 codeMode，于是滚轮立刻穿透去打开回想面板——
+        // 却留着 codeMode，于是滚轮立刻穿透去打开回想面板
         // 回想是覆盖层，编辑框是子窗口盖不住它，两块界面叠在一起各滚各的，
         // 这正是"考试编辑窗口的翻滚跟回想打架"。
         //
@@ -33813,17 +32583,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             break;
         }
-
-        // ---- 回想：按【像素】滚动，能一路翻到最早的一条
+        // ---- 回想：按像素滚动，能一路翻到最早的一条
         //
-        // 【之前按"条数"滚，是错的】
+        // 之前按"条数"滚，是错的
         // 每条高度不一样（有没有说话人、正文折了几行），
         // 而绘制处按 名字行 + 最多 2 行正文 排，实际一折行就是 80px 上下。
         // 滚动却假设"一行 34px、能放 13 条"——两边对不上，
         // 于是滚动范围算小了，翻到一半就到底，早先的对话永远看不到。
         // 现在绘制和滚动共用 CalcHistLayout 的实测结果。
         //
-        // 打开时停在【最新】（底部），上滑往回看更早的——
+        // 打开时停在最新（底部），上滑往回看更早的
         // Galgame 通例，反过来玩家第一反应就是"滚轮坏了"。
         // 已经在最新处还继续下滑 → 关闭面板回到对话。
         {
@@ -33832,12 +32601,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             if (!a.rs.histOpen) {
                 //
-                // ---- 【选择题 / 做题时不许打开回想】
+                // ---- 选择题 / 做题时不许打开回想
                 //
-                // 【实测现象：现象：回想里"台词中间插入了考试题的内容"】
+                // 实测现象：现象：回想里"台词中间插入了考试题的内容"
                 // 回想是覆盖层，选项是画在对话框上的另一套控件。
                 // 进场时虽然收过一次回想（EnterQuizChoice），
-                // 但玩家在答题期间【再滚一下】就能把它叫出来——
+                // 但玩家在答题期间再滚一下就能把它叫出来
                 // 于是题面 / 选项那一套跟回想面板叠在同一个画面上，
                 // 看上去就是"考试题的内容插进了台词中间"，而且两套各点各的。
                 //
@@ -33893,9 +32662,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_APP_RUN_CODE: {
         //
-        // 【原来只判 phase == CodeInput，是"点了交给她看没反应"的另一半】
+        // 原来只判 phase == CodeInput，是"点了交给她看没反应"的另一半
         // 判据有两个（phase 和 codeMode），却只查了其中一个。
-        // 一旦两者错位（被拦下过一次就会），这里直接 return 0——
+        // 一旦两者错位（被拦下过一次就会），这里直接 return 0
         // 没有提示、没有日志，按钮看着亮着，点了什么也不发生。
         //
         // 现在：只要代码面板还开着就算在做题（以 codeMode 为准），
@@ -33931,7 +32700,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_APP_INPUT_SEND: {
         if (a.phase != Phase::InputFree || !a.hEdit) {
-            // 【原来这里一律静默 return】
             // 初始化没完成时他明明看得见输入框、也打得进字，
             // 按回车却什么都没有——没有任何提示，只能以为程序坏了。
             // 现在把原因说出来。输入框本身已由 InputEditShouldShow 挡掉，
@@ -33945,23 +32713,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (len > 0) GetWindowTextW(a.hEdit, &text[0], len + 1);
         text.resize((size_t)len);
         if (text.empty()) { SetStatus(L"说点什么吧", 3); return 0; }
-
         //
-        // ---- 【他在普通对话框里贴了代码：这是交作业，不是闲聊】
+        // ---- 他在普通对话框里贴了代码：这是交作业，不是闲聊
         //
-        // 【运行日志：同一份代码被判了两遍】
-        // 她出题后（"题目是…代码模板给你了"）是否进做题界面，
+        // ★ 症状：同一份代码被判了两遍。
+        // 她出题后（"题目是…代码模板给
         // 取决于她有没有填 advance——她经常只顾讲题忘了填。
         // 于是他压根没进过编辑器，只能把代码粘在对话框里回车。
         // 引擎当成普通聊天发给她，她就在对话框里把卷判了一次
-        // （"你真的写出来了？！完全正确！"）。可 phase 不是 Review，
+        // （"
         // verdict 不会记进进度，题还挂在那儿。
-        // 之后引擎又因为别的条件进了黑色做题界面，他再交一遍——
+        // 之后引擎又因为别的条件进了黑色做题界面，他再交一遍
         // 于是同一份代码判两次，她的判卷台词也说两遍。
         //
         // 只要像代码、且当前确实有题在等，就直接走判卷流程。
         //
-        // ---- 【导演模式不再有"贴代码交作业"这回事】
+        // ---- 导演模式不再有"贴代码交作业"这回事
         //
         // 加了 !a.dirMode 这一半。选择题的题和答案都写在 syllabus.ini 里，
         // 他只能点选项，没有东西可交。留着这条路的后果很具体：
@@ -33979,20 +32746,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(a.hwnd, nullptr, FALSE);
             return 0;
         }
-
         //
-        // ---- 【贴了代码但没有"挂着的题"：仍然要记住这份代码】
+        // ---- 贴了代码但没有"挂着的题"：仍然要记住这份代码
         //
-        // 【实测日志：她判了卷，引擎却没记】
+        // ★ 症状：她判了卷，引擎却没记。
         // 她出题后是否真的进做题界面，取决于她有没有填 advance；
-        // 她经常只顾讲题忘了填，于是 pendingTask 一直是空的，
+        // 她经常只顾讲题忘了填，
         // 上面那条"直接交卷"的分支进不去，代码被当闲聊发了出去。
-        // 她在回复里【确实把卷判了】（"你完全做对了""这章就算你通关啦"），
-        // 可 phase 不是 Review，那句结论不会记进进度——
+        // 她在回复里确实把卷判了（"
+        // 可 phase 不是 Review，那句结论不会记进进度
         // 他不明白为什么"明明过了却还在第一章"。
         //
         // 记住这份代码：后面她的回复一旦出现判卷结论就照判卷处理。
-        // 同上：导演模式没有代码题，贴代码就是想跟你讨论，别记成判卷材料。
+        // 同上：导演模式没有代码题，贴代码就是想跟
         if (!a.dirMode && LooksLikeCode(text)) {
             a.lastCode = text;
             AppLog(L"[判题] 他贴了代码，但当前没有挂着的题——"
@@ -34010,32 +32776,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (a.dirMode && a.dir.ShouldQuiz()) ++a.quizAnswers;
         // 玩家说的话本身也值得记住
         //
-        // 【改成记进"近期流水"，不再进长期记忆】
+        // 改成记进"近期流水"，不再进长期记忆
         // 原来每句都往长期记忆里塞一条 w=40 的"玩家说过：xxx"，
-        // 而这些话本来就在对话历史里（hist 已进 prompt）——
+        // 而这些话本来就在对话历史里（hist 已进 prompt）
         // 再存一份只是白占那 60 条额度，把 w=60 的真记忆挤掉。
         // 表现是"越聊到后面她越平，早期的事全忘了"。
         a.mem.AddRecent(text);
-
         // ---- 把玩家刚说的话显示出来
         //
-        // 回车后编辑框一藏，画面只剩"她在想…"，玩家看不到自己刚打了什么。
+        // 回车后编辑框一藏，画面只剩"她在想…"，
         // 所以提交后先把玩家的话填进对话框（说话人 = 玩家名，配色区分），
         // 她的回复到达时再覆盖，等待的一两秒里画面是有内容的。
         //
-        // 回显必须在 StartChat 【之后】设：StartChat 会清 view.body 并置
+        // 回显必须在 StartChat 之后设：StartChat 会清 view.body 并置
         // playerEcho=false，先设的话立刻被清掉，等于白做。
         //
         // 分页状态要一起重置：她上一句翻到第 3 页的话 textPageAtEnd 是 false，
-        // 玩家这句只有 1 页，三角不出现，玩家会以为还能翻页。
+        // 玩家这句只有 1 页，三角不出现，
         a.rs.textPage = 0; a.rs.textPageAtEnd = true; a.rs.textPageCount = 1;
         a.rs.textPageEndChar = 0; a.rs.textTotalChars = 0;
-        // 【这里原来传的是 a.view.speaker】
-        // 那是【上一位说话人】，也就是她的名字——玩家说的话被记成了她说的。
-        // 回想面板里会出现「她：我刚才不是说过吗」这种错位的行。
+        // 这里原来传的是 a.view.speaker
+        // 那是上一位说话人，也就是她的名字——玩家说的话被记成了她说的。
+        // 回想面板里会出现「她：
         // isPlayer 只决定消息角色，显示名还得靠 speaker 自己带对。
         // 玩家名字跟 system prompt 同源（角色包优先），
-        // 否则对话框里显示「你」、她心里却叫「将臣」，两边对不上。
+        // 否则对话框里显示「
         a.PushHist(PlayerNameFor(a.Def(), a.persona.playerName), text, true);
 
         StartChat(text, a.persona.charName, a.chatHint);
@@ -34049,43 +32814,37 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         a.rs.playerEcho = true;        // 渲染层用它换配色 / 换名字牌样式
         return 0;
     }
-
-    //
-    // ---- 【原来的 WM_APP_INPUT_SKIP 已删除】
     //
     // 那是"自由输入框里按 Esc 跳过这一轮"。已整体移除：
     // 界面上那句「按 Esc 跳过」纯属噪音，而"跳过"会让剧情在她没开口的
     // 情况下往前走——玩家只会更困惑。Esc 在输入框里现在什么都不做
     // （见 EditProc 里的空分支，它同时挡住了误触关游戏）。
     //
-
-    //
     // ---- 素材打回的结果回来了
     //
-    // 【为什么还要再过一遍 ApplyAiStage】
+    // 为什么还要再过一遍 ApplyAiStage
     // 修正请求给了完整清单，但她仍可能写歪（这就是模型的本性）。
     // 这里绝不因为是"修正结果"就直接采信——走同一套校验，
     // 接不住就保持当前画面。多一次校验的成本远低于画面乱切。
     case WM_APP_ASSET_NOTE: {
         //
-        // ---- 【过期消息一律不动这一局的等待状态】
+        // ---- 过期消息一律不动这一局的等待状态
         //
-        // 【这就是"笔记生成完了，画面却迟迟不铺、也没有她在想"的根因】
+        // 这就是"笔记生成完了，画面却迟迟不铺、也没有她在想"的根因
         // 玩家没等笔记回来就点了回标题 -> 上一局那笔请求的结果现在才到。
         // 原来它照样解 busy、照样把 pendingKick 取走清空，于是：
-        //   1. 它把【这一局】还在飞的请求的 busy 提前解掉
-        //   2. 它把【这一局】的开场提示 pendingKick 清成空
+        // 1. 它把这一局还在飞的请求的 busy 提前解掉
+        // 2. 它把这一局的开场提示 pendingKick 清成空
         // 等这一局自己的笔记回来时，KickOff 拿到的是空 kick，
-        // 第一句 `if (kick.empty()) return;` 直接退出——
+        // 第一句 `if (kick.empty) return;` 直接退出
         // pendingStage 仍是 true，画面永远不铺、她永远不开口、
         // StartChat 没被调用所以状态栏也没有"她在想…"。
-        // 玩家看到的就是：进游戏后一片空白，什么都没有。
         //
-        // 【busy 的解法跟着 gen 走，不能无条件解】
-        // 只在这一笔【就是当前在飞的那一笔】时才解；
+        // busy 的解法跟着 gen 走，不能无条件解
+        // 只在这一笔就是当前在飞的那一笔时才解；
         // 否则会把新请求的 busy 提前清掉，让新请求的结果无处安放。
         // （旧笔记不会因此卡住 busy：AbortAsync / BeginStory / LoadFromSlot
-        //   都会连带清 assetBriefBusyGen，那条路不依赖这条消息。）
+        // 都会连带清 assetBriefBusyGen，那条路不依赖这条消息。）
         if ((int)lp != a.assetBriefGen) {
             if ((int)lp == a.assetBriefBusyGen) {
                 a.assetBriefBusy    = false;
@@ -34099,18 +32858,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         a.assetBriefBusy    = false;
         a.assetBriefBusyGen = 0;
         //
-        // ---- 【开场那句话还在等这份笔记】
+        // ---- 开场那句话还在等这份笔记
         //
         // 无论笔记生成成功、放弃还是失败，都必须让她开口。
         // 拿不到笔记只是"这一局没有笔记"，不是"这一局不能开始"。
-        // 少了这一步，玩家看到的是一个永远空着的对话框。
+        // 少了这一步，
         const std::wstring kick = a.pendingKick;
         a.pendingKick.clear();
         auto KickOff = [&]() {
             //
-            // ---- 【铺画面和让她开口是两件事，不能绑在一起】
+            // ---- 铺画面和让她开口是两件事，不能绑在一起
             //
-            // 原来铺画面写在 `if (kick.empty()) return;` 之后，
+            // 原来铺画面写在 `if (kick.empty) return;` 之后，
             // 于是开场提示一旦丢失（被上一局的消息清掉），
             // 屏幕就永远停在空舞台——玩家既看不到画面也等不到人。
             // 画面该铺就铺，跟她这一句说什么无关。
@@ -34120,18 +32879,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 ApplyStageChange(a.dirCurBg,
                                  a.dir.Cur() ? a.dir.Cur()->outfit : L"");
                 //
-                // ---- 【画面照铺，但不替玩家做切屏的决定】
+                // ---- 画面照铺，但不替玩家做切屏的决定
                 //
-                // 原来这里无条件 GoScreen(Screen::Play)：
                 // 挂起期间玩家打开了存档页 / 设置页，笔记一回来就把那页关掉、
                 // 把他塞回游戏里——他没点任何东西，界面自己跳了。
-                // 铺画面是【数据】，切屏是【界面】，两者不该绑在一起：
+                // 铺画面是数据，切屏是界面，两者不该绑在一起：
                 // 画面先铺好，他回到游戏时看到的就是对的；
                 // 至于现在显示哪一页，以他自己的操作为准。
                 //
                 // （彻底离开那一局的情况另有一道保险：回标题时
-                //   GoScreen(Screen::Title) 已经 AbortAsync 掉了这一笔，
-                //   根本走不到这里。）
+                // GoScreen(Screen::Title) 已经 AbortAsync 掉了这一笔，
+                // 根本走不到这里。）
                 if (a.ui.screen == Screen::Play) {
                     InvalidateRect(a.hwnd, nullptr, FALSE);
                 } else {
@@ -34146,7 +32904,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return;
             }
             //
-            // ---- 【笔记就绪了，才把开场画面铺上去】
+            // ---- 笔记就绪了，才把开场画面铺上去
             //
             // 挂起期间是空舞台（ResetStageVisuals 清过），
             // 玩家只看得到状态栏那句"她在翻笔记"。
@@ -34167,9 +32925,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 提示词要求纯文本，但模型很爱顺手加一层 ``` 或写成 {"note": "..."}。
         // 不剥的话这段会原样带进上下文，她每轮都读到一堆噪音。
         //
-        // 【按行剔除，而不是"开头是围栏才剥"】
-        // 老写法只在文本【开头】是 ``` 时才处理。而模型很爱先写一句
-        // 「好的，这是我整理的笔记：」再上围栏——那种情况老写法一行都剥不掉。
+        // 按行剔除，而不是"开头是围栏才剥"
+        // 老写法只在文本开头是 ``` 时才处理。而模型很爱先写一句
+        // 「好的，这是
         // 逐行判断就能覆盖：开头、中间、结尾、嵌套、残缺，全都干净。
         txt = StripFenceLines(txt);
         if (txt.empty()) {
@@ -34178,11 +32936,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         //
-        // ---- 【她把对话 JSON 当成笔记交回来了】
+        // ---- 她把对话 JSON 当成笔记交回来了
         //
         // 存下来就要每轮带进上下文。这种文本混在上下文里是双重害处：
-        //   1. 它长得就是回复模板，等于每轮给她看一遍"该输出成什么样"
-        //   2. 里面写死了 bg / bgm，她会照着抄，于是画面和曲子被一份假笔记绑架
+        // 1. 它长得就是回复模板，等于每轮给她看一遍"该输出成什么样"
+        // 2. 里面写死了 bg / bgm，她会照着抄，于是画面和曲子被一份假笔记绑架
         // 所以宁可这一局不带笔记，也不能存进去。重问一次；还不行就放弃。
         if (!g_assetNoteIsReview && NoteLooksLikeDialogue(txt)) {
             if (g_assetBriefRetry < 1) {
@@ -34194,7 +32952,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 a.pendingKick = kick;
                 StartAssetBrief(true);
                 //
-                // 【没真发出去就必须现在收尾】
+                // 没真发出去就必须现在收尾
                 // StartAssetBrief 有一串提前 return（重问次数用完了、
                 // 清单空了、Key 没了……），任何一种都会让它悄无声息地不发请求。
                 // 那时再也不会有第二条消息来收尾——画面不铺、她不开口，
@@ -34214,11 +32972,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_assetNoteIsReview) {
             a.assetReview = L"【上一章素材复盘（你自己写的）】\n" + txt;
             AppLog(L"[素材笔记] 第%d章复盘已生成，下一章开始带上", g_assetNoteChapter);
-
             //
-            // ---- 关系曲线：把她在复盘末尾写的那句"现在我对他是……"存下来
+            // ---- 关系曲线：把她在复盘末尾写的那句"现在
             //
-            // 【写在复盘里，不另发一次请求】
+            // 写在复盘里，不另发一次请求
             // 她刚复盘完这一章，此刻对自己状态的判断最准；
             // 另起一轮问，她没有这一章的上下文，只会写出套话。
             std::wstring bond = ParseBondFromReview(txt);
@@ -34247,7 +33004,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     ? L"[挑素材] 结果过期，丢弃"
                     : L"[打回] 结果过期，丢弃");
             //
-            // ---- 【旧局挂着的台词必须丢掉，不能放出来】
+            // ---- 旧局挂着的台词必须丢掉，不能放出来
             //
             // 打回期间玩家可能已经读档 / 换人了。这时候再把旧局那句
             // 放出来，就会盖到新存档的对话框上——表现为"读档后她答非所问"。
@@ -34260,15 +33017,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         a.stageFixing = false;
         //
-        // ---- 【先分清这一次是"挑素材"还是"打回重填"】
+        // ---- 先分清这一次是"挑素材"还是"打回重填"
         //
         // 同一条消息、同一套应用逻辑，但后续处理有两处必须不同：
-        //   1. 挑素材失败【不能】走引擎兜底换脸（明确要求换脸归模型）
-        //   2. 审计标签要写清楚是哪一种，否则日志里分不清
+        // 1. 挑素材失败不能走引擎兜底换脸（明确要求换脸归模型）
+        // 2. 审计标签要写清楚是哪一种，否则运行时分不清
         //
-        // 【isPick 管行为，isRetry 管标签，两个不能混】
+        // isPick 管行为，isRetry 管标签，两个不能混
         // 挑素材没接住时会置 isPick=true 再发起打回（为了保住第 1 条），
-        // 于是那次打回的结果回来时 isPick 还是 true——
+        // 于是那次打回的结果回来时 isPick 还是 true
         // 照它写标签就会把"她填错了"记成"正常挑素材"，
         // 日志上永远看不出哪次是异常。所以标签另看 isRetry。
         const bool isPick  = g_stageFixIsPick;
@@ -34280,11 +33037,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_stageFixIsPickRetry = false;
         g_stageFixErr.clear();
         //
-        // ---- 【日常段重写台词的这条路】
+        // ---- 日常段重写台词的这条路
         //
-        // 素材修正是"改三个字段名"，重写是"整句话换掉"——
+        // 素材修正是"改三个字段名"，重写是"整句话换掉"
         // 必须在 FlushPendingSay 之前替换，否则放出来的还是那句讲代码的原话，
-        // 玩家会以为打回根本没生效。
         const bool isRewrite = g_stageFixIsRewrite;
         const std::wstring newSay = g_stageFixSay;
         g_stageFixIsRewrite = false;
@@ -34297,20 +33053,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             AppLog(L"[日常] 改写没拿到新台词，沿用原话");
         }
         //
-        // ---- 【打回结束了，先把台词放出来】
+        // ---- 打回结束了，先把台词放出来
         //
         // 无论这次打回成不成功，她的话都该显示了。放在这里（而不是
         // 各条分支的末尾）是因为结束路径有四条，漏一条就是"她永远不说话"。
         // 画面修正紧接着在下面做，两者在同一个消息里完成，
-        // 玩家看到的是【一起出现】，不存在"台词先出、脸后跟上"。
         FlushPendingSay(hwnd);
-
         //
-        // ---- 【重写回来的台词要重新配画面】
+        // ---- 重写回来的台词要重新配画面
         //
-        // 话都换了一句，原来那次的素材判定自然作废——
+        // 话都换了一句，
         // 原话讲代码（配教室），改写后在聊相处（可能该换地方）。
-        // 所以这里补一次挑素材，用【新台词】当依据。
+        // 所以这里补一次挑素材，用新台词当依据。
         //
         // 重写失败时 newSay 为空，a.view.body 仍是原话，
         // 照样要挑一次（原话也得有画面），所以判断只看 isRewrite。
@@ -34342,10 +33096,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (fp.empty() && fb.empty() && fm.empty()) {
             const bool tagPick = (isPick && !isRetry);
             //
-            // ---- 【网络失败 和 她没给值 必须分开说】
+            // ---- 网络失败 和 她没给值 必须分开说
             //
             // 两者投回来的都是三个空串。原来一律报"模型没给有效值"，
-            // 于是【网络断了】在日志上被写成【她没填】——
+            // 于是网络断了在日志上被写成她没填
             // 排查方向整个反过来：去改 prompt 催她填，而请求根本没发出去。
             const bool netFail = g_stageFixNetFail;
             g_stageFixNetFail = false;
@@ -34356,9 +33110,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 AppLog(tagPick ? L"[挑素材] 模型没给有效值，画面保持上一轮"
                                : L"[打回] 模型没给有效值，画面保持原样");
             //
-            // ---- 【这一轮必须在素材日志里留一行】
+            // ---- 这一轮必须在素材调用记录里留一行
             //
-            // 【运行日志实况】素材调用日志里 第1轮 之后直接跳到 第3轮。
+            // ★ 症状：素材调用记录里，第1轮之后直接跳到 第3轮。
             // 缺的那轮正是挑素材请求失败的那次——它走了"三个空串"这一支
             // 直接 return，审计一条都没记。
             // 日志跳轮会让人误读成"她这轮没选"或"程序把她拒了"，
@@ -34382,15 +33136,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 AppendTextFile(PathJoin(a.dataDir, L"素材调用日志.txt"), t);
             }
             //
-            // ---- 【没拿到画面就再要一次，而不是直接放弃】
+            // ---- 没拿到画面就再要一次，而不是直接放弃
             //
-            // 【运行日志里的实况】一局里挑素材失败了两次，日志各写一行
+            // ★ 症状：一局里挑素材失败了两次，日志各写一行
             // "×挑素材请求失败，这一句没配画面（画面沿用上一轮）"，
             // 然后这一句就再也没有画面了——她说了话，脸还是上一句那张。
             //
-            // 原来这里是直接 return：请求失败和她没填值走同一支，
             // 都是"三个空串"，一律当"这一句不配画面"处理掉。
-            // 而这里要做的是"只要素材没接住，就把有问题的部分打回去重挑"——
+            // 而这里要做的是"只要素材没接住，就把有问题的部分打回去重挑"
             // 网络抖动和"她漏填"都值得再问一次，直接放弃等于白等一轮。
             //
             // 只重试一次（assetPickRetry），而且它跟着"轮"归零：
@@ -34403,24 +33156,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                        : L"[挑素材] 没拿到素材名，再问一次（本轮第 2 次）");
                 if (StartAssetPick(a.lastPickSay, a.lastPickScene, a.lastPickBeat)) {
                     //
-                    // 【台词保持挂起】
+                    // 台词保持挂起
                     // 挑素材模式下台词本来就是挂着的（等画面一起出）。
-                    // 这里不重新挂起，只是继续等第二次的结果——
+                    // 这里不重新挂起，只是继续等第二次的结果
                     // 画面回来时 FlushPendingSay 会把它和台词一起放出来。
                     return 0;
                 }
                 AppLog(L"[挑素材] 重试没能发起，画面沿用上一轮");
             }
             //
-            // 【挑素材失败就直接收尾，不要往下走】
-            // 下面还有一处 NoteAssets——走下去会把【当前值】记成
+            // 挑素材失败就直接收尾，不要往下走
+            // 下面还有一处 NoteAssets——走下去会把当前值记成
             // "她这一轮用过的"，streak 平白 +1，下一轮就把这张列入禁用，
             // 而她根本没选过它。
             //
-            // ---- 【放弃之前先把新章的画面拉回该在的地方】
+            // ---- 放弃之前先把新章的画面拉回该在的地方
             //
-            // 【这是"讲数组却站在昨天那条路上"真正会走到的出口】
-            // 网络失败时 dv.bg 沿用上一轮，而这一支是直接 return 的——
+            // 这是"讲数组却站在昨天那条路上"真正会走到的出口
+            // 网络失败时 dv.bg 沿用上一轮，而这一支是直接 return 的
             // 应用分支里那条护栏根本轮不到执行。
             // 不在这里补一次，请求一失败新章就整章穿帮。
             PullBgIntoChapterPool();
@@ -34444,18 +33197,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             AppLog(L"[打回] 修正值仍未接住（pose=%s bg=%s bgm=%s）",
                    fp.c_str(), fb.c_str(), fm.c_str());
         }
-
         //
-        // ---- 【第二个表情：自己校验，不进 ApplyAiStage】
+        // ---- 第二个表情：自己校验，不进 ApplyAiStage
         //
         // pose2 是这一句后半段的脸（恋爱段、教学段都要）。
-        // 不塞进 ApplyAiStage 是为了不碰那条已经很复杂的校验主链路——
+        // 不塞进 ApplyAiStage 是为了不碰那条已经很复杂的校验主链路
         // 它牵着 bg/bgm/outfit/emote 一大串，为一个新字段去重构不值当。
         //
-        // ---- 【不要求必填】
+        // ---- 不要求必填
         //
         // fp2 为空就整段跳过：她没给第二个表情就当单表情处理，不打断。
-        // 只有"给了、但不在清单里"或"跟第一个一样"才打回——
+        // 只有"给了、但不在清单里"或"跟第一个一样"才打回
         // 教学段她第一次遇到这个字段，漏填的概率不低，为此打回不值当。
         std::wstring pose2Ok;
         bool wantPose2Fix = false;
@@ -34479,26 +33231,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (!inList) { pose2Ok.clear(); wantPose2Fix = true; }
         }
-
         //
-        // ---- 【挑素材路径也要能打回】
+        // ---- 挑素材路径也要能打回
         //
-        // 【这是"恋爱段四轮全是害羞"的真凶，这次要解决的问题】
+        // ★ 症状：恋爱段四轮全是害羞
         //
         // 打回（StartStageFix）和挑素材（StartAssetPick）是两条互不搭界的路径。
-        // 打回那条在主请求里，填错就发；而【挑素材回调里根本没有发起打回的代码】。
+        // 打回那条在主请求里，填错就发；而挑素材回调里根本没有发起打回的代码。
         // 于是挑素材填了个接不住的名字时：
-        //   没接住 -> 没有任何补救 -> 画面沿用上一张 -> NoteAssets 照记
-        //   -> streak+1 -> 下一轮继续把它禁掉 -> 她又填 -> 再沿用……
+        // 没接住 -> 没有任何补救 -> 画面沿用上一张 -> NoteAssets 照记
+        // -> streak+1 -> 下一轮继续把它禁掉 -> 她又填 -> 再沿用……
         // 日志上每一轮都写着"已发起打回让她重选"——那句话是审计的固定措辞，
         // 跟有没有真发起毫无关系，正是它把上一轮的排查带偏了。
         //
         // 现在挑素材也走打回。注意两点：
-        //   ① 台词【不挂起】——挑素材模式下台词已经显示了，不存在"错误画面先生效"
-        //   ② g_stageFixIsPick 置 true —— 引擎【不许】替她兜底换脸，
-        //      换脸只能由模型决定，这是核心原则
-        //   ③ g_stageFixIsRetry 置 true —— 这次是"挑素材没接住"才发起的打回，
-        //      日志标签要写成【打回重填】，不能记成正常的挑素材
+        // ① 台词不挂起——挑素材模式下台词已经显示了，不存在"错误画面先生效"
+        // ② g_stageFixIsPick 置 true —— 引擎不许替她兜底换脸，
+        // 换脸只能由模型决定，这是核心原则
+        // ③ g_stageFixIsRetry 置 true
+        // 日志标签要写成打回重填，不能记成正常的挑素材
         if (isPick && (badPose || badBg || badBgm || wantPose2Fix)
             && a.stageFixTries < kMaxStageFix) {
             //
@@ -34508,12 +33259,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_stageFixIsRetry = true;
             if (StartStageFix(fv, a.lastHerSay, wantPose2Fix, fp2)) {
                 //
-                // ---- 【台词重新挂起】
+                // ---- 台词重新挂起
                 //
                 // 走到这里时 FlushPendingSay 已经执行过了（打回结束先放台词），
                 // 也就是说台词此刻正显示在屏幕上、画面却是旧的。
                 // 紧接着又要发起一次打回，不收回去的话，
-                // 玩家读到的就是"新台词 + 上一张脸"，正是要避免的观感。
+                // 玩家读到的就是"新台词 + 上一张脸"，
                 a.pendingSay      = a.view.body.empty() ? a.lastHerSay : a.view.body;
                 a.pendingEmote    = a.view.emote.empty() ? L"normal" : a.view.emote;
                 a.stageFixPending = true;
@@ -34530,32 +33281,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         //
         // ---- 打回没拿到有用的值，而这一轮是"连用被禁"触发的
         //
-        // 【不能就此保持原样】那样"两轮必换"在打回失败时等于失效，
+        // 不能就此保持原样那样"两轮必换"在打回失败时等于失效，
         // 画面会一直挂着同一张脸。这里才轮到引擎兜底轮换
         // （带安全池，不会挑出失望/生气那种强负面脸）。
         //
-        // ---- 【只在"全都没接住"时才兜底是不够的】
+        // ---- 只在"全都没接住"时才兜底是不够的
         //
         // 打回提示里写的是"只重填有问题的那几项"。所以她很可能
         // 只回了 bgm（bgm 也确实修好了），pose 一个字没给。
         // 那样 gotBgm 为真，上面那个 if 不成立 —— 兜底被跳过，
-        // 立绘照样挂着同一张脸，而日志里这一轮看着"修好了"。
-        // 运行日志里正是这条路径：五轮「认真」一次都没兜底。
+        // 立绘照样挂着同一张脸，而运行时这一轮看着"修好了"。
+        // 运行时正是这条路径：五轮「认真」一次都没兜底。
         //
         // 所以立绘的兜底只看立绘自己有没有修好。
         //
-        // ---- 【打回修正后的素材必须记进"最近用过"】
+        // ---- 打回修正后的素材必须记进"最近用过"
         //
         // ★ 症状：
-        //   13:47:31 她填「微笑」被禁 -> 打回 -> 13:47:33 她改成「害羞」，
-        //   画面确实换成了害羞。可下一轮日志的「最近用过」写的是
-        //   【微笑 -> 微笑 -> 微笑 -> 惊讶】——「害羞」一次都没出现。
+        // 画面确实换成了害羞。可下一轮日志的「最近用过」写的是
+        // 微笑 -> 微笑 -> 微笑 -> 惊讶——「害羞」一次都没出现。
         // 修正值只写进了画面，没写进 recentPoses / streak。
         // 后果：引擎还在数「微笑」的连用次数，禁用名单也照旧剔「微笑」，
-        //   而她早就换脸了——越往后算得越乱，还会反复打回同一张脸。
+        // 而她早就换脸了——越往后算得越乱，还会反复打回同一张脸。
         bool notedAssets = false;
         //
-        // ---- 【挑素材失败时【绝对不能】兜底换脸】
+        // ---- 挑素材失败时【绝对不能兜底换脸】
         //
         // 这条兜底是"打回也没救回来"的最后手段，属于引擎替她挑脸。
         // 挑素材是正常流程的第一步，不是补救——失败了就保持上一张，
@@ -34577,31 +33327,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             //
-            // ---- 【兜底跑完不能直接 return】
+            // ---- 兜底跑完不能直接 return
             //
             // 她可能只修好了 bgm、pose 没修好。这里 return 的话
-            // bgm 那个已经拿到的修正值就被一起丢掉了 ——
+            // bgm 那个已经拿到的修正值就被一起丢掉了
             // 白打回一次，玩家还以为程序不听她的。
-            // 只有当【三样全没修好】时才没有继续往下走的必要。
+            // 只有当三样全没修好时才没有继续往下走的必要。
             if (!gotBg && !gotBgm) return 0;
         }
 
         if (gotBg) {
             //
-            // ---- 【背景也跟着她划的节拍走】
+            // ---- 背景也跟着她划的节拍走
             //
-            // 【实测现象：现象：日常段"台词和画面不同步"】
-            // 她写"答应得这么快啊……走了走了。【推开门】（到了甜品店）"——
-            // 人明明是【推开门之后】才到，可背景在她开口的第一个字就跳过去了，
+            // 实测现象：现象：日常段"台词和画面不同步"
+            // 她写"答应得这么快啊……走了走了。推开门（到了甜品店）"
+            // 人明明是推开门之后才到，可背景在她开口的第一个字就跳过去了，
             // 前半句还站在教室里说话，脚下已经是甜品店。
             //
             // 表情早就没这个问题（pose2 有"说到 --- 才换脸"），
             // 唯独背景是在这里改 dirCurBg 的那一刻整块换掉，
-            // 而这一句【还没开始打字】——画面比叙事早了半句。
+            // 而这一句还没开始打字——画面比叙事早了半句。
             //
             // 所以：她这一句有第二个表情（说明她自己划了节拍、而且当前确实
             // 站在一个地方）时，新背景先记着，等换脸那一拍一起换。
-            // 她没划节拍、或者当前压根没有背景（开场第一句）就照旧立刻换——
+            // 她没划节拍、或者当前压根没有背景（开场第一句）就照旧立刻换
             // 那种句子本来也不存在"前半句在 A、后半句在 B"。
             if (!pose2Ok.empty() && !a.dirCurBg.empty() && fv.bg != a.dirCurBg) {
                 a.bgBeatName = fv.bg;
@@ -34628,7 +33378,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             a.rs.posePath = p;
         }
         //
-        // ---- 【第二个表情落槽】
+        // ---- 第二个表情落槽
         //
         // 切页点先算好（Pose2SwitchPage 会在翻页时用它），这里只记录
         // "分隔线在第几行"，真正的页数要等渲染层测出来。
@@ -34638,7 +33388,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             a.pose2Path = ResolvePoseFile(a.Def(), a.assetDir, pose2Ok);
             a.pose2Switched = false;
             a.pose2MarkerLine = -1;
-            // ---- 【拿她自己写的分隔线当切页点】
+            // ---- 拿她自己写的分隔线当切页点
             //
             // 她转场时已经在用 --- 了（"---\n\n（走在…路上）"），
             // 那是她自己划开的叙事节拍，比按字数控准得多。
@@ -34670,19 +33420,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 兜底那条分支已经记过了，这里不要记第二次（否则同一张脸连记两遍，
         // 「最近用过」里会出现重复项，禁用名单又只剔到一张）。
         //
-        // ---- 【她填了却没接住时【不能】记】
+        // ---- 她填了却没接住时【不能记】
         //
-        // 【这是 streak 一路涨到 4 的成因】
+        // 这是 streak 一路涨到 4 的成因
         // 她填害羞（接不住）-> 画面沿用害羞 -> 这里照记害羞 -> streak+1
         // -> 下一轮把害羞禁掉 -> 她又填害羞 -> 再记……四轮全害羞，
         // 而日志上只有一句"本轮禁用(预期)"，看着像一切正常。
         // 她这次没选成功，就不该算"她用过的"。
         if (!notedAssets && !badPose) {
             //
-            // ---- 记的是【这一句真正去的那个地方】
+            // ---- 记的是这一句真正去的那个地方
             //
             // 换景被压到节拍点时 dirCurBg 还是旧的（人还没走到），
-            // 照它记就等于"她这轮用的是上一句那个地方"——
+            // 照它记就等于"她这轮用的是上一句那个地方"
             // 下一轮的"别重复"约束会照着错的值来。
             const std::wstring& bgUsed = a.bgBeatName.empty() ? a.dirCurBg
                                                               : a.bgBeatName;
@@ -34691,8 +33441,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         //
         // ---- 审计补一笔：修正后到底对上了没有
         //
-        // 【不补的话日志里只有她填错的那次】
-        // 玩家看到画面是对的，日志却写着 ★ 不一致，
+        // 不补的话运行时只有她填错的那次
         // 会以为程序坏了——其实打回已经修好了。
         AppendAssetAudit(fp, fb, fm,
                          ((isPick && !isRetry) ? L"（挑素材）" : L"（打回重填）")
@@ -34730,27 +33479,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case ID_TRAY_TITLE:
             //
-            // ---- 【原来这一行的条件是反的，会真的丢档】
+            // 旧写法：if (a.ui.screen != Screen::Play) SaveGameNow;
+            // 也就是只有在游戏里才不存，其余一律存。两处都错：
             //
-            //  旧写法：if (a.ui.screen != Screen::Play) SaveGameNow();
-            //  也就是【只有在游戏里才不存】，其余一律存。两处都错：
+            // ① 在游戏里点托盘「回到标题」-> 不存。靠 60 秒一次的自动存档兜底，
+            // 最坏丢一分钟；更糟的是他可能就此关掉程序，
+            // 那这一局从上次自动存档之后就全没了，而界面一句提示都没有。
             //
-            //  ① 在游戏里点托盘「回到标题」-> 不存。靠 60 秒一次的自动存档兜底，
-            //     最坏丢一分钟；更糟的是他可能就此关掉程序，
-            //     那这一局从上次自动存档之后就全没了，而界面一句提示都没有。
+            // ② 已经停在标题页时点它 -> 反而存。而 SaveGameNow 不判断
+            // "这一局到底开没开始"，它只是把内存里当前的状态写进
+            // a.savePath（默认槽 1）。刚开机、什么都没读的时候，内存里是
+            // 初始状态——于是玩家的主存档被一份空档覆盖掉。
+            // 这种失败最狠：不报错、不提示，等他下次点「继续上次」
+            // 才发现档回不到
             //
-            //  ② 已经停在标题页时点它 -> 反而存。而 SaveGameNow 不判断
-            //     "这一局到底开没开始"，它只是把【内存里当前的状态】写进
-            //     a.savePath（默认槽 1）。刚开机、什么都没读的时候，内存里是
-            //     初始状态——于是玩家的主存档被一份空档覆盖掉。
-            //     这种失败最狠：不报错、不提示，等他下次点「继续上次」
-            //     才发现档回不到原来那一章了。
-            //
-            //  正确判据是"这一局有没有在进行"（g_titleUseChar），而不是
-            //  "当前界面是不是 Play"：从游戏里打开存档页 / 设置页时
-            //  界面已经不是 Play 了，可那一局还活着——用界面判就会漏掉这次落盘。
-            //  反过来，停在标题页、什么都没读时它是 false，不会写出空档。
-            //  （SaveGameNow 内部还有同一道判据兜底，两处口径一致。）
+            // 正确判据是"这一局有没有在进行"（g_titleUseChar），而不是
+            // "当前界面是不是 Play"：从游戏里打开存档页 / 设置页时
+            // 界面已经不是 Play 了，可那一局还活着——用界面判就会漏掉这次落盘。
+            // 反过来，停在标题页、什么都没读时它是 false，不会写出空档。
+            // （SaveGameNow 内部还有同一道判据兜底，两处口径一致。）
             if (g_titleUseChar) SaveGameNow();
             GoScreen(Screen::Title);
             return 0;
@@ -34762,20 +33509,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 【ID_TRAY_OFFLINE 已随离线模式一起移除】
         case ID_TRAY_RESET:
             //
-            // ---- 只清当前槽，但【进度必须一并回到开头】
+            // ---- 只清当前槽，但进度必须一并回到开头
             //
-            // 【这是"重置以后立马来到了放学后"的根因】
-            // 原来这里只删文件 + 重载剧本变量，Director 的进度（章号、
+            // 这是"重置以后立马来到了放学后"的根因
             // 当前阶段、轮数）一个都没动。
             // 于是玩家点"重置存档"，存档是空的了，
             // 可 Director 还停在上次的阶段 —— 上次玩到章间日常，
             // 重置完一开口就还在那段日常里，画面正是"放学后的课室"。
-            // 玩家看到的是"我重置了，怎么还在半路上"。
             //
             // 而且它跟上面那个 bug 叠加后更糟：重置后她第一轮给个 2，
             // 引擎判通过 → 立刻进日常，"放学后"来得更快。
             //
-            // 现在：走 BeginStory() 那套完整初始化（它会 Restore 空快照，
+            // 现在：走 BeginStory 那套完整初始化（它会 Restore 空快照，
             // 把章号、阶段、轮数全部归零），再开新局。
             DeleteSlot(a.curSlot);
             a.mem.Clear();
@@ -34809,10 +33554,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::wstring p(path);
             size_t dp = p.rfind(L'.');
             std::wstring ext = ToLower((dp == std::wstring::npos) ? L"" : p.substr(dp));
-
             // ---- 素材（图片 / 音乐）→ 导进角色卡当前角色的目录
             //
-            // 【为什么不再往通用 assets\bg 里丢】
+            // 为什么不再往通用 assets\bg 里丢
             // 核心玩法是角色包可更换：素材应该跟着角色走，丢在通用目录里的图
             // 换包时就成了孤儿——不属于任何角色，谁都能用也谁都不算数。
             // 而且通用目录拿不到"这张图给谁、是什么意思"，模型看到的
@@ -34867,16 +33611,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
-
-// ============================================================================
-//  入口
-// ============================================================================
+// 入口
 // 从 exe 目录往上找 assets，最多 4 级。
 //
 // 为什么必须找：VS 把 exe 输出到 <项目>\x64\Debug\，而素材通常放在项目根。
 // 差两级，写死 exe 同目录的话素材永远找不到。
 //
-// 判据用"里面有没有 script\main.cks 或 char\"，而不是只看 assets 目录存在——
+// 判据用"里面有没有 script\main.cks 或 char\"，而不是只看 assets 目录存在
 // 空目录同名的情况不少（比如玩家自己建了一个）。
 static std::wstring FindAssetRoot(const std::wstring& exeDir) {
     auto up = [](const std::wstring& p) -> std::wstring {
@@ -34898,25 +33639,24 @@ static std::wstring FindAssetRoot(const std::wstring& exeDir) {
     }
     return PathJoin(exeDir, L"assets");   // 都找不到就退回原行为
 }
-
 // ---------------------------------------------------------------- 启动自检日志
 //
-// 【为什么需要它】
+// 为什么需要它
 // 启动阶段崩溃最难查：窗口刚出来就闪退，没有任何线索，
-// 而 Debug 下那个 0xC0000005 对话框只告诉我们"读了地址 0"，不说在哪读的。
+// 而 Debug 下那个 0xC0000005 对话框只说"读了地址 0"，不说在哪读的。
 //
-// 这里把启动的每一步写进 data\启动日志.txt，并且【每步都 fflush】——
+// 这里把启动的每一步写进 data\启动日志.txt，并且每步都 fflush
 // 崩溃时 CRT 缓冲区里的内容会全部丢掉，不 flush 的话日志反而停在更早的地方，
 // 把人引到错误的方向。
 //
 // 正常启动后它就没用了，内容每次启动覆盖，不会越滚越大。
-// 【不用 fopen，改用项目自己的 WriteTextFile 整篇重写】
+// 不用 fopen，改用项目自己的 WriteTextFile 整篇重写
 //
 // 原来用 fopen + fwrite + fflush。MSVC 下 fopen 会报 C4996
 // （"may be unsafe, consider fopen_s"）——虽然加了 _CRT_SECURE_NO_WARNINGS
 // 也能压掉，但没必要的警告不该留着让人每次编译都看到。
 //
-// 整篇重写反而【更适合崩溃排查】：
+// 整篇重写反而更适合崩溃排查：
 // 磁盘上永远是"最后一次 BootStep 时的完整内容"，
 // 崩溃后直接看最后一行就是崩在哪一步，不存在"缓冲没刷出去"的问题。
 // 启动只有十几步，重写十几行的代价可以忽略。
@@ -34930,11 +33670,11 @@ static void BootStep(const std::wstring& msg) {
 //
 // 不带 [boot] 前缀、启动之后也能继续追加的一行。
 //
-// 【为什么需要它】
-// 存档诊断原来全走 AppLog，而 AppLog 写的是【状态栏 + 调试输出】，
+// 为什么需要它
+// 存档诊断原来全走 AppLog，而 AppLog 写的是状态栏 + 调试输出，
 // 根本不进 启动日志.txt。那个文件是玩家唯一会去翻的地方，
-// 于是"读不到档"连着几轮只能靠猜——包括我自己，也是盲的。
-// 诊断必须落在玩家看得到的文件里，否则等于没写。
+// 于是"读不到档"连着几轮只能靠猜——包括
+// 诊断必须落在
 static void BootNote(const std::wstring& msg) {
     if (g_bootLogPath.empty()) return;
     g_bootLogText += msg + L"\n";
@@ -34953,16 +33693,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     a.exeDir   = GetExeDir();
     a.assetDir = FindAssetRoot(a.exeDir);
     a.charDir  = PathJoin(a.assetDir, L"char");
-
-    // assets 找不到时【明确说清楚】，不要静默往下走。
+    // assets 找不到时明确说清楚，不要静默往下走。
     //
-    // 【这是"一启动就崩"最可能的原因】
-    // 之前 assetDir 直接写死 exe 同目录，而 VS 把 exe 输出到 x64\Debug\，
-    // 素材在项目根 —— 差两级，于是 charDir 指向一个不存在的目录：
-    // 角色库加载不到任何角色 → Def() 返回 nullptr →
+    // 这是"一启动就崩"最可能的原因
+    // 素材在项目根 —— 差两级，
+    // 角色库加载不到任何角色 → Def 返回 nullptr →
     // 后面任何"拿角色配色 / 插画"的地方解引用空指针就是 0xC0000005 读地址 0。
     //
-    // 更麻烦的是注释曾一直写"会自动向上找最多 4 级"——
+    // 更麻烦的是注释曾一直写"会自动向上找最多 4 级"
     // 那是虚假报告，代码里一行都没有。现在真的补上了。
     if (!DirExists(a.charDir)) {
         MessageBoxW(nullptr,
@@ -34971,17 +33709,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
              L"\nVS 默认把 exe 生成在 x64 的 Debug 子目录里，所以放到项目根目录就行。").c_str(),
             L"YourReality", MB_ICONERROR);
     }
-
     //
     // ---- appDir：设置（config.ini）和后装的角色包放哪儿
     //
-    // 【改成 exe 旁边，不再放 %APPDATA%】
+    // 改成 exe 旁边，不再放 %APPDATA%
     // 原来它指向 %APPDATA%\YourReality：路径深、玩家翻不到，于是"根本没有
-    // config"这种疑问反复出现；更要紧的是整个程序的文件被劈成两处——
+    // config"这种疑问反复出现；更要紧的是整个程序的文件被劈成两处
     // Debug 目录拷走 / 发给别人时，设置和角色包留在原地，等于丢了一半。
     // 现在默认就是 exe 所在目录（VS 下即 x64\Debug），整个目录拿走就能跑。
     // 只有目录真的不可写（装在 Program Files 之类）才退回 %APPDATA%，
-    // 并且会在启动日志里写明——不能因为建不了目录就让设置丢失。
+    // 并且会在启动运行时写明——不能因为建不了目录就让设置丢失。
     {
         if (EnsureDir(a.exeDir)) a.appDir = a.exeDir;
         else {
@@ -34990,19 +33727,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
             AppLog(L"程序目录不可写，设置与角色包改放：%s", a.appDir.c_str());
         }
     }
-
     // ---- data 文件夹：完整存档信息，给人看的
     //
-    // 【为什么要有它，而不只有 %APPDATA% 里那几份 json】
+    // 为什么要有它，而不只有 %APPDATA% 里那几份 json
     // %APPDATA% 是"程序自己读的"：路径深、二进制式的一坨、历史还做了截断。
-    // 玩家想知道"她到底跟我说过什么"、"存档到底存了啥"，根本没法看。
+    // 玩家想知道"她到底跟
     //
-    // data 放在【exe 旁边】，打开就能看到，里面存：
-    //   · 存档_sN.json   完整存档（对话历史不截断）
-    //   · 对话_sN.txt    纯文本对话记录，直接双击就能读
+    // data 放在exe 旁边，打开就能看到，里面存：
+    // · 存档_sN.json 完整存档（对话历史不截断）
+    // · 对话_sN.txt 纯文本对话记录，直接双击就能读
     //
     // 程序目录不可写（比如装在 Program Files）时退回 %APPDATA%\data，
-    // 并在日志里说明——不能因为建不了目录就让存档失败。
+    // 并在运行时说明——不能因为建不了目录就让存档失败。
     {
         std::wstring cand = PathJoin(a.exeDir, L"data");
         if (EnsureDir(cand)) {
@@ -35022,17 +33758,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     //
     // ---- 再搬一层：data 根目录 -> data\<角色> 目录
     //
-    //  存档按角色分目录之后，ScanSlots 只扫 data\<角色>\，
-    //  根目录里那些改版之前存的档就再也扫不到了——存档页全空、还不报错。
-    //  必须排在 SetCharDataDir() 之前，否则 dataDir 已经切进角色目录，
-    //  这一趟搬迁等于什么都没看见。
+    // 存档按角色分目录之后，ScanSlots 只扫 data\<角色>\，
+    // 根目录里那些改版之前存的档就再也扫不到了——存档页全空、还不报错。
+    // 必须排在 SetCharDataDir
+    // 这一趟搬迁等于什么都没看见。
     //
-    //  【只搬这一次】
-    //  这个函数原来被写了两遍（IntoCharDirs / ToCharDirs 各一份），两个调用点
-    //  一前一后各跑一次。同一件事两处各写一遍，正是本项目反复犯的病——
-    //  改一处忘一处。现在只有这一处定义、这一处调用。
-    //  它不依赖角色库（目标目录取自存档自己记的 charId），
-    //  所以放在角色库加载之前也完全成立。
+    // 只搬这一次
+    // 这个函数原来被写了两遍（IntoCharDirs / ToCharDirs 各一份），两个调用点
+    // ★ 同一件事不要两处各写一遍。
+    // 改一处忘一处。现在只有这一处定义、这一处调用。
+    // 它不依赖角色库（目标目录取自存档自己记的 charId），
+    // 所以放在角色库加载之前也完全成立。
     MigrateSavesToCharDirs();
 
     // 启动日志放在 data 里（跟存档一处，玩家容易找到）
@@ -35052,9 +33788,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
 
     LoadConfig();
     //
-    // ---- 【把 config.ini 的所在写进启动日志】
+    // ---- 把 config.ini 的所在写进启动日志
     //
-    // 它是【设置】不是【存档】，放在 appDir（= exe 所在目录），不在 data 里。
+    // 它是设置不是存档，放在 appDir（= exe 所在目录），不在 data 里。
     // 玩家在 data 目录里翻不到它，就会以为"根本没有 config"。
     // 这里写一次路径，省得猜。
     BootStep(L"配置文件：" + a.configPath
@@ -35065,23 +33801,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     BootStep(L"开始加载角色库: " + a.charDir);
     a.chars.Load(a.charDir);
     BootStep(L"角色库加载完，共 " + WFromInt((long long)a.chars.Size()) + L" 个");
-
     // ---- 旧版留过 charpacks 的话提醒一句。
-    //  "装角色包"那条路删掉了，这个目录不再被扫描；里面真有包的话
-    //  玩家会以为角色凭空消失了，而界面上不会有任何线索。
-    //  不自动搬：搬到 assets\char 是改变玩家数据的动作，宁可让他自己确认一次。
+    // "装角色包"那条路删掉了，这个目录不再被扫描；里面真有包的话
+    // 不自动搬：搬到 assets\char 是改变玩家数据的动作，宁可让他自己确认一次。
     {
         std::wstring oldPacks = PathJoin(a.appDir, L"charpacks");
         if (DirExists(oldPacks))
             BootStep(L"注意：程序目录里还留着旧的 charpacks 文件夹（不再被扫描）——"
                      L"里面若有角色包，请把它们移到 assets\\char\\ 下，再点「重新扫描」");
     }
-
     //
     // ---- 解绑名单：必须等扫描完再应用
     //
-    // PruneHidden 要按【实际扫到的包】清掉名单里已经失效的 id
-    //（包被手动从 assets 删了，id 还留在名单里）。扫之前调等于全清掉。
+    // PruneHidden 要按实际扫到的包清掉名单里已经失效的 id
+    // （包被手动从 assets 删了，id 还留在名单里）。扫之前调等于全清掉。
     {
         std::vector<std::wstring> hid;
         Split(IniGetStr(a.configPath, L"Game", L"UnboundChars", L""), L',', hid);
@@ -35092,9 +33825,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     {
         std::wstring last = IniGetStr(a.configPath, L"Game", L"LastChar", L"");
         //
-        // 【解绑过的角色不再自动恢复成"上次那个"】
+        // 解绑过的角色不再自动恢复成"上次那个"
         // 玩家既然主动解绑了它，启动时就不该又把它选回来——那会让
-        // "我明明解绑了"看起来没生效。存档里记着它的槽仍然读得到，
+        // "
         // （Find 不过滤解绑），所以进度不会丢，只是不再被自动选中。
         if (!last.empty() && a.chars.Find(last) && !a.chars.IsHidden(last)) a.curChar = last;
         else {
@@ -35103,24 +33836,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
         }
     }
     //
-    // ---- 【剧本清单必须先扫出来，否则一个存档都读不了】
+    // ---- 剧本清单必须先扫出来，否则一个存档都读不了
     //
-    // 【实测现象：：新版本"无法读取已有的存档"】
-    // SetCharDataDir() 里会调 ScanSlots()，而 ScanSlots 给每个槽算 reject，
+    // 实测现象：：新版本"无法读取已有的存档"
+    // SetCharDataDir 里会调 ScanSlots，而 ScanSlots 给每个槽算 reject，
     // SlotRejectReason 又要按存档里的 syllabusId 去 syllabusPacks 里查那本剧本
-    // 还在不在。可 syllabusPacks 【原本只在 LoadSyllabus() 里填充】，
-    // 而 LoadSyllabus() 在下面几十行之后才跑——
+    // 还在不在。可 syllabusPacks 原本只在 LoadSyllabus 里填充，
+    // 而 LoadSyllabus 在下面几十行之后才跑
     // 于是启动时扫槽的那一刻，清单还是空的，SyllabusPackById 恒返回 nullptr，
     // 每一份带 syllabusId 的档都被判成「用的剧本找不到了」，
     // 结果就是：所有存档一律读不了，而剧本明明好好地放在 assets\syllabus 下。
-    // 这里先扫一次。LoadSyllabus() 里会再扫一遍（重扫无副作用，剧本随时可能换过）。
+    // 这里先扫一次。LoadSyllabus 里会再扫一遍（重扫无副作用，剧本随时可能换过）。
     a.syllabusPacks = ScanSyllabusPacks(a.assetDir);
-
-    // 【data 根目录的老档已经在前面搬过了】（见 MigrateSavesToCharDirs 的调用点）
+    // data 根目录的老档已经在前面搬过了（见 MigrateSavesToCharDirs 的调用点）
     // 这里不再搬第二次——搬迁是幂等的，但调用点多了就会有人只改一处。
-
     // 角色定下来了 -> 存档目录切到这个角色自己的文件夹。
-    // 【必须在 ApplySlotPaths(1) 之前】否则槽路径先按根目录算出来。
+    // 必须在 ApplySlotPaths(1) 之前否则槽路径先按根目录算出来。
     SetCharDataDir();
     // VM 挂上角色库：剧本里的 id 会自动换成显示名，台词会自动过语气包
     a.vm.SetCharBank(&a.chars);
@@ -35137,14 +33868,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     // 槽路径必须先定下来，否则 memPath 是空串，下面的 Load 会读空路径。
     // 启动时先挂到槽 1，真正读档时由 LoadFromSlot 切到目标槽。
     ApplySlotPaths(1);
-
     //
     // ---- 存档扫描诊断（写进启动日志）
     //
-    // 【为什么要有这一段】
+    // 为什么要有这一段
     // "读不到存档"有两种成因完全不同、界面表现却一模一样（都是 9 个空槽）：
-    //   · 没扫到：档不在这个角色目录下（还在 data 根目录 / 在别的角色目录里）
-    //   · 扫到了但被拒：那种卡片上会写原因，看卡片就知道
+    // · 没扫到：档不在这个角色目录下（还在 data 根目录 / 在别的角色目录里）
+    // · 扫到了但被拒：那种卡片上会写原因，看卡片就知道
     // 不分清楚就只能靠猜。这里把两种都记下来，玩家打开 data\启动日志.txt 就能看到。
     {
         int used = 0, rejected = 0;
@@ -35157,16 +33887,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
         if (rejected) line += L"（其中 " + WFromInt(rejected) + L" 个读不了，存档页上写了原因）";
         BootStep(line);
         //
-        // ---- 【每个角色的目录都列一遍，不再只在"一份都没有"时才列】
+        // ---- 每个角色的目录都列一遍，不再只在"一份都没有"时才列
         //
-        //  存档按角色分目录，而当前角色是 config 里的 LastChar 决定的。
-        //  于是"档明明在磁盘上、存档页却是空的"最常见的原因就是：
-        //  档在 data\角色A 里，而这次启动选的是角色B，扫的是 data\角色B\。
+        // 存档按角色分目录，而当前角色是 config 里的 LastChar 决定的。
+        // 于是"档明明在磁盘上、存档页却是空的"最常见的原因就是：
+        // 档在 data\角色A 里，而这次启动选的是角色B，扫的是 data\角色B\。
         //
-        //  原来只在当前角色【一份都没有】时才提示——当前角色只有 1 份时
-        //  完全不提，玩家看着那 1 个槽说"读不到档"，
-        //  而真正的档躺在隔壁目录里，谁也不知道。
-        //  现在每次启动都把 data 下每个角色目录各有几份列出来。
+        // 原来只在当前角色一份都没有时才提示——当前角色只有 1 份时
+        // 完全不提，
+        // 而真正的档躺在隔壁目录里，谁也不知道。
+        // 现在每次启动都把 data 下每个角色目录各有几份列出来。
         {
             std::vector<std::wstring> dirs = ListDirs(a.dataRoot);
             const std::wstring curDir = SafeDirNameOf(a.curChar);
@@ -35175,9 +33905,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
                 if (nm.empty()) continue;
                 int n = CountSaveFilesIn(dirs[i]);
                 //
-                // 【0 份的目录也要打出来】
+                // 0 份的目录也要打出来
                 // 原来 n==0 就 continue，于是"这个角色的文件夹存在、但里面一份都没有"
-                // 和"这个文件夹压根没被扫到"在日志里长得一模一样，只能继续猜。
+                // 和"这个文件夹压根没被扫到"在运行时长得一模一样，只能继续猜。
                 // 这两种的下一步完全不同（前者是档丢了，后者是代码没扫到），
                 // 所以都写出来。
                 BootStep(L"  目录 " + nm + L"：有 " + WFromInt(n) + L" 份"
@@ -35188,10 +33918,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
             //
             // ---- data 根目录里躺着的存档：隐形，必须点出来
             //
-            //  按角色分目录之后扫描只进 data\<角色>\，根目录它根本不看。
-            //  躺在那儿的档等于不存在，而且界面上一个字都不会提。
-            //  （dataDir 还等于 dataRoot 时说明还没选角色，扫描就在根目录，
-              //   那种情况下根目录的档是读得到的，不该报警。）
+            // 按角色分目录之后扫描只进 data\<角色>\，根目录它根本不看。
+            // 躺在那儿的档等于不存在，而且界面上一个字都不会提。
+            // （dataDir 还等于 dataRoot 时说明还没选角色，扫描就在根目录，
+              // 那种情况下根目录的档是读得到的，不该报警。）
             if (a.dataDir != a.dataRoot) {
                 int stray = CountSaveFilesIn(a.dataRoot);
                 if (stray)
@@ -35233,12 +33963,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     int w = (int)(CK_BASE_W * a.zoom), h = (int)(CK_BASE_H * a.zoom);
     RECT rc = { 0, 0, w, h };
     AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
-
-    // 【WS_CLIPCHILDREN 是必需的，不是可选项】
+    // WS_CLIPCHILDREN 是必需的，不是可选项
     //
-    // 没有它，BeginPaint 拿到的裁剪区是【整个客户区，包括 EDIT 子窗口占的那块】。
-    // 于是 30FPS 的定时器每帧都走：
-    //   父窗口把编辑框区域画成深色背景 → EDIT 自己重绘回白底 → 下一帧又…
+    // 没有它，BeginPaint 拿到的裁剪区是整个客户区，包括 EDIT 子窗口占的那块。
+    // 父窗口把编辑框区域画成深色背景 → EDIT 自己重绘回白底 → 下一帧又…
     // 深↔白每秒来回 30 次，这就是"编辑框一直在闪"。
     //
     // 它跟"背景色深浅"无关，只要父窗口每帧全屏重绘 + 有子窗口，就必然发生。
@@ -35254,15 +33982,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
         MessageBoxW(nullptr, L"窗口创建失败", L"YourReality", MB_ICONERROR);
         return 1;
     }
-
     // ---- 工具链探测已移除
-    // 原来这里会在启动时跑一次 vswhere.exe 找 cl.exe。
     // 判题改成交给大模型之后不需要它了，而它要扫盘 + 起子进程，
     // 是"打开程序要等一下"的一个来源。
-
     // ---- 载入剧本。
-    //     上次玩的角色如果有专属剧本，这里就直接用它，
-    //     否则各界面会显示通用剧本的清单，跟当前角色对不上。
+    // 上次玩的角色如果有专属剧本，这里就直接用它，
+    // 否则各界面会显示通用剧本的清单，跟当前角色对不上。
     {
         const CharDef* d = a.Def();
         if (d && !d->script.empty()) {
@@ -35277,16 +34002,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     // 不管哪种模式，剧本都保留着——导演模式下它是离线时的兜底。
     LoadSyllabus();
     BootStep(L"大纲加载完成");
-
     // ---- 剧本出错了，要不要摆到画面上？
     //
-    // 【导演模式不需要剧本】有大纲时台词是实时生成的，剧本文件缺了、
+    // 导演模式不需要剧本有大纲时台词是实时生成的，剧本文件缺了、
     // 编译不过都不影响玩，这时候把"找不到剧本文件"挂在对话框上、
     // 名字牌写成「系统」，只会让开场画面很脏——玩家根本没招惹过剧本。
     //
-    // 【剧本模式才真的没它不行】没有大纲就只能照着脚本念，
+    // 剧本模式才真的没它不行没有大纲就只能照着脚本念，
     // 脚本读不出来就是彻底没内容可演，这时候必须说清楚，
-    // 否则玩家看到的是一个没解释的黑屏。
+    // 否则
     ShowScriptErrIfNeeded();
 
     // ---- 停在标题画面。有存档就点亮"读取存档 / 继续上次"。
@@ -35296,12 +34020,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     for (size_t i = 0; i < a.slots.size(); ++i)
         if (a.slots[i].used) { a.ui.hasSaveData = true; break; }
     //
-    // ---- 【把每份存档的可读状态写进启动日志】
+    // ---- 把每份存档的可读状态写进启动日志
     //
-    //  "读不到已有的存档"最难受的地方是【没有任何线索】：
-    //  存档页可能是全空的（扫的目录里没有），也可能是列着但读不了——
-    //  两种情况在界面上长得差不多，而原因完全不同。
-    //  这份日志一次说清：扫的是哪个目录、有几份、哪几份读不了、为什么。
+    // "读不到已有的存档"最难受的地方是没有任何线索：
+    // 存档页可能是全空的（扫的目录里没有），也可能是列着但读不了
+    // 两种情况在界面上长得差不多，而原因完全不同。
+    // 这份日志一次说清：扫的是哪个目录、有几份、哪几份读不了、为什么。
     {
         int nOk = 0, nBad = 0;
         for (size_t i = 0; i < a.slots.size(); ++i) {

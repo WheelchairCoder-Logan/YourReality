@@ -48,3 +48,15 @@ assets/title/*.wav
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# 开发与调试产物（不进仓库）
+*.png
+回放验证/
+_t/
+_tt/
+tests/replay/
+串味风险清单.md
+已落地功能清单.md
+游戏功能总览.md
+_fix.py
+*.bak
