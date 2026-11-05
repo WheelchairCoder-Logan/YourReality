@@ -1154,8 +1154,7 @@ std::wstring ResolvePoseFile(const CharDef* def, const std::wstring& assetDir,
 // 传 nullptr 结尾的关键词数组，越靠前越优先。
 std::wstring PickBgForMood(const CharDef* def, const std::wstring& assetDir,
                            const std::vector<std::wstring>& prefs, bool allowFallback);
-// 游戏内 BGM：固定一首主题曲（[Bgm] Default）。
-// 音乐不交给大模型挑——见 character.cpp 里的说明。
+// 游戏内 BGM：开局第一首由 [Bgm] Default / 意境关键词决定，之后由大模型按情绪换。
 std::wstring ResolveGameBgmFor(const CharDef* def, const std::wstring& assetDir);
 // 从 pool 里挑一个跟 avoid 不同的。
 //
@@ -1331,7 +1330,6 @@ struct SyllabusChapter {
     std::wstring bg;
     // 进章时的初始 BGM。留空 = 不强行切歌，沿用上一首 / 交给大模型挑。
     //
-    // 这里
     // 那时音乐写死两首（主页曲 + 主题曲）。现在游戏内的曲子交给大模型，
     // 它的清单来自扫目录（主页曲已剔除），所以大纲可以指定一个开场曲。
     // 留空仍然是"不动"——不能默认塞一个名字回来，那样"留空"就失效了。
@@ -7491,8 +7489,7 @@ bool IsAsciiName(const std::wstring& s) {
     return true;
 }
 
-// 【这张硬编码别名表已删除】数据搬到了 char.ini [AssetRole] 的 别名.<词>。
-// 代码不再认识任何素材名——换角色包改 char.ini 即可。
+// 别名表在 char.ini [AssetRole] 的 别名.<词>；代码不认识任何素材名，换包只改 ini。
 
 std::wstring MatchEmotionAlias(const std::vector<std::wstring>& pool,
                                const std::wstring& want) {
@@ -7729,7 +7726,6 @@ static const wchar_t* const kBgmExt[] = { L".wav", nullptr };
 // 游戏内的开场曲，只在刚进故事时用一次。
 //
 // 它不再是"游戏内唯一的一首"
-// 这里
 // 现在放开了：进故事之后曲子由大模型按情绪换，
 // 它的清单来自扫目录（主页曲已剔除），见 ScanVisibleAssets。
 //
@@ -7738,7 +7734,7 @@ static const wchar_t* const kBgmExt[] = { L".wav", nullptr };
 // 没配 / 文件不在 → 从扫到的曲子里挑第一首（不会是主页曲）；
 // 连曲子都没有 → 退回通用的 bgm\主题（多半也不存在，就是静音）。
 // 资源目录：角色包用相对路径，散装角色挂在 assets 下。
-// 就导致散装角色的素材永远找不到。
+// 两种挂法必须分开拼，否则散装角色的素材永远找不到。
 static std::wstring AssetSubDir(const CharDef* def, const std::wstring& assetDir,
                                 const std::wstring& configured) {
     std::wstring dir = configured.empty() ? L"bgm" : configured;
@@ -7957,7 +7953,6 @@ std::wstring ResolveGameBgmFor(const CharDef* def, const std::wstring& assetDir)
     {
         VisibleAssets v = ScanVisibleAssets(def, assetDir);
         if (!v.bgm.empty()) {
-            // 这里
             // 清单是排序过的，所以玩家听到的永远是同一首、且是排序最靠前的
             // 那首 —— 看不出任何"她选的"痕迹，自然怀疑是程序在按目录顺序放。
             // 现在按意境关键词挑一首像主题曲的（主题 / 平静 / main / theme），
@@ -8056,17 +8051,13 @@ bool CharDef::HasPose(const std::wstring& n) const {
     for (size_t i = 0; i < poseOrder.size(); ++i) if (poseOrder[i] == n) return true;
     return false;
 }
-// 默认造型：优先挑带"平静"的，其次带 calm，再不行就用第一个。
+// 默认造型：优先用 char.ini [AssetRole] 的 默认表情；没配就用清单第一张。
 //
-// 为什么不能用 poseOrder[0]
-// 排序是字典序，"校服_得意"会排在"校服_平静"前面。
-// 开局顶着一张得意脸说话很怪。要挑最中性的那张。
+// ★ 清单按字典序排，第一张未必是中性脸（「叹气」「害羞」都可能排在最前）。
+// 每个角色包都该配 默认表情；代码绝不猜素材名——猜错比用第一张更糟。
 std::wstring CharDef::DefaultPose() const {
     if (poseOrder.empty()) return L"";
-    // 【默认表情来自 char.ini [AssetRole] 的 默认表情】
     // 配了就找名字里含它的那张；没配、或配了但清单里没有 -> 用第一张。
-    // 【绝不猜素材名】：不认识的角色包就老老实实用清单第一个，
-    // 猜错（顶着一张得意脸开场）比"用第一张"糟糕得多。
     if (!gRole.defaultPose.empty()) {
         for (size_t i = 0; i < poseOrder.size(); ++i)
             if (poseOrder[i].find(gRole.defaultPose) != std::wstring::npos)
@@ -8307,7 +8298,6 @@ bool Syllabus::Load(const std::wstring& path) {
             }
             ++extra;
         }
-        // 这里
         // Bg 默认 "课"、Bgm 默认 "平静"，于是作者把这一行删掉或留空时，
         // 拿到的不是"不动"，而是硬塞回来的默认值 —— 跟 README 里写的
         // "留空 = 沿用模型的选择"完全相反，配了半天没效果。
@@ -8355,7 +8345,6 @@ bool Syllabus::Load(const std::wstring& path) {
         ch.task.answer = SecInt(path, sec, L"Answer", 0);
         // 题目不是必须的（有些章节可以只聊不考），但配了就必须完整
         //
-        // 这里
         // 导演模式已经不写代码了，那条校验对选择题毫无意义，
         // 而真正该拦的（有题干却没选项 / 答案越界）原来一条都没拦。
         if (!ch.task.stmt.empty()) {
@@ -11701,7 +11690,6 @@ bool ScriptCompile(const std::wstring& text, const std::wstring& assetDir, Progr
     // 编译期检查
     // 1) 跳转目标是否存在；顺手收集可达关系
     //
-    // 这里
     // 真正的检查在下面循环里内联做。留着这个"看起来做了检查"的空壳最危险：
     // 改代码的人会以为检查已存在，于是放心地删掉下面的内联判断。
     // 所以直接删掉，让唯一的一份检查留在它能起作用的地方。
@@ -14022,7 +14010,6 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
     if (directorMode) {
         // ---- 画面字段：清单来自扫目录，不再是写死的白名单
         //
-        // 这里
         // bg： 开场 / 课 / 题 / 通过 / 卡住 / 终章 / 结局_真 ...
         // bgm： 平静 / 开心 / 疑惑 / 惊吓 / 紧张 / 结局
         // 问题：作者往 assets/bg/ 丢一张新图，代码里没有它 → 模型永远切不过去。
@@ -15496,7 +15483,6 @@ Image* Renderer::CharPortrait(const CharDef* def) {
     }
     // 2. 没配卡面 → 用该角色的默认造型
     //
-    // 这里
     // 对"平静.png""生气.png"这种无前缀、按造型命名的素材必然落空
     // 于是选角卡片永远走占位分支，显示名字首字（"常""布""绫"）。
     // 看得见角色是谁，却看不见脸，等于卡片上最有辨识度的部分没了。
@@ -15527,7 +15513,6 @@ Image* Renderer::TitleArt(const CharDef* def) {
     if (Image* img = CharPortrait(def)) return img;
     // 3. 最后才退回立绘，没画插画也不至于空一大块。
     //
-    // 这里
     // 参数位是 (def, fallbackKey, emote, outfit, pose)
     // 造型名被塞进了 emote 位，pose 位空着，
     // 于是走的不是"造型优先"那条路，而是 outfit × emote 的降级链。
@@ -17445,7 +17430,6 @@ void DrawBack(Gdiplus::Graphics& g, bool hot) {
 // 子界面统一开场：铺背景 + 画返回按钮。原来 5 个子界面各写一遍，
 // 抄漏一处就是"这个界面点了返回没反应"。
 void DrawBackdropBack(Gdiplus::Graphics& g, const App& a) {
-    // 这里
     // 抽函数时把函数体写成调用自身，等于无限递归：
     // 一进任何子界面（设置/背景库/存档/剧本）就立刻栈溢出。
     // MSVC 的 C4717「如递归所有控件路径，函数将导致运行时堆栈溢出」
@@ -17490,7 +17474,6 @@ static bool TitleUseChar(const App& a) {
 
 namespace {
 // 标题菜单项：下标即 hover 含义
-// 这里
 //
 // 数组声明 7 个、只给 6 个初始值，第 7 个被值初始化成空指针。
 // 绘制循环 `for (i = 0; i < kTitleItems; ++i)` 跑到 i=6 时把 nullptr 传给
@@ -18986,7 +18969,6 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         Left(g, FormatStamp(si.ts), fSm, dr.X + 24, y, kTextDim); y += 34;
         // 最后一句台词。读档前能回想"聊到哪了"，比只看章节数字有用得多。
         //
-        // 这里
         // 1) 存档里的 preview 是她最后一句话的原文，自带 \n\n。
         // GDI+ 的 DrawString 会把 \n 当真换行，于是一次就画出好几行；
         // 而循环只按 22px 往下挪，后一段整片压在前一段上
@@ -19032,7 +19014,6 @@ static void DrawSaveLoad(Graphics& g, App& a) {
     }
     // ---- 操作按钮
     //
-    // 这里
     // 读档模式的第 2 个按钮功能是删除，标签却显示成"保存到此槽"
     // 因为标签数组是按存档模式的顺序写的，读档模式直接复用就串位了。
     // 玩家点"保存"结果把存档删了，这种错最伤。
@@ -24777,7 +24758,6 @@ void SaveGameNow() {
 void SaveToSlot(int slot) {
     App& a = g_app;
     if (slot < 1 || slot > kSaveSlots) return;
-    // 这里
     // 切槽之后写了 a.mem.Clear / a.prof = Profile，然后 SaveGameNow
     // 把清空后的记忆写进新槽 —— 玩家存一次档，她就把之前记住的全忘了。
     //
@@ -26568,7 +26548,6 @@ static bool StartDailyRewrite(const std::wstring& say) {
     ctx->gen = a.chatGen;
     ctx->say = say;
     //
-    // 这里
     // 编译直接报 C2065。重写不需要延迟（延迟是挑素材那条路用的，
     // 见 StartAssetPick 的 delayMs 参数），删掉即可
     // ctx->delayMs 保持结构体默认的 0，Sleep 那段本来就不执行。
@@ -26722,7 +26701,6 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     // （见 advance::Evaluate 的 done || turns 判据）。
     // 清它的时机只有进下一段、跳章或换章；请求在飞时点出口的拦截
     // 放在 DirGoNextDay，不靠改动这个标记。
-    // 这里
     // 新周目想让她开口，结果因为 chatting 还是 true 被直接挡回去，
     // 于是她再也不说话了；等旧线程回来，又把上一局的回复盖到新存档上。
     //
@@ -30149,7 +30127,6 @@ static void AdvanceClick() {
     // 如果这时候直接推进剧情，后半段话就永远看不到了
     // 这正是对话框截断输出的另一种表现形式。
     //
-    // 这里
     // 那是
     // 补到翻页块里就变成了"刚 ++ 完立刻清零"
     // 页号永远是 0，于是每次点的都是同一页，看起来就是"把话重新打一遍"。
@@ -31511,7 +31488,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             a.askedDuringTask = false;
     a.quizAnswers     = 0;
                             //
-                            // 这里
                             // LoadFromSlot 已经把该槽的对话历史读进 a.hist 了，
                             // 紧接着又 clear 一次，等于刚读出来就扔掉。
                             // 那行注释写的"历史不跨存档"是更早版本的逻辑
