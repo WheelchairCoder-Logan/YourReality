@@ -50,9 +50,12 @@ static_assert(L"中"[0] == 0x4E2D,
 #include <xaudio2.h>
 #include <utility>      // std::pair —— JMembers 需要它
 #include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <memory>
 #include <limits>
+#include <climits>
+#include <new>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -125,6 +128,7 @@ bool   hasQuiz = false;   // 本章配了验收题
 struct Result {
 bool         ready   = false;   // 出口能不能画出来、能不能点
 int          wait    = -1;      // 不 ready 时还要几轮；-1 表示这个阶段没有出口
+Stage        stage   = Stage::Other;  // 当前阶段；调用方不必自己再判一次
 std::wstring label;             // 按钮文案
 std::wstring reason;            // 状态栏常驻说明（就绪 / 未就绪都给）
 std::wstring confirm;           // 点下后立刻显示的本地确认，不等网络回包
@@ -178,6 +182,7 @@ return L"（再聊 " + std::to_wstring(wait) + L" 轮就到点了）";
 // 唯一的推进判据。渲染 / 命中 / 点击 / 状态栏 / 回放都读它。
 inline Result Evaluate(const Input& in) {
 Result r;
+r.stage = in.stage;
 r.label = LabelOf(in.isStory, in.isLast, in.stage, in.hasQuiz);
 
 if (in.stage == Stage::Other) {
@@ -1527,8 +1532,7 @@ bool LoadSyllabus();
 // 导演的当前阶段
 //
 // Intro 和 Daily 是恋爱游戏的"日常"部分
-// 一上来就念知识点不像 Galgame，像网课。真正的节奏是：
-// 自
+// 一上来就念知识点不像 Galgame，像网课；开场先相处，再进教学。
 // 章间那段闲聊不只是"喘口气"，它是玩家对角色产生感情的地方，
 // 也让下一章的开场不至于突兀。
 enum class DirStage {
@@ -1692,8 +1696,7 @@ public:
     //
     // 这是"运行时轮数永远是 0"的原因
     // Turn 返回的是 turn_（本章教学轮数），
-    // 而自
-    // 于是整个自
+    // 而开场 / 日常各自记在 introTurn_ / dailyTurn_，于是整个开场与日常段
     // 看着像"她一直卡在第一轮没推进"，其实聊了好几句了。
     // 排查阶段推进问题时这个数字是主要依据，必须是阶段内的真实轮数。
     int  StageTurn() const {
@@ -1706,12 +1709,12 @@ public:
     // 读档时她会自己重新开口，没必要把上一轮的画面也冻住。
     // stage 只记 Intro / Daily / Lesson 三种：Quiz/Judge/Review 是做题中的
     // 临时状态，存下来读回去没有代码可判，一律回落成 Lesson。
-    // stage 默认必须是 1（自
+    // stage 默认必须是 1（开场）。
     // BeginStory 用空快照（Director::Snapshot）把进度归零，
     // 而 Restore 里 0 被解码成 Lesson（见 Restore 的 else 分支）。
     // 于是新开一局拿到的是"教学"阶段 —— 玩家还没认识她，她就开始念知识点。
     // 运行时第一条就是「第0轮 阶段=教学」，正好印证。
-    // 编码：1=自
+    // 编码：1=开场 / 2=日常 / 0=其余。
     // 空快照代表"全新的一局"，就该是 1。
     // chapterBg：本章锁定的场景。见 BgLockedNow 的说明
     // 不存的话读档回来整章的场景锁会丢，她又能一轮换一个地方。
@@ -1731,7 +1734,7 @@ public:
     void Restore(const Snapshot& s);
     // ---- 推进
     // 玩家在授课/日常阶段说了一句话之后调用。
-    // 计数按阶段分开自
+    // 计数按阶段分开：开场记 introTurn_，日常记 dailyTurn_，教学记 turn_。
     // 不能混进 turn_（那是"这一章讲了几轮"）。
     void NoteTurn();
 
@@ -1770,7 +1773,15 @@ public:
     // 这一段该发生的事是否已经发生（模型填 advance=2，或台词说了告别）。
     // ★ 一旦置位，在本段内保持；只有进下一段 / 跳章 / 换章才清。
     bool ActDone() const { return actDone_; }
-    void MarkActDone()   { actDone_ = true; }
+    // ★ 只有章间日常能置位：Lesson 里一句「晚安」不能跳过考试。
+    // 阶段取自 Progress()（= advance::Evaluate），不另写一份判断。
+    void MarkActDone() {
+        if (Progress().stage != advance::Stage::Daily) {
+            Dbg(L"[推进] 非日常段忽略 MarkActDone（防止一句告别跳过考试）");
+            return;
+        }
+        actDone_ = true;
+    }
     void ClearActDone()  { actDone_ = false; }
     //
     // ---- 点了右上角那个按钮，这门课是不是就上完了（没有下一章了）
@@ -1869,7 +1880,7 @@ public:
     std::wstring Guide() const;
     // ---- 开场引导语，由角色包给（[Player] 提示）
     //
-    // 原来写死「先认识一下吧」。但玩家身份已经固定成将臣、两人是续集关系，
+    // 原来写死「先认识一下吧」。但玩家身份已经固定成角色包里的名字、两人是续集关系，
     // "先认识一下"跟设定直接冲突——玩家点输入框就看见一句穿帮的话。
     // 这句话说的是"你们现在到哪一步"，属于角色包内容，不该写在引擎里。
     // 没配就按【有没有写 Relation】推：写了关系就不是初次见面。
@@ -2356,7 +2367,7 @@ struct LlmConfig {
     // · max_tokens 太小 -> JSON 在中间被切断 -> 解析失败
     // -> 走兜底台词 ->
     // · 只放开输出而上下文 / 记忆仍在砍 -> 表现依然是"她记不住前面聊的"，
-    // 而
+    // 而问题依旧看不出来。
     //
     // 现在的做法跟"无上限"档位一致：根本不发送 max_tokens 字段，
     // 服务端用模型默认的最大输出长度。
@@ -2384,7 +2395,7 @@ struct LlmConfig {
     //
     // 曾经它是一个可切换的模式：不联网、用预置台词。
     // 移除的理由是它制造的错误比解决的更多：
-    // · 联网失败时
+    // · 联网失败时，玩家会以为是自己关了离线模式，
     // 而真正的故障（Key 错 / 网关拒 / 超时）被这个解释盖住了
     // · 导演模式下它直接停掉整个玩法，
     // 现在只有一种模式：联网。联网失败就如实报错（见 LlmChat 的 err）。
@@ -4040,6 +4051,9 @@ struct App {
     // 这个模式比"试图取消线程"可靠得多：WinHTTP 的同步请求没法安全地中途打断，
     // 强行 TerminateThread 会泄漏句柄、还可能把堆锁死。
     int  chatGen  = 0;              // 对话任务代号
+    // 工作线程在临界区里写 g_chatFinishReason；主线程只在 OnChatDone 里
+    // 拷一份到这里，后续判断截断原因一律读它，不再并发读全局。
+    std::wstring lastFinishReason;
 
     // ---- 背景转场（切场景时的交叉淡化）
     std::wstring bgCur;             // 当前背景（view.bg 的稳定副本，用来检测变化）
@@ -4106,6 +4120,8 @@ struct App {
 
     // ---- 线程同步
     CRITICAL_SECTION cs;
+    // 锁已建好且尚未销毁。启动早期 / 退出收尾只有主线程在跑，
+    // 状态栏那些收口函数据此决定要不要进临界区。
     bool csInit = false;
 };
 
@@ -4425,15 +4441,24 @@ struct Parser {
 
 } // namespace
 
+// ★ 畸形响应 / 内存不足时 parser 会抛 std::bad_alloc。
+// 网络工作线程里没人接异常，Windows CRT 会直接终止整个进程——
+// 所以在这里兜住，统一变成"解析失败"，跟其它格式错误走同一条回退路径。
 bool JsonParse(const std::string& text, JValue& out, std::string& err) {
-    Parser p(text);
-    out = JValue();
-    p.skipWs();
-    if (!p.parseValue(out)) { err = p.err; return false; }
-    p.skipWs();
-    // 容忍尾巴上的空白，但不容忍多余内容——响应被截断时这里是能发现的
-    if (p.i != text.size()) { err = "JSON 结束后还有多余内容"; return false; }
-    return true;
+    try {
+        Parser p(text);
+        out = JValue();
+        p.skipWs();
+        if (!p.parseValue(out)) { err = p.err; return false; }
+        p.skipWs();
+        // 容忍尾巴上的空白，但不容忍多余内容——响应被截断时这里是能发现的
+        if (p.i != text.size()) { err = "JSON 结束后还有多余内容"; return false; }
+        return true;
+    } catch (const std::bad_alloc&) {
+        out = JValue(); err = "JSON 解析时内存不足"; return false;
+    } catch (...) {
+        out = JValue(); err = "JSON 解析时发生异常"; return false;
+    }
 }
 
 // ---------------------------------------------------------------- 序列化
@@ -4746,6 +4771,36 @@ bool ExprCompile(const std::wstring& src, std::vector<ETok>& rpn, std::wstring& 
 }
 
 // ---------------------------------------------------------------- 求值
+// ★ 剧本变量是 long long，有符号溢出是未定义行为（编译器可能把后面的
+// 条件判断一起优化掉）。统一做饱和运算：越界就停在边界上，不产生 UB。
+static const long long kLLMin = (std::numeric_limits<long long>::min)();
+static const long long kLLMax = (std::numeric_limits<long long>::max)();
+static long long SatNeg(long long v) {
+    return v == kLLMin ? kLLMax : -v;
+}
+static long long SatAdd(long long x, long long y) {
+    if (y > 0 && x > kLLMax - y) return kLLMax;
+    if (y < 0 && x < kLLMin - y) return kLLMin;
+    return x + y;
+}
+static long long SatSub(long long x, long long y) {
+    if (y < 0 && x > kLLMax + y) return kLLMax;
+    if (y > 0 && x < kLLMin + y) return kLLMin;
+    return x - y;
+}
+static long long SatMul(long long x, long long y) {
+    if (x == 0 || y == 0) return 0;
+    if (x == -1) return SatNeg(y);
+    if (y == -1) return SatNeg(x);
+    if (x > 0) {
+        if (y > 0) { if (x > kLLMax / y) return kLLMax; }
+        else       { if (y < kLLMin / x) return kLLMin; }
+    } else {
+        if (y > 0) { if (x < kLLMin / y) return kLLMin; }
+        else       { if (x < kLLMax / y) return kLLMax; }
+    }
+    return x * y;
+}
 EValue ExprEval(const std::vector<ETok>& rpn, const EVars& vars, std::wstring& err) {
     std::vector<EValue> st;
     st.reserve(16);
@@ -4776,7 +4831,7 @@ EValue ExprEval(const std::vector<ETok>& rpn, const EVars& vars, std::wstring& e
             EValue a;
             if (!pop(a)) return EValue(0);
             if (t.op == OP_NOT) st.push_back(EValue(a.truthy() ? 0LL : 1LL));
-            else                st.push_back(EValue(-num(a)));
+            else                st.push_back(EValue(SatNeg(num(a))));
             continue;
         }
 
@@ -4800,11 +4855,14 @@ EValue ExprEval(const std::vector<ETok>& rpn, const EVars& vars, std::wstring& e
         }
         long long x = a.i, y = b.i;
         switch (t.op) {
-        case OP_ADD: st.push_back(EValue(x + y)); break;
-        case OP_SUB: st.push_back(EValue(x - y)); break;
-        case OP_MUL: st.push_back(EValue(x * y)); break;
-        case OP_DIV: st.push_back(EValue(y == 0 ? 0 : x / y)); break;   // 除 0 → 0
-        case OP_MOD: st.push_back(EValue(y == 0 ? 0 : x % y)); break;
+        case OP_ADD: st.push_back(EValue(SatAdd(x, y))); break;
+        case OP_SUB: st.push_back(EValue(SatSub(x, y))); break;
+        case OP_MUL: st.push_back(EValue(SatMul(x, y))); break;
+        // ★ kLLMin / -1 与 kLLMin % -1 同样溢出，单独挡掉。
+        case OP_DIV: st.push_back(EValue(y == 0 ? 0
+            : (x == kLLMin && y == -1) ? kLLMax : x / y)); break;   // 除 0 → 0
+        case OP_MOD: st.push_back(EValue(y == 0 ? 0
+            : (x == kLLMin && y == -1) ? 0 : x % y)); break;
         case OP_EQ:  st.push_back(EValue(x == y ? 1LL : 0LL)); break;
         case OP_NE:  st.push_back(EValue(x != y ? 1LL : 0LL)); break;
         case OP_GT:  st.push_back(EValue(x >  y ? 1LL : 0LL)); break;
@@ -5140,7 +5198,7 @@ struct IniKV {
     std::wstring val;
     // 这一行之前的注释 / 空行原文。
     //
-    // 为什么要存ini 里那几十行 "; 说明：……" 是写给包作者看的。
+    // 为什么要存：ini 里那几十行 "; 说明：……" 是写给包作者看的。
     // 角色卡里每保存一次就重写整个文件，原先只输出 [sec] 和 k = v，
     // 于是改一次注解，所有注释静默消失——而且没有任何提示。
     std::vector<std::wstring> lead;
@@ -5258,13 +5316,23 @@ IniDoc& IniLoad(const std::wstring& path) {
         std::vector<std::wstring> lines;
         SplitLines(text, lines);
         std::wstring cur;
-        IniKV* lastKV = nullptr;       // 上一个键值——续行要接到它后面
+        // ★ 续行只存下标，不存 IniKV*：s.kv / doc.secs 都是 vector，
+        // 后面任何一次 push_back 都可能让指向元素的指针失效。
+        size_t lastSec = 0, lastKv = 0;
+        bool   hasLast  = false;       // 有没有"上一个键"可以接续行
         bool   lastCont = false;       // 上一行是不是续行（决定空行算不算值的一部分）
         std::vector<std::wstring> pending;   // 攒着的注释 / 空行，等下个段或键来认领
 
+        auto curKV = [&]() -> IniKV* {
+            if (!hasLast || lastSec >= doc.secs.size()) return nullptr;
+            IniSec& s = doc.secs[lastSec];
+            if (lastKv >= s.kv.size()) return nullptr;
+            return &s.kv[lastKv];
+        };
         // 值读完了，去掉尾巴上的空行。
         // 【只去尾部】值【中间】的空行是有意的（人设按段落分开），不能动。
-        auto sealVal = [](IniKV* kv) {
+        auto sealVal = [&]() {
+            IniKV* kv = curKV();
             if (!kv) return;
             size_t b = kv->val.size();
             while (b > 0 && (kv->val[b - 1] == L'\n' || kv->val[b - 1] == L'\r'
@@ -5279,19 +5347,26 @@ IniDoc& IniLoad(const std::wstring& path) {
             //
             // 为什么只吃掉一个字符留着其余缩进，作者才能排多层缩进；
             // 而且规则简单可预测：多敲几个空格，值里就多几个空格。
-            if (lastKV && !ln.empty() && (ln[0] == L' ' || ln[0] == L'\t')) {
-                lastKV->val += L'\n';
-                lastKV->val += ln.substr(1);
+            if (hasLast && !ln.empty() && (ln[0] == L' ' || ln[0] == L'\t')) {
+                IniKV* kv = curKV();
+                if (!kv) { hasLast = false; continue; }
+                kv->val += L'\n';
+                kv->val += ln.substr(1);
                 lastCont = true;
                 continue;
             }
             // 值内部的空行：只有上一行是续行时才算。
             // 否则"键 → 空行 → 下一个键"里的空行会被吞进上一个值。
-            if (lastCont && t.empty()) { lastKV->val += L'\n'; continue; }
+            if (lastCont && t.empty()) {
+                IniKV* kv = curKV();
+                if (!kv) { hasLast = false; continue; }
+                kv->val += L'\n';
+                continue;
+            }
 
             lastCont = false;
-            sealVal(lastKV);       // 上一个值到此结束
-            lastKV = nullptr;
+            sealVal();             // 上一个值到此结束
+            hasLast = false;
 
             if (t.empty()) { pending.push_back(ln); continue; }
             if (t[0] == L';' || t[0] == L'#' || t.compare(0, 2, L"//") == 0) {
@@ -5320,9 +5395,12 @@ IniDoc& IniLoad(const std::wstring& path) {
                 if (s.kv[j].key == k) { s.kv[j].val = v; replaced = true; at = j; break; }
             if (!replaced) { IniKV kv; kv.key = k; kv.val = v; kv.lead = pending; s.kv.push_back(kv); }
             pending.clear();
-            lastKV = &s.kv[at];    // 注意：必须在 push_back 之后取，否则可能指到旧内存
+            // 记下标而不是指针：后面还会继续往 s.kv / doc.secs 里加东西。
+            lastSec = (size_t)(&s - doc.secs.data());
+            lastKv  = at;
+            hasLast = true;
         }
-        sealVal(lastKV);
+        sealVal();
         // 文件末尾剩下的注释：归给最后一段，没有段就归给文件
         if (!pending.empty()) {
             if (!doc.secs.empty()) doc.secs.back().tail = pending;
@@ -5334,7 +5412,7 @@ IniDoc& IniLoad(const std::wstring& path) {
 }
 // 返回值 = 写盘是否成功
 //
-// 完全没有反馈。 ini 层还持着"改过了"的缓存，于是：
+// 早期版本写盘失败完全没有反馈，而 ini 层还持着"改过了"的缓存，于是：
 // 界面提示"已保存/已删除"，磁盘上那一行却原封不动 —— 重开又回来了。
 // 这类失败必须是"看得见的失败"，所以每一步都把结果传回去。
 bool IniFlush(const std::wstring& path, const IniDoc& doc) {
@@ -5361,7 +5439,15 @@ bool IniFlush(const std::wstring& path, const IniDoc& doc) {
         if (i + 1 < doc.secs.size()) text += L"\r\n";
     }
     for (size_t q = 0; q < doc.tail.size(); ++q) { text += doc.tail[q]; text += L"\r\n"; }
-    return WriteTextFile(path, text);      // 统一按 UTF-8 带 BOM 写
+    if (!WriteTextFile(path, text)) return false;   // 统一按 UTF-8 带 BOM 写
+    // ★ 写盘成功后把这份 doc 同步回缓存。
+    // 现在的调用点改的都是 IniLoad 返回的缓存引用，本来就是新的；
+    // 但将来若有人传一份临时 doc 进来，不同步就会变成"磁盘新的、内存旧的"。
+    // ★ 写盘失败时这里"不动缓存"是不够的：调用方改的就是 IniLoad 返回的
+    // 缓存引用，进到这里时内存里已经是新值。三个写操作（IniSetStr /
+    // IniDelKey / IniDelSec）都在改之前留了 before，失败时由它们回滚。
+    g_iniCache[path] = doc;
+    return true;
 }
 
 } // namespace
@@ -5466,12 +5552,12 @@ AssetRole AssetRoleParse(const std::wstring& iniPath) {
     r.themeBgm   = AssetRole::Split(IniGetStr(iniPath, L"AssetRole", L"主题", L""));
     r.defaultPose= IniGetStr(iniPath, L"AssetRole", L"默认表情", L"");
     //
-    // ---- 上课曲上课这段该放哪首
+    // ---- 上课曲：上课这段该放哪首
     //
-    // 为什么要可配作者删掉某首曲子（比如那段旋律不对味）之后，
+    // 为什么要可配：作者删掉某首曲子（比如那段旋律不对味）之后，
     // 清单里就没有它了，可模型不知道该换哪首——它只会照着注解猜。
     // 作者在这里写片段，代码按片段在当前清单里找，找到才提。
-    // 留空 = 不提换包后这一行指向不存在的曲子时，只是少一句建议。
+    // 留空 = 不提。换包后这一行指向不存在的曲子时，只是少一句建议。
     r.lessonBgm  = AssetRole::Split(IniGetStr(iniPath, L"AssetRole", L"上课曲", L""));
 
     std::vector<std::wstring> keys = IniEnumKeys(iniPath, L"AssetRole");
@@ -5554,11 +5640,17 @@ void IniSetDbl(const std::wstring& path, const wchar_t* sec, const wchar_t* key,
 
 bool IniSetStr(const std::wstring& path, const wchar_t* sec, const wchar_t* key, const std::wstring& v) {
     IniDoc& doc = IniLoad(path);
+    IniDoc before = doc;      // ★ doc 就是缓存本身；写盘失败必须回滚，否则界面说失败、内存却是新的
     IniSec& s = doc.ensure(sec);
     for (size_t i = 0; i < s.kv.size(); ++i)
-        if (s.kv[i].key == key) { s.kv[i].val = v; return IniFlush(path, doc); }
+        if (s.kv[i].key == key) {
+            s.kv[i].val = v;
+            if (!IniFlush(path, doc)) { doc = before; return false; }
+            return true;
+        }
     IniKV kv; kv.key = key; kv.val = v; s.kv.push_back(kv);
-    return IniFlush(path, doc);
+    if (!IniFlush(path, doc)) { doc = before; return false; }
+    return true;
 }
 
 // 有没有这个键。删除前先问一次，才能区分"删掉了"和"根本没有"——
@@ -5583,8 +5675,10 @@ bool IniDelKey(const std::wstring& path, const wchar_t* sec, const wchar_t* key)
     if (!s) return false;
     for (size_t i = 0; i < s->kv.size(); ++i) {
         if (s->kv[i].key == key) {
+            IniDoc before = doc;
             s->kv.erase(s->kv.begin() + (long)i);
-            return IniFlush(path, doc);      // 写盘失败要传出去，不能假装删掉了
+            if (!IniFlush(path, doc)) { doc = before; return false; }
+            return true;                     // 写盘失败要传出去，不能假装删掉了
         }
     }
     return false;
@@ -5599,8 +5693,10 @@ bool IniDelSec(const std::wstring& path, const std::wstring& name) {
     IniDoc& doc = IniLoad(path);
     for (size_t i = 0; i < doc.secs.size(); ++i) {
         if (doc.secs[i].name == name) {
+            IniDoc before = doc;
             doc.secs.erase(doc.secs.begin() + (long)i);
-            return IniFlush(path, doc);
+            if (!IniFlush(path, doc)) { doc = before; return false; }
+            return true;
         }
     }
     return false;
@@ -5696,9 +5792,9 @@ bool AppendTextFile(const std::wstring& path, const std::wstring& text) {
     if (h == INVALID_HANDLE_VALUE) return false;
     std::string u8 = U8(text);
     DWORD w = 0;
-    // 追加写：先定位到末尾。OPEN_ALWAYS 打开后指针在开头，
-    // 不定位的话新内容会把旧的盖掉——审计日志必须只增不改。
-    SetFilePointer(h, 0, nullptr, FILE_END);
+    // ★ FILE_APPEND_DATA 已经保证每次 WriteFile 原子追加到文件末尾，
+    // 不需要（也不应该）再 SetFilePointer：那一步既多余，又把"多进程同时
+    // 追加"变成"先定位再写"的非原子两步。审计日志只增不改，靠打开方式。
     BOOL ok = WriteFile(h, u8.data(), (DWORD)u8.size(), &w, nullptr);
     CloseHandle(h);
     return ok != 0 && w == (DWORD)u8.size();
@@ -5834,10 +5930,16 @@ std::vector<std::wstring> ListFiles(const std::wstring& dir, const wchar_t* ext)
 // 想让它真的输出，把函数体换成下面注释里的版本即可 —— 这里不写条件编译，
 // 是为了避免预处理器指令在单文件合并/编码转换中出问题。
 void Dbg(const wchar_t* fmt, ...) {
-    (void)fmt;
-    // wchar_t buf[1024]; va_list ap; va_start(ap, fmt);
-    // _vsnwprintf_s(buf, 1024, _TRUNCATE, fmt, ap); va_end(ap);
-    // OutputDebugStringW(L"[CK] "); OutputDebugStringW(buf); OutputDebugStringW(L"\n");
+    // ★ 别再留成空实现：素材匹配「请求 X 命中 Y」这类线索全靠它。
+    // OutputDebugStringW 只在挂调试器 / DebugView 时可见，发布版没有副作用。
+    wchar_t buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnwprintf_s(buf, 1024, _TRUNCATE, fmt, ap);
+    va_end(ap);
+    OutputDebugStringW(L"[CK] ");
+    OutputDebugStringW(buf);
+    OutputDebugStringW(L"\n");
 }
 // 模块：角色库 —— 加载 / 语气变换 / 人设 prompt
 // 小工具
@@ -7017,9 +7119,8 @@ std::wstring BuildCharSystem(const CharDef& def, const std::wstring& playerName,
         s += L"\n\n【你们现在的关系】\n" + def.playerRelation;
     // ---- 关系状态：比"关系声明"还要靠后
     //
-    // 关系声明是包里写死的（"
-    // 后者才是让五章下来有曲线的东西：角色A那条"别人都平等看
-    // 是
+    // 关系声明是包里写死的（"你们是恋人"），bond 是她自己每章末写下的；
+    // 后者才是让五章下来有曲线的东西。
     //
     // 包里没写、或她还没写过（第一个章末之前），就不加这一段——绝不代她编。
     if (!bondPrompt.empty()) s += bondPrompt;
@@ -7703,8 +7804,8 @@ std::wstring ResolveBgFor(const CharDef* def, const std::wstring& assetDir,
     // ② 大纲 ini 的 Bg 字段 —— 人工写的，写错没人管
     // ③ 硬编码槽位：题 / 卡住 / 开场 / 课 —— 角色包没配就落到这里
     // ④ 剧本 @bg —— 同上
-    // ②③④都可能拿到一个不存在的名字。返回非空路径等于
-    // "假装找到了"，调用方据此切换 bgCur，画面就黑了。
+    // ②③④都可能拿到一个不存在的名字。返回非空路径等于"假装找到了"，
+    // 调用方据此切换 bgCur，画面就黑了。
     //
     // 返回空串才是对的：ApplyStageChange 里 `!path.empty` 会挡住它，
     // 背景保持原样——没配就是没配，不该把画面搞没。
@@ -8062,13 +8163,17 @@ std::wstring CharDef::DefaultPose() const {
         for (size_t i = 0; i < poseOrder.size(); ++i)
             if (poseOrder[i].find(gRole.defaultPose) != std::wstring::npos)
                 return poseOrder[i];
+        Dbg(L"[表情] 配了 默认表情「%s」但清单里没有，开局退回第一张：%s",
+            gRole.defaultPose.c_str(), poseOrder[0].c_str());
+    } else {
+        Dbg(L"[表情] 没配 默认表情，开局用清单第一张：%s", poseOrder[0].c_str());
     }
     return poseOrder[0];
 }
-// ---- 服装 × 表情 真值表的三个查询
+// ---- 造型 / 表情 真值表的三个查询
 //
-// outfitExpr 是扫描时按真实文件填的，不是猜的。
-// 空 outfit 那一条表示"没有服装分化"（文件名里不写服装）。
+// ★ 服装机制已移除，outfit 恒为空；文件名里不写服装，
+// 造型名就是文件名 stem。下面三个查询仍按真实扫描结果填表。
 bool CharDef::HasFace(const std::wstring& n) const {
     if (n.empty()) return false;
     for (size_t i = 0; i < faceOrder.size(); ++i) if (faceOrder[i] == n) return true;
@@ -8724,7 +8829,7 @@ void Director::Restore(const Snapshot& s) {
     //
     // Quiz / Judge / Review 是"做题做到一半"的临时状态，
     // 存下来读回去并没有那份代码可判，回落成 Lesson 让她重新开口最干净。
-    // 而 Intro / Daily 是剧情位置，丢掉就等于跳过自
+    // 而 Intro / Daily 是剧情位置，丢掉就等于跳过开场与相处。
     if      (s.stage == 1) stage_ = DirStage::Intro;
     else if (s.stage == 2) stage_ = DirStage::Daily;
     //
@@ -8766,7 +8871,7 @@ void Director::Restore(const Snapshot& s) {
     // 但 BuildResumeKick 只管接话那一句，而 meetAgain_ 还管系统提示里
     // 那条"新的一天上一章已经上完了，这是第二天"。
     // 读到第 2 章开场却不置位，系统提示就不会提"昨天上完了"，
-    // 她于是以为还在第 1 章——配上接话那句，就演成重新自
+    // 她于是以为还在第 1 章——配上接话那句，就演成重新认识一遍。
     //
     // 判据跟推进路径一致：章号 >= 2、处在开场段（人刚碰头、课还没开始）。
     // 剧情大纲一幕接一幕，没有"隔夜"这回事，所以剧情模式一律 false。
@@ -9551,7 +9656,7 @@ static std::wstring StageChangeOrder(const Director* self) {
 // 【为什么写台词的请求也要带它】
 // 注解原本只出现在【挑素材】那次请求里（AssetListBlock 拼的清单），
 // 而一次对话的顺序是：先写台词 -> 再配画面。
-// 也就是说写台词那一刻她只知道「你们现在在田心屋」，看不到田心屋的注解，
+// 也就是说写台词那一刻她只知道「你们现在在甜品店」，看不到甜品店的注解，
 // 于是「到了这里、想起那件事」只能靠她自己把地点名和 [Memory] 连起来——
 // 连上了是运气，连不上这段注解就白写了。
 // 带上注解之后，「地点 -> 上一世的哪段记忆」才在两个方向上都说得通。
@@ -9977,7 +10082,6 @@ std::wstring Director::SceneHint() const {
         //
         // 催她 = 变相的上限：她聊到那个数就被提醒"该走了"，
         // 正是"气氛正好却被拉回教室"的成因。那段收不收由她说了算。
-        // 自
         if (stage_ == DirStage::Intro && ShouldStartLesson()) {
             o += L"【已经聊得够了】下一次回话请把 advance 填 2，开始正式的内容。\n";
         }
@@ -10168,9 +10272,9 @@ std::wstring Director::SceneHint() const {
         //
         // 【上一版这里有个反向暗示】
         // 原文写的是"换地方是章间日常的事——那时候你们会离开这里"，
-        // 而她【此刻正在章间日常】，于是那句话对她等于
-        // "现在就是可以换地方的时候"。下一轮她立刻写了
-        // 「走在穗织的石板路上…到了田心屋，推开店门」——
+        // 而她【此刻正在章间日常】，于是那句话对她等于"现在就是可以换地方的时候"。
+        // 下一轮她立刻写了
+        // 「走在小镇的石板路上…到了甜品店，推开店门」——
         // 而背景还锁在卧室。穿帮正是这句话催出来的。
         //
         // 现在直接告诉她：想换就写转场，画面会跟着走。
@@ -10180,7 +10284,7 @@ std::wstring Director::SceneHint() const {
         //
         // 【实测她在做什么】
         // 玩家：「我们一起去呗」→ 她：「先把今天的课上完再说啦」
-        // 玩家：「去田心屋？」　　→ 她：「因为你那道题还没答完呢」
+        // 玩家：「去甜品店？」　　→ 她：「因为你那道题还没答完呢」
         // 她【一直在把约会推回课堂】——因为上一幕她还在判卷，
         // 上下文里全是题目，她顺着就以为课还没上完。
         //
@@ -10304,7 +10408,7 @@ std::wstring Director::StageFixPrompt(const std::wstring& say, const DirView& v,
     // ---- bg / bgm 的禁用也必须从清单里剔掉
     //
     // ★ 这是"打回在自相矛盾"的根因
-    // 她填「恋ひ恋う縁.Piano Version」，打回说"它不在下面的清单里"，
+    // 她填「曲目X.Piano Version」，打回说"它不在下面的清单里"，
     // 可紧接着列出的清单里明明白白有这一首。
     // 她照抄回去又被拒，下一轮还是同一个错——打回白跑一趟。
     //
@@ -10739,7 +10843,7 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
             // ---- 【这句原来是直接接在后面的，读起来像在教她"往教室去"】
             // hintBg 是"台词里出现这些物件 -> 对应哪类地方"的对照，
             // 是【判断依据】不是【推荐选项】。不点明这一点，它跟下面
-            // "你们现在在田心屋，填同一个＝留在原地" 直接打架：
+            // "你们现在在甜品店，填同一个＝留在原地" 直接打架：
             // 上半段说留在甜品店，下半段举例讲台黑板。
             t += L"（台词里出现这些物件，就往对应的地方去）：" + gRole.hintBg;
         t += L"\n";
@@ -10759,15 +10863,15 @@ std::wstring Director::AssetPickPrompt(const std::wstring& say,
             // ---- 【台词里点名了某个地方，就该换过去】
             //
             // 【这是"她没带玩家去新地方"的真凶】
-            // 玩家说「要不我们一起去芦花姐的田心屋」，
+            // 玩家说「要不我们一起去常去的那家甜品店」，
             // 她回「诶……！你、你居然记得那个地方——！」——
-            // 话都说到田心屋了，画面还锁在空无一人的课室。
+            // 话都说到甜品店了，画面还锁在空无一人的课室。
             //
             // 因为上面只认「走吧」「走在…路上」「推开…门」这几个动词，
             // 而她答应的方式根本不是动词，是【提那个地方的名字】。
             // 判据太死，于是整段日常一次都没换过地方。
             //
-            // 【不能点名举例】写「比如她说起田心屋」就等于代码认识素材名，
+            // 【不能点名举例】写「比如她说起甜品店」就等于代码认识素材名，
             // 换角色包这句会指向一个清单里没有的地方。只说规则。
             t += L"  · 这句台词里【提到了清单里的某个地方】，就填那个地方——"
                  L"她想带他去那儿，画面跟着走\n";
@@ -11980,7 +12084,7 @@ VmBlock Vm::Step(VmView& view) {
             if (!e.empty()) Dbg(L"第 %d 行: 自增失败 %s", in.line, e.c_str());
             long long base = GetInt(in.varName);
             long long delta = (v.kind == EValue::VInt) ? v.i : 0;
-            vars_[in.varName] = EValue(base + delta);
+            vars_[in.varName] = EValue(SatAdd(base, delta));
             ++ip_;
             continue;
         }
@@ -12384,6 +12488,15 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
                                         https ? WINHTTP_FLAG_SECURE : 0);
     if (!hReq) { out.err = L"WinHttpOpenRequest 失败"; WinHttpCloseHandle(hConn); WinHttpCloseHandle(hSess); return false; }
 
+    // ★ 三条句柄必须在【每一条】返回路径上关掉。
+    // 下面请求体自检有三处提前 return false：曾经一处都没关，
+    // 连续几次自检失败后 WinHTTP 句柄耗尽，之后的请求全部发不出去。
+    auto closeAll = [&]() {
+        WinHttpCloseHandle(hReq);
+        WinHttpCloseHandle(hConn);
+        WinHttpCloseHandle(hSess);
+    };
+
     // ---- 头
     std::wstring headers = L"Content-Type: application/json\r\n";
     if (!cfg.apiKey.empty()) headers += L"Authorization: Bearer " + cfg.apiKey + L"\r\n";
@@ -12401,12 +12514,14 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
         if (!ck::JsonParse(body, self, se)) {
             out.err = L"请求体不是合法 JSON（未发送）：" + W(se);
             LLTRACE((L"%s", out.err.c_str()));
+            closeAll();
             return false;
         }
         const ck::JValue* mm = self.find("messages");
         if (!mm || !mm->isArr() || mm->arr.empty()) {
             out.err = L"请求体里没有 messages（未发送）";
             LLTRACE((L"%s", out.err.c_str()));
+            closeAll();
             return false;
         }
         for (size_t i = 0; i < mm->arr.size(); ++i) {
@@ -12414,6 +12529,7 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
             if (c.empty()) {
                 out.err = L"第 " + WFromInt((long long)(i + 1)) + L" 条消息内容为空（未发送）";
                 LLTRACE((L"%s", out.err.c_str()));
+                closeAll();
                 return false;
             }
         }
@@ -12433,7 +12549,7 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
         // 之前用 WinHttpQueryDataAvailable 先问"有多少数据"，
         // 返回 0 就 break。但那个 0 只代表此刻缓冲区是空的
         // SSE 是分块到达的流，服务端发完响应头、正文还没到的时候
-        // 它就会给
+        // 它就会返回 0，于是循环提前退出，
         // 最后报"流式响应里没有内容"。这正是那张截图上的错误。
         //
         // 正确做法是只信 WinHttpReadData：它返回 0 才是真的 EOF。
@@ -12558,9 +12674,7 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
     if (ok) out.ok = true;
     LLDBG((L"回复原文: %s", out.full.c_str()));
 
-    WinHttpCloseHandle(hReq);
-    WinHttpCloseHandle(hConn);
-    WinHttpCloseHandle(hSess);
+    closeAll();
     return out.ok;
 }
 
@@ -12781,8 +12895,7 @@ static bool ExtractSayTruncated(const std::wstring& slice, std::wstring& out) {
 // 为什么手工路径也必须做
 // 走 JsonParse 时解析器自己会还原 \" \n 这些，
 // 但模型经常返回不严格合法的 JSON（尾部逗号、前后加了客套话…），
-// 那些会落到 ExtractSay 的手工路径上——它直接 substr 抠文本，不做还原，
-// 于是
+// 那些会落到 ExtractSay 的手工路径上——它直接 substr 抠文本，不做还原。
 // 只要模型回复里有一个引号，就会露馅。
 //
 // 玩家在普通对话框里贴了一段代码——要当成"交作业"，不能当闲聊。
@@ -14065,7 +14178,7 @@ ChatMsg BuildSystemMsg(const PersonaCfg& p, const CharDef* cd, const Memory& mem
         //
         // 这是"连续好几轮同一张脸"的直接对策
         // 每一轮请求对它都是独立的一局，它只看到当前画面一个值。
-        // 沿用是最省力的，于是
+        // 沿用上一张脸是最省力的，
         // 把清单列出来，"别再用"才有具体所指。
         if (recent && (!recent->poses.empty() || !recent->bgs.empty())) {
             auto join = [](const std::vector<std::wstring>& v) {
@@ -14858,7 +14971,7 @@ const int kChoiceH = 56, kChoiceGap = 10;
 // 这是"输入轮出现好几个框叠在一起"的根因
 // 原来无论收起还是展开，对话框恒为 460..688，而引导语（512..546）
 // 和输入框（550..670）直接压在它身上——正文区是 484..654，
-// 等于被这两条带子整段盖住。于是
+// 等于被这两条带子整段盖住：
 // 一个空对话框 + 一条带描边的引导语 + 一个带描边的输入框 + 白色编辑框，
 // 四个圆角框层层相叠，而她的对话框空着挂在那儿没消失。
 //
@@ -18409,7 +18522,7 @@ void DrawCharSelect(Graphics& g, App& a) {
 // 【「你的名字」那一行为什么删了】
 // 玩家不再自己起名——进剧情就是角色包 [Player] 里写的那个人（续集设定）。
 // 留着这一行的话，玩家填的名字和角色包里的男主名会打架，
-// 她到底该叫他将臣还是"小明"就没有答案了。
+// 她到底该叫他角色包里的名字还是"小明"就没有答案了。
 const int kSetRows = 7;
 const wchar_t* const kSetLabels[kSetRows] = {
     L"接口地址", L"模型", L"API Key",
@@ -18783,7 +18896,7 @@ static std::wstring SafeDirNameOf(const std::wstring& id);
 //
 // 为什么要补这一句
 // 「目录 角色A：有 3 份」只说明磁盘上有文件，说明不了为什么读不到它。
-// 真正卡住的地方往往是角色侧：这个目录对应的角色包被解绑了（于是
+// 真正卡住的地方往往是角色侧：这个目录对应的角色包被解绑了（
 // 根本不会被扫到、也切不过去），或者压根没有对应的角色包（目录是
 // 手动建的 / 角色包被删了）。这两种的下一步完全不同，日志必须分开写。
 static std::wstring DirCharState(const std::wstring& dirName) {
@@ -22098,6 +22211,18 @@ static std::wstring g_chatErr;
 // 中途断网 → 自动重发一次（大概率能拿到完整的）
 // 混在一起就只能给玩家一句笼统的提示，他照着做却解决不了问题。
 static std::wstring g_chatFinishReason;
+// ★ 下面这一组是主线程和 StageFix 工作线程共用的搬运槽。
+// 工作线程写、主线程在 WM_APP_STAGE_FIX 里读并清空；多个线程还能同时在飞。
+// wstring 并发读写是未定义行为，PostMessage 也不是 C++ 内存模型的同步原语，
+// 所以每一处读写都必须持 g_app.cs。锁内只做赋值，绝不包住网络请求或绘制。
+struct CsLock {
+    CRITICAL_SECTION* c;
+    explicit CsLock(CRITICAL_SECTION* p) : c(p) { EnterCriticalSection(c); }
+    ~CsLock() { LeaveCriticalSection(c); }
+    CsLock(const CsLock&) = delete;
+    CsLock& operator=(const CsLock&) = delete;
+};
+
 // 素材打回的结果（工作线程 -> 主线程的搬运槽）
 static std::wstring g_stageFixPose, g_stageFixBg, g_stageFixBgm, g_stageFixPose2;
 //
@@ -22162,12 +22287,39 @@ static std::wstring g_stageFixErr;
 // 429 要【等一会儿再发】，立刻重发必然还是 429。
 static int          g_stageFixHttpStatus = 0;
 // 主对话那条流的回复是不是半截的（见 LlmResult::partial）。
-static bool         g_chatPartial = false;
 // 上一次 API 请求【结束】的时刻（GetTickCount64）。
 // 用来在两条请求之间垫一点间隔——见 ApiThrottle。
-static volatile long long g_lastApiEndMs = 0;
+// ★ 两个后台线程都会读它、也都会写它（ChatThread / StageFixThread）。
+// volatile 不是线程同步：C++ 内存模型下并发读写仍是未定义行为。
+static std::atomic<long long> g_lastApiEndMs{0};
 static std::wstring g_statusText;
 static int          g_statusTimer = 0;      // 帧数，到 0 自动清空
+
+// ★ 状态栏是跨线程可见的：后台线程会调 AppLog，主线程每帧读它。
+// 所有读写收口到下面四个函数；csInit 为 false 时（锁还没建好，或已销毁）
+// 走无锁路径——那两段只有主线程在跑。
+static void StatusSet(const std::wstring& s, int frames) {
+    if (g_app.csInit) EnterCriticalSection(&g_app.cs);
+    g_statusText = s;
+    g_statusTimer = frames;
+    if (g_app.csInit) LeaveCriticalSection(&g_app.cs);
+}
+static void StatusClear() { StatusSet(L"", 0); }
+static std::wstring StatusGet() {
+    if (!g_app.csInit) return g_statusText;
+    EnterCriticalSection(&g_app.cs);
+    std::wstring s = g_statusText;
+    LeaveCriticalSection(&g_app.cs);
+    return s;
+}
+// 每帧递减一次；返回 true 表示这一帧刚好归零。
+static bool StatusTick() {
+    if (g_app.csInit) EnterCriticalSection(&g_app.cs);
+    bool zero = false;
+    if (g_statusTimer > 0 && --g_statusTimer == 0) zero = true;
+    if (g_app.csInit) LeaveCriticalSection(&g_app.cs);
+    return zero;
+}
 
 // 前向声明：AdvanceClick 和 AfterStep 互相调用，必须先声明一个
 static void AfterStep();
@@ -22458,6 +22610,8 @@ static void MigrateSavesFromAppData() {
     }
 }
 // 改名搬迁：%APPDATA%\CodeSenpai -> %APPDATA%\YourReality
+// ★ CodeSenpai 是旧版本目录名，这里有意保留只为搬迁老用户的存档与设置，
+//   不是项目名残留；删掉它，老玩家升级后会丢 API Key。
 // 目录名一改，程序就去新目录找 config.ini，找不到就要重填 API Key
 // 而 Key 就在 config.ini 里。所以改名必须带这一步搬迁，否则等于丢设置。
 // 做法跟当年"存档从 appDir 搬进 data"是同一个：目标没有、旧的有 -> 复制过去。
@@ -22696,9 +22850,13 @@ static void ResetTextState(App& a) {
 // 强行等待会让界面卡住几秒。让它跑完、结果丢弃就行。
 static void AbortAsync() {
     App& a = g_app;
+    // ★ 代号跨线程共享：工作线程在临界区里读它判断结果是否过期，
+    // 主线程递增也必须在同一个临界区内，否则是数据竞争。
+    EnterCriticalSection(&a.cs);
     ++a.chatGen;
     // 素材笔记同理：作废旧的生成请求，避免上一局的结果贴到这一局
     ++a.assetBriefGen;
+    LeaveCriticalSection(&a.cs);
     a.assetBriefBusy = false;
     a.assetBriefBusyGen = 0;
     a.chatting = false;
@@ -22728,11 +22886,13 @@ static void AbortAsync() {
     a.pendingStage = false;
     a.pendingStageT = 0;
     a.pendingKick.clear();
-    g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
+    {
+        CsLock lk(&g_app.cs);
+        g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
         g_stageFixPose2.clear();
+    }
     a.view.body.clear();
-    g_statusText.clear();
-    g_statusTimer = 0;
+    StatusClear();
 }
 // ---- 槽位扫描
 //
@@ -23428,7 +23588,9 @@ void BeginStory() {
         a.assetBrief.clear();
         a.assetReview.clear();
         a.chapterAssetLines.clear();
+        EnterCriticalSection(&a.cs);
         ++a.assetBriefGen;      // 上一局在飞的笔记请求，结果一律作废
+        LeaveCriticalSection(&a.cs);
         a.assetBriefBusy = false;
         a.assetBriefBusyGen = 0;
         a.pendingStage   = false;   // 同上：上一局挂着的开场画面也作废
@@ -23533,7 +23695,7 @@ void BeginStory() {
         // 这里却写「你们还不认识」，就会把那份设定整个压掉。
         // 可这一段是 user 消息，位置比 system prompt 更靠近输出、服从度更高——
         // 一旦它写"还不认识""问问他是谁"，就会把 system 里的关系设定整个压掉，
-        // 于是开场第一句变成互相自我介绍：她不认得将臣。
+        // 于是开场第一句变成互相自我介绍：她不认得角色包里的名字。
         // 关系对不对交给包里的 [Player]，这里只说"这一幕该干什么"。
         //
         // ---- 带上他的名字，是为了让她开口就叫得出人
@@ -23749,14 +23911,12 @@ void AppLog(const wchar_t* fmt, ...) {
     va_start(ap, fmt);
     _vsnwprintf_s(buf, 512, _TRUNCATE, fmt, ap);
     va_end(ap);
-    g_statusText = buf;
-    g_statusTimer = 30 * 5;                 // 显示 5 秒
+    StatusSet(buf, 30 * 5);                  // 显示 5 秒
     Dbg(L"%s", buf);
 }
 
 static void SetStatus(const std::wstring& s, int seconds = 5) {
-    g_statusText = s;
-    g_statusTimer = 30 * seconds;
+    StatusSet(s, 30 * seconds);
 }
 
 // ============================================================================
@@ -24265,7 +24425,7 @@ static void AppendAssetAudit(const std::wstring& reqPose,
         // 禁用挡下时槽位保持旧值，
         // 兜底把"没接住"改判成"接住"。运行时的后果是：
         //
-        // 会话追踪写着 []内=本轮禁用: 恋ひ恋う縁.Piano Version
+        // 会话追踪写着 []内=本轮禁用: 曲目X.Piano Version
         // 素材日志却写 是否接住 bgm接住 / ✓一致
         // 两句互相打架，而真相是她没能换掉那首曲子。
         //
@@ -24582,7 +24742,7 @@ void SaveGameNow() {
     // 它只是把当前状态写进 a.savePath（默认槽 1）。
     // 于是任何一个"没进故事却调了它"的调用点，都会用初始空状态
     // 把玩家的主存档覆盖掉：不报错、不提示，等他下次点「继续上次」
-    // 才发现档回不到
+    // 才发现档已经回不去了。
     //
     // g_titleUseChar 正好是这个标志：BeginStory / LoadFromSlot 成功后置 true，
     // 清空记录时置 false。它为真 == 本次会话确实进过故事。
@@ -24595,6 +24755,12 @@ void SaveGameNow() {
     ck::Vm::Snapshot s = a.vm.Save();
 
     ck::JValue root; root.type = ck::JValue::TObj;
+
+    // ★ 存档格式版本。老档没有这个字段，一律按 v1 读；
+    // 以后改 stage 编码或加字段时递增，读档按版本分流，
+    // 不至于把旧数字映射成新枚举。
+    ck::JValue vVer; vVer.type = ck::JValue::TNum; vVer.num = 2;
+    root.obj.push_back(std::make_pair("ver", vVer));
 
     ck::JValue vScene; vScene.type = ck::JValue::TStr; vScene.str = U8(s.scene);
     root.obj.push_back(std::make_pair("scene", vScene));
@@ -24717,7 +24883,7 @@ void SaveGameNow() {
     //
     // 之前刻意不存，是错的
     // 理由是"文件会变大、读档后玩家关心的是聊到哪了"。
-    // 但回想面板存在的意义就是回头看说过的话，读档后一片空白等于
+    // 但回想面板存在的意义就是回头看说过的话：读档后一片空白，
     // 这个功能只在当前会话里有效——玩家存了档再打开，等于这段对话没发生过。
     //
     // 折中：只存最近 kHistSaveMax 条，每条文本截到 kHistSaveLen 字。
@@ -24953,6 +25119,13 @@ bool LoadGameNow() {
         return false;
     }
 
+    // ★ 存档版本：写盘时写 ver=2，老档缺这个字段一律按 v1。
+    // 目前 v1/v2 的 stage 编码相同，dirStage 的范围钳制对两者都成立；
+    // 以后改编码必须在这里按 saveVer 分岔，不能让旧数字落进新枚举。
+    const int saveVer = (int)root.getNum("ver", 1);
+    if (saveVer > 2)
+        AppLog(L"[读档] 存档版本 v%d 比本程序更新，按 v2 尽力读取", saveVer);
+
     ck::Vm::Snapshot s;
     s.scene = W(root.getStr("scene"));
     s.ip = (size_t)root.getNum("ip", 0);
@@ -25022,7 +25195,12 @@ bool LoadGameNow() {
         Director::Snapshot ds;
         ds.chapter = (int)root.getNum("dirChapter", 1);
         ds.turn    = (int)root.getNum("dirTurn", 0);
-        ds.stage   = (int)root.getNum("dirStage", 0);
+        // ★ 只认 0/1/2 三种编码（其余=教学 / 1=开场 / 2=日常）。
+        // 坏档或未来版本的新编码不能原样交给 Restore：会落到没有出口、
+        // 也不报错的阶段。未知值一律按教学处理，由 Restore 安全回退。
+        int st = (int)root.getNum("dirStage", 0);
+        if (st < 0 || st > 2) st = 0;
+        ds.stage = st;
         ds.chapterBg = W(root.getStr("dirChapterBg"));
         ds.path = W(root.getStr("dirPath"));   // 老存档没有这个字段 -> 空，Restore 会补当前章
         //
@@ -25097,7 +25275,9 @@ bool LoadGameNow() {
     if (!a.assetBrief.empty() && !a.dir.Visible().pose.empty())
         a.assetBrief = StripUnknownMoodLines(a.assetBrief, a.dir.Visible());
     a.chapterAssetLines.clear();
+    EnterCriticalSection(&a.cs);
     ++a.assetBriefGen;
+    LeaveCriticalSection(&a.cs);
     a.assetBriefBusy = false;
     a.assetBriefBusyGen = 0;
     const ck::JValue* hist = root.find("hist");
@@ -25329,8 +25509,7 @@ const size_t kCtxLineMax  = 900;     // 单条截断长度（够放一整段讲�
 // ---- "不缺 token"时这三个上限全部取消
 //
 // ★ 必须做成函数，不能直接改常量：这三个数是省 token 的折中，不是正确性要求。
-// 只放开输出上限、上下文还砍着，表现依然是"她记不住前面聊的"，
-// 而
+// 只放开输出上限、上下文还砍着，表现依然是"她记不住前面聊的"。
 // ★ 不用"很大的数"而用"真的不限"：kCtxMaxChars 参与加法（total + add > kCtxMaxChars），
 // 填 SIZE_MAX 有溢出风险——所以比较处改成"开关为真就跳过判断"。
 //
@@ -25414,6 +25593,7 @@ static const int kMaxStageFix = 1;
 struct AssetNoteCtx {
     int                   gen = 0;
     std::vector<ChatMsg>  msgs;
+    LlmConfig             cfg;      // 主线程发起时拷一份，工作线程不再读 g_app.llm
     bool                  isReview = false;
     int                   chapter  = 0;
 };
@@ -25794,7 +25974,7 @@ static unsigned __stdcall AssetNoteThread(void* p) {
     LlmResult r;
     const int myGen = ctx->gen;
 
-    LlmConfig cfg = g_app.llm;
+    LlmConfig cfg = ctx->cfg;          // ★ 不读 g_app.llm：设置页可能同时在改它
     cfg.stream = false;                 // 后台跑，玩家看不到过程
     cfg.temperature = 0.4;              // 要的是稳定的总结，不是发挥
     //
@@ -25810,6 +25990,14 @@ static unsigned __stdcall AssetNoteThread(void* p) {
     bool ok = LlmChat(cfg, ctx->msgs, r, nullptr);
     if (!ok) {
         AppLog(L"[素材笔记] 生成失败：%s（这一局不带笔记）", r.err.c_str());
+        // 失败也要把搬运槽清干净：主线程收到消息后一律取槽，
+        // 留着上一笔的文本会被当成这一笔的笔记。
+        {
+            CsLock lk(&g_app.cs);
+            g_assetNoteText.clear();
+            g_assetNoteIsReview = false;
+            g_assetNoteChapter  = 0;
+        }
         delete ctx;
         //
         // ---- 失败也必须投消息，不能就此 return
@@ -25823,8 +26011,18 @@ static unsigned __stdcall AssetNoteThread(void* p) {
         PostMessageW(g_app.hwnd, WM_APP_ASSET_NOTE, 0, (LPARAM)myGen);
         return 0;
     }
-    if (myGen != g_app.assetBriefGen) {
+    int noteGenNow;
+    EnterCriticalSection(&g_app.cs);
+    noteGenNow = g_app.assetBriefGen;
+    LeaveCriticalSection(&g_app.cs);
+    if (myGen != noteGenNow) {
         Dbg(L"[素材笔记] 结果过期，丢弃");
+        {
+            CsLock lk(&g_app.cs);
+            g_assetNoteText.clear();
+            g_assetNoteIsReview = false;
+            g_assetNoteChapter  = 0;
+        }
         delete ctx;
         //
         // 【同上】过期也要投消息解掉 busy，否则换人 / 读档之后
@@ -25832,12 +26030,15 @@ static unsigned __stdcall AssetNoteThread(void* p) {
         PostMessageW(g_app.hwnd, WM_APP_ASSET_NOTE, 0, (LPARAM)myGen);
         return 0;
     }
-    // 复盘那次不补注解：它是对话复盘，不是素材清单
-    if (!ctx->isReview) SaveMoodFromNote(r.full);
-
-    g_assetNoteText    = r.full;
-    g_assetNoteIsReview = ctx->isReview;
-    g_assetNoteChapter  = ctx->chapter;
+    // ★ 工作线程只把结果放进搬运槽，不碰 ini 缓存、不碰 g_app 的业务状态。
+    // 补注解要写 char.ini（IniFlush -> g_iniCache），而主线程随时随地
+    // 都在读那份 map：两边并发会直接把容器写坏。挪到主线程消息里做。
+    {
+        CsLock lk(&g_app.cs);
+        g_assetNoteText    = r.full;
+        g_assetNoteIsReview = ctx->isReview;
+        g_assetNoteChapter  = ctx->chapter;
+    }
     delete ctx;
     PostMessageW(g_app.hwnd, WM_APP_ASSET_NOTE, 1, (LPARAM)myGen);
     return 0;
@@ -26058,6 +26259,7 @@ static void StartAssetBrief(bool retry) {
 
     AssetNoteCtx* ctx = new AssetNoteCtx();
     ctx->gen      = a.assetBriefGen;
+    ctx->cfg      = a.llm;
     ctx->isReview = false;
     // 带人设，但不带对话历史：这是开场前的准备，还没有对话可带。
     //
@@ -26137,6 +26339,7 @@ static void StartChapterAssetReview(int chapter) {
 
     AssetNoteCtx* ctx = new AssetNoteCtx();
     ctx->gen      = a.assetBriefGen;
+    ctx->cfg      = a.llm;
     ctx->isReview = true;
     ctx->chapter  = chapter;
     // 同上：复盘要的也是纯文本，system 里"必须返回 JSON"那套契约切掉，
@@ -26162,6 +26365,7 @@ static void StartChapterAssetReview(int chapter) {
 struct StageFixCtx {
     int            gen = 0;
     std::vector<ChatMsg> msgs;
+    LlmConfig      cfg;          // 主线程发起时拷一份，工作线程不再读 g_app.llm
     std::wstring   say;          // 她刚说的台词（重选的依据）
     // 发出前先睡这么久（毫秒）。限流重试时用——立刻重发还是会被拒。
     unsigned       delayMs = 0;
@@ -26182,14 +26386,16 @@ struct StageFixCtx {
 // 只有"上一条刚结束就发下一条"这种情况才会真的等一下。
 static void ApiThrottle(unsigned minGapMs)
 {
-    const long long last = g_lastApiEndMs;
+    const long long last = g_lastApiEndMs.load(std::memory_order_relaxed);
     if (last <= 0) return;
     const long long now  = (long long)GetTickCount64();
     const long long passed = now - last;
     if (passed >= 0 && passed < (long long)minGapMs)
         Sleep((DWORD)((long long)minGapMs - passed));
 }
-static void ApiMarkEnd() { g_lastApiEndMs = (long long)GetTickCount64(); }
+static void ApiMarkEnd() {
+    g_lastApiEndMs.store((long long)GetTickCount64(), std::memory_order_relaxed);
+}
 
 // 429 = 限流（免费额度用完 / 每分钟请求数超了）。
 // 这种失败【等一会儿就好】，重试有意义；别的失败（连不上、服务端 500）
@@ -26208,9 +26414,20 @@ static unsigned __stdcall StageFixThread(void* p) {
     LlmResult r;
     const int myGen = ctx->gen;
 
+    // ★ 这次请求的类型在发起时就定了，锁内取一次快照。
+    // 线程跑几秒，期间主线程可能已经发起下一次请求、改了这些标志；
+    // 每次都去读全局的话，回来时会被别人的类型牵着走（重写被当挑素材解析）。
+    bool isRewrite, isPick, isRetry;
+    {
+        CsLock lk(&g_app.cs);
+        isRewrite = g_stageFixIsRewrite;
+        isPick    = g_stageFixIsPick;
+        isRetry   = g_stageFixIsRetry;
+    }
+
     // 修正请求很轻（只要三个字段），不需要流式——
     // 玩家看不到中间过程，流式只会多一堆无用的消息投递。
-    LlmConfig cfg = g_app.llm;
+    LlmConfig cfg = ctx->cfg;   // ★ 不读 g_app.llm：设置页可能同时在改它
     cfg.stream = false;
     cfg.temperature = 0.3;      // 重选是【照抄清单】，不要发挥
     //
@@ -26218,8 +26435,7 @@ static unsigned __stdcall StageFixThread(void* p) {
     //
     // 正式对话等 180 秒是合理的（她可能在写长台词）。
     // 但这套请求台词是挂起的——对话框空着，等着跟画面一起出来。
-    // 180 秒的超时意味着最坏情况下她三分钟不说话，
-    // 而
+    // 180 秒的超时意味着最坏情况下她三分钟不说话；
     // 它只要三个字段名，15 秒绰绰有余；超时就按原值走，
     // 最坏结果是"这一轮没换表情"，远好过三分钟没反应。
     //
@@ -26242,10 +26458,14 @@ static unsigned __stdcall StageFixThread(void* p) {
         // ---- 【把"网络失败"跟"她没给值"分开告诉主线程】
         // 两者投回来的都是三个空串，主线程分不出来——
         // 不分的话素材运行时这一轮连一行都不会有。
-        g_stageFixNetFail = true;
-        g_stageFixErr     = r.err;
-        g_stageFixHttpStatus = r.httpStatus;
-        const bool tagPick = (g_stageFixIsPick && !g_stageFixIsRetry);
+        bool tagPick;
+        {
+            CsLock lk(&g_app.cs);
+            g_stageFixNetFail = true;
+            g_stageFixErr     = r.err;
+            g_stageFixHttpStatus = r.httpStatus;
+            tagPick = (isPick && !isRetry);
+        }
         AppendFixLog(L"(请求失败) " + r.err, L"",
                      tagPick ? L"【挑素材】" : L"【打回重填】");
         AppLog(tagPick ? L"[挑素材] 请求失败：%s（画面保持上一轮）"
@@ -26259,30 +26479,36 @@ static unsigned __stdcall StageFixThread(void* p) {
         // WM_APP_STAGE_FIX 永远不会来，FlushPendingSay 永远不执行，
         // 她这句话就永远不显示——对话框空着，点了也没用。
         // 投一条空结果，让主线程把台词放出来。
-        g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
-        g_stageFixPose2.clear();
-        //
-        // 【重写槽同样要清】
-        // 重写失败时 pendingSay 里那句（讲代码的原话）会照常显示。
-        // 不清的话，下一轮挑素材可能又把上一局残留的重写结果贴上去。
-        g_stageFixSay.clear();
+        {
+            CsLock lk(&g_app.cs);
+            g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
+            g_stageFixPose2.clear();
+            // 重写槽同样要清：不清的话，下一轮挑素材可能把上一局残留的
+            // 重写结果贴上去。
+            g_stageFixSay.clear();
+        }
         PostMessageW(g_app.hwnd, WM_APP_STAGE_FIX, 0, (LPARAM)myGen);
         return 0;
     }
     // 过期检查：期间玩家可能读档 / 换人了，结果不能再贴上去
-    if (myGen != g_app.chatGen) {
+    int chatGenNow;
+    EnterCriticalSection(&g_app.cs);
+    chatGenNow = g_app.chatGen;
+    LeaveCriticalSection(&g_app.cs);
+    if (myGen != chatGenNow) {
         Dbg(L"[打回] 结果过期，丢弃");
         delete ctx;
         //
         // 【同上】读档之后台词仍然挂着的话，旧局那句会盖到新局上。
         // 投空结果让主线程收尾（主线程会按 gen 判断该不该显示）。
-        g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
-        g_stageFixPose2.clear();
-        //
-        // 【重写槽同样要清】
-        // 重写失败时 pendingSay 里那句（讲代码的原话）会照常显示。
-        // 不清的话，下一轮挑素材可能又把上一局残留的重写结果贴上去。
-        g_stageFixSay.clear();
+        {
+            CsLock lk(&g_app.cs);
+            g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
+            g_stageFixPose2.clear();
+            // 重写槽同样要清：不清的话，下一轮挑素材可能把上一局残留的
+            // 重写结果贴上去。
+            g_stageFixSay.clear();
+        }
         PostMessageW(g_app.hwnd, WM_APP_STAGE_FIX, 0, (LPARAM)myGen);
         return 0;
     }
@@ -26292,7 +26518,7 @@ static unsigned __stdcall StageFixThread(void* p) {
     // 素材打回要的是三个字段名，走 ParseReply 解析 JSON；
     // 重写要的是一整句自然语言，解析成 JSON 反而会把正文吃掉。
     // 两条路共用同一个线程，靠 g_stageFixIsRewrite 分岔。
-    if (g_stageFixIsRewrite) {
+    if (isRewrite) {
         AppendFixLog(L"", r.full, L"【日常段重写】");
         //
         // 她偶尔会不听话，仍然回 JSON 或者带围栏。
@@ -26309,25 +26535,32 @@ static unsigned __stdcall StageFixThread(void* p) {
         StripToolCallTags(ns);
         if (LooksLikeMachineText(ns)) ns.clear();
         delete ctx;
-        g_stageFixSay = ns;
-        // 素材槽必须清空：这句台词要被替换掉，
-        // 沿用旧判定等于给新台词配旧画面。
-        g_stageFixPose.clear(); g_stageFixBg.clear();
-        g_stageFixBgm.clear();  g_stageFixPose2.clear();
+        {
+            CsLock lk(&g_app.cs);
+            g_stageFixSay = ns;
+            // 素材槽必须清空：这句台词要被替换掉，
+            // 沿用旧判定等于给新台词配旧画面。
+            g_stageFixPose.clear(); g_stageFixBg.clear();
+            g_stageFixBgm.clear();  g_stageFixPose2.clear();
+        }
         PostMessageW(g_app.hwnd, WM_APP_STAGE_FIX, 1, (LPARAM)myGen);
         return 0;
     }
 
     AppendFixLog(r.full.empty() ? L"(空回复)" : L"", r.full,
-                 (g_stageFixIsPick && !g_stageFixIsRetry)
+                 (isPick && !isRetry)
                      ? L"【挑素材】" : L"【打回重填】");
     LlmReply rep = ParseReply(r.full);
     delete ctx;
-    // 结果通过消息带回主线程（工作线程不能碰界面状态）
-    g_stageFixPose = rep.pose;
-    g_stageFixBg   = rep.bg;
-    g_stageFixBgm  = rep.bgm;
-    g_stageFixPose2 = rep.pose2;
+    // ★ 结果写进共享搬运槽，消息只带代号。工作线程不碰界面状态，
+    // 但槽是跨线程共用的，所以必须持锁；主线程在消息处理里持同一把锁取走。
+    {
+        CsLock lk(&g_app.cs);
+        g_stageFixPose = rep.pose;
+        g_stageFixBg   = rep.bg;
+        g_stageFixBgm  = rep.bgm;
+        g_stageFixPose2 = rep.pose2;
+    }
     PostMessageW(g_app.hwnd, WM_APP_STAGE_FIX, 1, (LPARAM)myGen);
     return 0;
 }
@@ -26382,6 +26615,7 @@ static bool StartStageFix(const DirView& dv, const std::wstring& say,
 
     StageFixCtx* ctx = new StageFixCtx();
     ctx->gen  = a.chatGen;
+    ctx->cfg  = a.llm;
     ctx->say  = say;
     // 复用正式对话的 system：人设、素材清单、最近用过的表情全在里面。
     // 她填错恰恰是因为记不住清单。只说"错了"她只会再猜一个，
@@ -26401,7 +26635,7 @@ static bool StartStageFix(const DirView& dv, const std::wstring& say,
 
     // 每次发起都先复位：上一次请求是网络失败的话，
     // 这个标志会留在 true，把这一次的"她没给值"误报成网络问题。
-    g_stageFixNetFail = false;
+    { CsLock lk(&g_app.cs); g_stageFixNetFail = false; }
     HANDLE h = (HANDLE)_beginthreadex(nullptr, 0, StageFixThread, ctx, 0, nullptr);
     if (!h) { delete ctx; a.stageFixing = false; return false; }
     CloseHandle(h);
@@ -26546,6 +26780,7 @@ static bool StartDailyRewrite(const std::wstring& say) {
 
     StageFixCtx* ctx = new StageFixCtx();
     ctx->gen = a.chatGen;
+    ctx->cfg = a.llm;
     ctx->say = say;
     //
     // 编译直接报 C2065。重写不需要延迟（延迟是挑素材那条路用的，
@@ -26558,26 +26793,26 @@ static bool StartDailyRewrite(const std::wstring& say) {
     ctx->msgs.push_back(ChatMsg{ L"user", prompt });
 
     ++a.stageFixTries;
-    g_stageFixIsRewrite = true;
-    //
-    // 这两个必须清
-    // 线程和回调靠 isPick / isRetry 判断"这次是挑素材还是打回重填"。
-    // 重写是第三条路，但它复用同一个线程
-    // 万一上一轮遗留了 isPick=true，线程里就会按"挑素材"去解析，
-    // 把整句台词当 JSON 吃掉，结果这场重写等于没发生。
-    g_stageFixIsPick    = false;
-    g_stageFixIsRetry   = false;
+    // 这两个必须清：线程和回调靠 isPick / isRetry 判断这次是挑素材还是
+    // 打回重填。重写是第三条路却复用同一个线程，万一上一轮遗留了
+    // isPick=true，线程里就会按"挑素材"去解析，把整句台词当 JSON 吃掉。
+    {
+        CsLock lk(&g_app.cs);
+        g_stageFixIsRewrite = true;
+        g_stageFixIsPick    = false;
+        g_stageFixIsRetry   = false;
+    }
     a.stageFixing       = true;
 
     AppLog(L"[日常] 这句在讲知识点，已请她改写成相处的话");
 
     // 每次发起都先复位：上一次请求是网络失败的话，
     // 这个标志会留在 true，把这一次的"她没给值"误报成网络问题。
-    g_stageFixNetFail = false;
+    { CsLock lk(&g_app.cs); g_stageFixNetFail = false; }
     HANDLE h = (HANDLE)_beginthreadex(nullptr, 0, StageFixThread, ctx, 0, nullptr);
     if (!h) {
         delete ctx;
-        g_stageFixIsRewrite = false;
+        { CsLock lk(&g_app.cs); g_stageFixIsRewrite = false; }
         a.stageFixing = false;
         --a.stageFixTries;
         return false;
@@ -26614,6 +26849,7 @@ static bool StartAssetPick(const std::wstring& say,
 
     StageFixCtx* ctx = new StageFixCtx();
     ctx->gen = a.chatGen;
+    ctx->cfg = a.llm;
     ctx->say = say;
     // system 里也传 splitAsset=true：不要再给一份素材清单，
     // 这次请求自己就带着完整清单（AssetPickPrompt 里那份），
@@ -26624,7 +26860,7 @@ static bool StartAssetPick(const std::wstring& say,
                                        true));
     ctx->msgs.push_back(ChatMsg{ L"user", prompt });
 
-    g_stageFixIsPick = true;
+    { CsLock lk(&g_app.cs); g_stageFixIsPick = true; }
     a.stageFixing    = true;
     //
     // 这一条不能省stageFixWasBanned 是"这次打回是因为连用被禁"。
@@ -26636,9 +26872,11 @@ static bool StartAssetPick(const std::wstring& say,
 
     // 每次发起都先复位：上一次请求是网络失败的话，
     // 这个标志会留在 true，把这一次的"她没给值"误报成网络问题。
-    g_stageFixNetFail = false;
+    { CsLock lk(&g_app.cs); g_stageFixNetFail = false; }
     HANDLE h = (HANDLE)_beginthreadex(nullptr, 0, StageFixThread, ctx, 0, nullptr);
-    if (!h) { delete ctx; a.stageFixing = false; g_stageFixIsPick = false; return false; }
+    if (!h) { delete ctx; a.stageFixing = false;
+              { CsLock lk(&g_app.cs); g_stageFixIsPick = false; }
+              return false; }
     CloseHandle(h);
     return true;
 }
@@ -26681,7 +26919,6 @@ static unsigned __stdcall ChatThread(void* p) {
         g_chatOk = ok;
         g_chatErr = r.err;
         g_chatFinishReason = r.finishReason;
-        g_chatPartial = r.partial;
     }
     LeaveCriticalSection(&g_app.cs);
 
@@ -26706,7 +26943,9 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     //
     // 现在改成：允许打断，靠代号让旧结果作废。
     // 旧线程继续跑完（没法安全取消），但它的结果会被丢弃。
+    EnterCriticalSection(&a.cs);
     ++a.chatGen;
+    LeaveCriticalSection(&a.cs);
     a.chatting = true;
     a.chatSilent = silent;      // 见 app.h：读档时思考期间不显示文本
     //
@@ -26717,7 +26956,7 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     // 而运行时什么都不报，只看到素材又对不上了。
     a.stageFixTries = 0;
     a.stageFixing   = false;
-    g_stageFixIsPick = false;
+    { CsLock lk(&g_app.cs); g_stageFixIsPick = false; }
     //
     // 挑素材的重试次数同理归零：它是"这一句还能不能再要一次画面"。
     // 忘了归零的话，第一次网络失败重试过之后再遇到失败就永远不再重试。
@@ -26908,7 +27147,6 @@ void StartChat(const std::wstring& userText, const std::wstring& speaker,
     // 两个都禁的话她可能被迫在两个都不合适的地方之间来回跳。
     //
     // ★ 换一首曲子不会穿帮，换教室会。所以教学 / 做题阶段豁免背景的强制切换；
-    // 自
     //
     // ★ 章内锁定期间，这条"连用就换"整个不该存在：锁定期间背景本来就恒定，
     // bgStreak 会一路涨过阈值，把锁定值本身当成"连用太久"塞进禁用名单
@@ -27068,6 +27306,7 @@ static void OnChatDone(HWND hwnd) {
     bool ok = false;
     EnterCriticalSection(&a.cs);
     full = g_chatFull; err = g_chatErr; ok = g_chatOk;
+    a.lastFinishReason = g_chatFinishReason;
     LeaveCriticalSection(&a.cs);
 
     if (!ok || full.empty()) {
@@ -27078,8 +27317,7 @@ static void OnChatDone(HWND hwnd) {
         SetStatus(L"已切换到预置台词：" + err, 8);
         AppLog(L"大模型调用失败：%s", err.c_str());
     } else {
-        g_statusText.clear();
-        g_statusTimer = 0;
+        StatusClear();
     }
 
     LlmReply rep = ParseReply(full);
@@ -27087,14 +27325,14 @@ static void OnChatDone(HWND hwnd) {
     // ★ 服务端说 finish_reason=length，就一定是被输出上限掐断的。
     //   反过来：JSON 没结尾但服务端说 stop，那是模型自己把格式写坏了，
     //   不该按"输出上限"处理——照那个提示去翻设置，翻遍也找不到能调的项。
-    if (g_chatFinishReason == L"length") rep.truncated = true;
+    if (a.lastFinishReason == L"length") rep.truncated = true;
     // ★ 半截台词必须让人一眼看出是半截。
     // 不加标记，回想面板和存档里躺着的就是一句断在半路的"正常台词"：
     // 下一轮她也不知道自己上一句没说完——那后半句就永远等不到。
     if (rep.truncated && !rep.say.empty()) {
         if (rep.say[rep.say.size() - 1] != L'…') rep.say += L"……";
         AppLog(L"[截断] 结束原因=%s，台词尾已标未完：%s",
-               g_chatFinishReason.empty() ? L"(服务端没给)" : g_chatFinishReason.c_str(),
+               a.lastFinishReason.empty() ? L"(服务端没给)" : a.lastFinishReason.c_str(),
                rep.say.c_str());
     }
     // 留给下一轮：让她把没说完的那半句补上（用完即清，见提示词构建处）。
@@ -27754,7 +27992,7 @@ static void OnChatDone(HWND hwnd) {
             AppendTurnTrace(L"×挑素材没能发起(判卷这一句),画面保持", nullptr, nullptr, L"");
         }
     }
-    // 她的话被长度限制掐断了：明确说出来，别让
+    // 她的话被长度限制掐断了：明确说出来，别让玩家以为程序卡住。
     // 之前这种情况会走到"网络断了"的兜底，玩家完全不知道该怎么办。
     //
     // ---- 无上限时这句提示是错的，必须换说法
@@ -27771,7 +28009,7 @@ static void OnChatDone(HWND hwnd) {
         // ★ 两种截断的提示必须分开，否则玩家按错的提示去查找，什么也找不到：
         //   length    —— 服务端 / 模型的输出上限。下一轮她会接着把话说完。
         //   其余 / 空 —— 流式中途断了（网络 / 网关）。已经自动重发过一次。
-        if (g_chatFinishReason == L"length") {
+        if (a.lastFinishReason == L"length") {
             SetStatus(L"她的话太长被输出上限掐断了——下一句她会接着说完", 8);
         } else {
             SetStatus(L"回复中途断了（网络问题），她这句可能没说完", 8);
@@ -28014,8 +28252,7 @@ static std::wstring BuildNextDayKick() {
 //
 // 读档后让她接上话的提示语。
 //
-// 必须按【当前阶段分别措辞】
-// 读回自
+// 必须按【当前阶段分别措辞】。
 // 三个入口各写一份迟早会出现"两个入口行为不同"，抽成一处。
 static std::wstring BuildResumeKick() {
     App& a = g_app;
@@ -28079,7 +28316,7 @@ static std::wstring BuildResumeKick() {
     // 【实测复现如下】
     //   存档里 dirChapter=5（第5章 递归），从流程图跳过去，
     //   她开口却是「……要不要趁这个气氛，先聊聊你打算怎么学【数组】？」
-    //   ——数组是【第 2 章】，而 hist 最后聊的正是田心屋那段讲数组的话。
+    //   ——数组是【第 2 章】，而 hist 最后聊的正是甜品店那段讲数组的话。
     //
     // 根因是开场那句「自然地接上刚才的话题」：
     //   "刚才的话题"在对话记录里就是上一章的内容，她照着接，于是退回第 2 章。
@@ -28114,8 +28351,8 @@ static std::wstring BuildResumeKick() {
 //
 // 读档之后让她接上话。
 //
-// ★ 三个读档入口各写一份的话，迟早出现"两个入口行为不同"——早期版本就是这样：
-// 一处写死了"继续这一章"，读回自
+// ★ 三个读档入口各写一份的话，迟早出现"两个入口行为不同"——
+// 早期版本就有一处写死了"继续这一章"。
 //
 // ---- 笔记没到就一起挂起
 //
@@ -28333,7 +28570,7 @@ static void DirAdvance() {
     // 不是"跳过测验直接进下一章"。于是她一说"讲完了"，引擎立刻判通过
     // → 直接进章间日常 →
     // 考试是核心环节，不能让她一句话跳过。
-    // 做法：只有自
+    // 做法：只在日常段承认 advance=2，
     // 上课阶段的 2 一律降级成 1 —— 变成"出题考他"。她真想免考，得先考过。
     const bool inLessonNow = (a.dir.Stage() == DirStage::Lesson);
     //
@@ -28356,7 +28593,7 @@ static void DirAdvance() {
     // 没有兜底就永远开不了考，
     a.dirAdvance = 0;
     a.dirReady   = false;
-    // ---- 自
+    // ---- 开场 / 日常
     //
     // 这两段是"不讲课"的，绝不能走进下面的出题分支
     // 否则她说"聊够了开始吧"，引擎却去 ShouldQuiz 判能不能出题
@@ -30127,7 +30364,7 @@ static void AdvanceClick() {
     // 如果这时候直接推进剧情，后半段话就永远看不到了
     // 这正是对话框截断输出的另一种表现形式。
     //
-    // 那是
+    // 页号自增的位置很关键：
     // 补到翻页块里就变成了"刚 ++ 完立刻清零"
     // 页号永远是 0，于是每次点的都是同一页，看起来就是"把话重新打一遍"。
     //
@@ -30629,7 +30866,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         if (a.ui.screen == Screen::Play) {
-            a.rs.status = g_statusText;
+            a.rs.status = StatusGet();
             a.rs.hist = &a.hist;      // 回想面板读它（渲染层只拿只读指针）
             if (a.dirMode) {
                 // 导演模式：章节来自大纲进度，不是剧本变量
@@ -30821,38 +31058,33 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // ---- 状态条倒计时
-        if (g_statusTimer > 0) {
-            if (--g_statusTimer == 0) {
-                //
-                // ---- 还在等网络，就不能把状态栏清空
-                //
-                // 这是"等了半天什么都没有，退出重开就好了"的根因
-                // "她在想…"只挂 60 秒，而一次请求最长要走到
-                // LLM.TimeoutSec（默认 180 秒——网关攒够整段才转发时
-                // 确实会走满，实测告辞那句就等了 67 秒才回来）。
-                // 60 秒一到状态栏就空了，可请求还在飞。
-                // ——跟崩了没有区别，于是退出重开。
-                // 重开确实"好了"，但那只是把请求作废重发了一次，
-                // 故障本身从头到尾没被看见过。
-                //
-                // 挑素材那次请求同样会等超时
-                // "她在为这句话配画面…"只挂 6 秒，而它实测能跑 20 多秒，
-                // 失败重问一次就更久。那段时间同样是"什么都没有"。
-                //
-                // 所以清空之前先看还有没有请求在飞：有就换成"还在想"并续期，
-                // 让等待一直可见。宁可提示啰嗦，也不能让
-                if (a.chatting || a.rs.thinking) {
-                    g_statusText  = L"她还在想…（这次有点慢，稍等一下）";
-                    g_statusTimer = 30 * 30;   // 再挂 30 秒；还慢就再续
-                } else if (a.stageFixing) {
-                    g_statusText  = L"她还在为这句话配画面…（稍等一下）";
-                    g_statusTimer = 30 * 30;
-                } else if (a.assetBriefBusy) {
-                    g_statusText  = L"她还在翻自己的素材笔记…（稍等一下）";
-                    g_statusTimer = 30 * 30;
-                } else {
-                    g_statusText.clear();
-                }
+        if (StatusTick()) {
+            //
+            // ---- 还在等网络，就不能把状态栏清空
+            //
+            // 这是"等了半天什么都没有，退出重开就好了"的根因
+            // "她在想…"只挂 60 秒，而一次请求最长要走到
+            // LLM.TimeoutSec（默认 180 秒——网关攒够整段才转发时
+            // 确实会走满，实测告辞那句就等了 67 秒才回来）。
+            // 60 秒一到状态栏就空了，可请求还在飞。
+            // ——跟崩了没有区别，于是退出重开。
+            // 重开确实"好了"，但那只是把请求作废重发了一次，
+            // 故障本身从头到尾没被看见过。
+            //
+            // 挑素材那次请求同样会等超时
+            // "她在为这句话配画面…"只挂 6 秒，而它实测能跑 20 多秒，
+            // 失败重问一次就更久。那段时间同样是"什么都没有"。
+            //
+            // 所以清空之前先看还有没有请求在飞：有就换成"还在想"并续期，
+            // 让等待一直可见。宁可提示啰嗦，也不能让玩家以为程序死了。
+            if (a.chatting || a.rs.thinking) {
+                StatusSet(L"她还在想…（这次有点慢，稍等一下）", 30 * 30);
+            } else if (a.stageFixing) {
+                StatusSet(L"她还在为这句话配画面…（稍等一下）", 30 * 30);
+            } else if (a.assetBriefBusy) {
+                StatusSet(L"她还在翻自己的素材笔记…（稍等一下）", 30 * 30);
+            } else {
+                StatusClear();
             }
         }
 
@@ -32699,7 +32931,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 回想面板里会出现「她：我刚才不是说过吗」这种错位的行。
         // isPlayer 只决定消息角色，显示名还得靠 speaker 自己带对。
         // 玩家名字跟 system prompt 同源（角色包优先），
-        // 否则对话框里显示「你」、她心里却叫「将臣」，两边对不上。
+        // 否则对话框里显示「你」、她心里却叫「角色包里的名字」，两边对不上。
         a.PushHist(PlayerNameFor(a.Def(), a.persona.playerName), text, true);
 
         StartChat(text, a.persona.charName, a.chatHint);
@@ -32817,8 +33049,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             a.pendingKickSilent = false;
             InvalidateRect(a.hwnd, nullptr, FALSE);
         };
-        std::wstring txt = g_assetNoteText;
-        g_assetNoteText.clear();
+        // ★ 一次性在锁里取走并清空：工作线程写的是同一组全局，
+        // 分几次读会拿到前后两笔请求拼起来的混合值。
+        std::wstring txt;
+        bool noteIsReview = false;
+        int  noteChapter  = 0;
+        {
+            CsLock lk(&g_app.cs);
+            txt = g_assetNoteText;
+            noteIsReview = g_assetNoteIsReview;
+            noteChapter  = g_assetNoteChapter;
+            g_assetNoteText.clear();
+            g_assetNoteIsReview = false;
+            g_assetNoteChapter  = 0;
+        }
         //
         // 剥掉可能裹着的 JSON / 代码块标记：
         // 提示词要求纯文本，但模型很爱顺手加一层 ``` 或写成 {"note": "..."}。
@@ -32841,7 +33085,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 1. 它长得就是回复模板，等于每轮给她看一遍"该输出成什么样"
         // 2. 里面写死了 bg / bgm，她会照着抄，于是画面和曲子被一份假笔记绑架
         // 所以宁可这一局不带笔记，也不能存进去。重问一次；还不行就放弃。
-        if (!g_assetNoteIsReview && NoteLooksLikeDialogue(txt)) {
+        if (!noteIsReview && NoteLooksLikeDialogue(txt)) {
             if (g_assetBriefRetry < 1) {
                 AppLog(L"[素材笔记] 她把对话 JSON 当成笔记交回来了，作废重问一次");
                 //
@@ -32868,9 +33112,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             KickOff();
             return 0;
         }
-        if (g_assetNoteIsReview) {
+        if (noteIsReview) {
             a.assetReview = L"【上一章素材复盘（你自己写的）】\n" + txt;
-            AppLog(L"[素材笔记] 第%d章复盘已生成，下一章开始带上", g_assetNoteChapter);
+            AppLog(L"[素材笔记] 第%d章复盘已生成，下一章开始带上", noteChapter);
             //
             // ---- 关系曲线：把她在复盘末尾写的那句"现在我对他是……"存下来
             //
@@ -32879,14 +33123,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 另起一轮问，她没有这一章的上下文，只会写出套话。
             std::wstring bond = ParseBondFromReview(txt);
             if (!bond.empty()) {
-                a.mem.SetBond(bond, g_assetNoteChapter);
-                AppLog(L"[关系] 第%d章：%s", g_assetNoteChapter, bond.c_str());
+                a.mem.SetBond(bond, noteChapter);
+                AppLog(L"[关系] 第%d章：%s", noteChapter, bond.c_str());
             } else {
                 // 没写就不更新——旧的留着。绝不替她编一句。
-                AppLog(L"[关系] 第%d章复盘里没写关系状态，保持上一句", g_assetNoteChapter);
+                AppLog(L"[关系] 第%d章复盘里没写关系状态，保持上一句", noteChapter);
             }
         } else {
             txt = StripUnknownMoodLines(txt, a.dir.Visible());
+            // ★ 写回 char.ini 只能由主线程做：ini 缓存是全进程一份 std::map，
+            // 后台线程 IniSetStr 会和主线程随手一次的 IniGetStr 撞上。
+            // 先剔过清单外名字再补，也避免把模型编出来的素材名写进文件。
+            SaveMoodFromNote(txt);
             a.assetBrief = L"【你自己的素材笔记】\n" + txt;
             AppLog(L"[素材笔记] 已生成（%d 字），之后每轮都会带进上下文",
                    (int)txt.size());
@@ -32899,7 +33147,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_APP_STAGE_FIX: {
         if ((int)lp != a.chatGen) {
-            Dbg((g_stageFixIsPick && !g_stageFixIsRetry)
+            bool pickTag;
+            { CsLock lk(&g_app.cs); pickTag = (g_stageFixIsPick && !g_stageFixIsRetry); }
+            Dbg(pickTag
                     ? L"[挑素材] 结果过期，丢弃"
                     : L"[打回] 结果过期，丢弃");
             //
@@ -32927,23 +33177,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 于是那次打回的结果回来时 isPick 还是 true
         // 照它写标签就会把"她填错了"记成"正常挑素材"，
         // 日志上永远看不出哪次是异常。所以标签另看 isRetry。
-        const bool isPick  = g_stageFixIsPick;
-        const bool isRetry = g_stageFixIsRetry;
-        const bool pickRetry = g_stageFixIsPickRetry;
-        const std::wstring pickErr = g_stageFixErr;
-        g_stageFixIsPick  = false;
-        g_stageFixIsRetry = false;
-        g_stageFixIsPickRetry = false;
-        g_stageFixErr.clear();
-        //
-        // ---- 日常段重写台词的这条路
-        //
-        // 素材修正是"改三个字段名"，重写是"整句话换掉"
-        // 必须在 FlushPendingSay 之前替换，否则放出来的还是那句讲代码的原话，
-        const bool isRewrite = g_stageFixIsRewrite;
-        const std::wstring newSay = g_stageFixSay;
-        g_stageFixIsRewrite = false;
-        g_stageFixSay.clear();
+        // ★ 取走 + 清空必须是同一次持锁：分成两次的话，中间另一个线程
+        // 写进来的新结果会被这里的 clear 抹掉。
+        bool isPick, isRetry, pickRetry, isRewrite;
+        std::wstring pickErr, newSay;
+        {
+            CsLock lk(&g_app.cs);
+            isPick    = g_stageFixIsPick;
+            isRetry   = g_stageFixIsRetry;
+            pickRetry = g_stageFixIsPickRetry;
+            pickErr   = g_stageFixErr;
+            g_stageFixIsPick  = false;
+            g_stageFixIsRetry = false;
+            g_stageFixIsPickRetry = false;
+            g_stageFixErr.clear();
+            // 素材修正是"改三个字段名"，重写是"整句话换掉"，
+            // 必须在 FlushPendingSay 之前替换，否则放出来的还是那句讲代码的原话。
+            isRewrite = g_stageFixIsRewrite;
+            newSay    = g_stageFixSay;
+            g_stageFixIsRewrite = false;
+            g_stageFixSay.clear();
+        }
         if (isRewrite && !newSay.empty()) {
             a.pendingSay   = newSay;
             a.pendingEmote = L"normal";
@@ -32988,10 +33242,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        std::wstring fp = g_stageFixPose, fb = g_stageFixBg, fm = g_stageFixBgm;
-        const std::wstring fp2 = g_stageFixPose2;
-        g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
-        g_stageFixPose2.clear();
+        std::wstring fp, fb, fm, fp2;
+        bool netFail;
+        {
+            CsLock lk(&g_app.cs);
+            fp  = g_stageFixPose;  fb  = g_stageFixBg;  fm  = g_stageFixBgm;
+            fp2 = g_stageFixPose2;
+            g_stageFixPose.clear(); g_stageFixBg.clear(); g_stageFixBgm.clear();
+            g_stageFixPose2.clear();
+            netFail = g_stageFixNetFail;
+            g_stageFixNetFail = false;
+        }
         if (fp.empty() && fb.empty() && fm.empty()) {
             const bool tagPick = (isPick && !isRetry);
             //
@@ -33000,8 +33261,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 两者投回来的都是三个空串。原来一律报"模型没给有效值"，
             // 于是网络断了在日志上被写成她没填
             // 排查方向整个反过来：去改 prompt 催她填，而请求根本没发出去。
-            const bool netFail = g_stageFixNetFail;
-            g_stageFixNetFail = false;
             if (netFail)
                 AppLog(tagPick ? L"[挑素材] 请求失败，画面保持上一轮"
                                : L"[打回] 请求失败，画面保持原样");
@@ -33049,7 +33308,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 网络真的断了时不会变成每句都重试、把对话拖成两倍慢。
             if (isPick && a.assetPickRetry < 1 && !a.lastPickSay.empty()) {
                 ++a.assetPickRetry;
-                g_stageFixIsPickRetry = true;
+                { CsLock lk(&g_app.cs); g_stageFixIsPickRetry = true; }
                 AppLog(netFail
                        ? L"[挑素材] 请求失败，再要一次画面（本轮第 2 次）"
                        : L"[挑素材] 没拿到素材名，再问一次（本轮第 2 次）");
@@ -33076,7 +33335,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // 应用分支里那条护栏根本轮不到执行。
             // 不在这里补一次，请求一失败新章就整章穿帮。
             PullBgIntoChapterPool();
-            if (isPick) { g_stageFixIsPick = false; return 0; }
+            if (isPick) { { CsLock lk(&g_app.cs); g_stageFixIsPick = false; } return 0; }
             return 0;
         }
 
@@ -33154,8 +33413,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             //
             // 【挑素材失败时绝不能 NoteAssets】
             // dv 里装的是上一轮的值，照记等于"还没开始选就被扣了一次"。
-            g_stageFixIsPick  = true;
-            g_stageFixIsRetry = true;
+            {
+                CsLock lk(&g_app.cs);
+                g_stageFixIsPick  = true;
+                g_stageFixIsRetry = true;
+            }
             if (StartStageFix(fv, a.lastHerSay, wantPose2Fix, fp2)) {
                 //
                 // ---- 台词重新挂起
@@ -33174,8 +33436,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                        L"按清单重挑一次", fp.c_str(), fb.c_str(), fm.c_str(), fp2.c_str());
                 return 0;
             }
-            g_stageFixIsPick  = false;
-            g_stageFixIsRetry = false;
+            {
+                CsLock lk(&g_app.cs);
+                g_stageFixIsPick  = false;
+                g_stageFixIsRetry = false;
+            }
         }
         //
         // ---- 打回没拿到有用的值，而这一轮是"连用被禁"触发的
@@ -33340,7 +33605,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         //
         // ---- 审计补一笔：修正后到底对上了没有
         //
-        // 不补的话运行时只有她填错的那次
+        // 不补的话，运行时只有她填错的那次记录，
         // 会以为程序坏了——其实打回已经修好了。
         AppendAssetAudit(fp, fb, fm,
                          ((isPick && !isRetry) ? L"（挑素材）" : L"（打回重填）")
@@ -33572,8 +33837,8 @@ static void BootStep(const std::wstring& msg) {
 // 为什么需要它
 // 存档诊断原来全走 AppLog，而 AppLog 写的是状态栏 + 调试输出，
 // 根本不进 启动日志.txt。那个文件是玩家唯一会去翻的地方，
-// 于是"读不到档"连着几轮只能靠猜——包括
-// 诊断必须落在
+// 于是"读不到档"连着几轮只能靠猜——包括是文件不存在还是内容对不上。
+// 诊断必须落在启动日志里。
 static void BootNote(const std::wstring& msg) {
     if (g_bootLogPath.empty()) return;
     g_bootLogText += msg + L"\n";
@@ -33953,6 +34218,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
     if (a.hEditFont) DeleteObject(a.hEditFont);
     if (a.hEditBrush) DeleteObject(a.hEditBrush);
     Gdiplus::GdiplusShutdown(g_gdiToken);
+    // ★ 先标记再销毁：退出时可能还有后台线程在飞，它们若在这之后
+    // 调 AppLog，csInit=false 会走无锁路径，不会去锁一段已删除的临界区。
+    a.csInit = false;
     DeleteCriticalSection(&a.cs);
     return (int)msg.wParam;
 }
