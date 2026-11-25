@@ -46,6 +46,8 @@ static_assert(L"中"[0] == 0x4E2D,
 #include <functional>
 #include <gdiplus.h>
 #include <set>
+#include <fstream>
+#include <sstream>
 #include <winhttp.h>
 #include <xaudio2.h>
 #include <utility>      // std::pair —— JMembers 需要它
@@ -2882,6 +2884,23 @@ struct RenderState {
     int    nextDayWait  = -1;     // 未就绪时还要几轮；-1 = 该阶段没有出口
     std::wstring nextDayWhy;      // 未就绪原因，状态条下一行显示
     //
+    // ---- 「✦ 凝固此刻」：只在表层 AI 对话里出现
+    //
+    // 它是心之碎片机制的入口。没有它，玩家聊完只能去命令行跑 python，
+    // 整条机制对玩家来说等于不存在。
+    bool   showCrystallize  = false;
+    bool   hoverCrystallize = false;
+    // ---- ✦ 脉冲高亮（首次引导）：按钮首次出现时播放脉冲动画
+    // 引导完成后不再播放，避免干扰正常游戏。
+    bool   crystallizePulse = false;
+    unsigned long long crystallizeFirstSeenMs = 0;  // 首次出现的时间戳
+    // ---- 点击反馈特效：点击后的闪白/粒子/文案停留
+    bool   crystallizeFlash = false;
+    unsigned long long crystallizeFlashMs = 0;
+    std::wstring crystallizeFlashText;
+    // ---- HUD 常驻进度：已凝固 / 总计（读取 imprint 统计）
+    std::wstring crystallizeProgress;
+    //
     // ---- 按钮文案由契约层的 LabelOf 决定
     //
     // ★ 不在渲染层判 isStory / 章数：同一判据只算一遍。
@@ -3293,8 +3312,18 @@ enum class Screen {
                  // 而章数写死在代码里（ch[8] 是编译期常量）时，
                  // 作者想写 12 章就得重新编译——"十章、一百章"根本做不到。
                  // 章节改成动态清单之后，界面里加一章就等于文件里多一段。
+    HeartGallery,   // 心之碎片回顾画廊：列出已结晶的心片，可重现/导出
 };
 // ---------------------------------------------------------------- 收藏
+\
+// 心之碎片回顾画廊入口说明：
+// ① 标题菜单第 8 项，设置页第 10 行（游戏模式行下一行）。
+// ② 进入后读取 living/<char>/imprint.jsonl，列出已结晶 @scene 心片_<id>
+// ③ 点选某心片：用 @scene 心片_<id> 逻辑重现画面（临时加载，不改永久状态）
+// ④ 全收集时在“重现”按钮右侧显示“全收集奖励已解锁”
+// ⑤ 可在“导出 .cks”按钮把当前选中心片的 .cks 备份到本地
+// ⑥ 收藏说明：已移除旧的 CG 收集玩法，现由心之碎片回顾代替
+
 // CG 收集玩法已移除。
 //
 // 原来 Collection 里有一份 cg 集合 + 标题页的"CG 回想"界面，
@@ -3358,6 +3387,30 @@ struct UiState {
     // 两套名字就不一致了：界面显示的是包里的名字，存档和解绑名单里却还写着旧名字。
     // 改名要连目录一起搬，风险比在建目录之前问清楚大得多。
     bool newCharName = false;
+
+    // 画廊：当前选中的心片下标（-1 = 未选）
+    int gallerySel = -1;
+    // 画廊滚动偏移（行数）
+    int galleryScroll = 0;
+    // 从哪个界面进来的（标题菜单 / 设置里的「打开回顾画廊」）。
+    // 返回键要回原地：从设置进来的被弹回标题，玩家会以为自己点错了。
+    Screen galleryPrev = Screen::Title;
+    // 进入画廊时的当前存档槽（1..kSaveSlots，0 = 未知/无存档）。
+    // 用于导出 .cks 时在文件名和提示里标明来源存档。
+    int galleryFromSlot = 0;
+
+    // ---- 画廊：批量结晶预览对话框
+    // 替代 MessageBox，支持勾选每一轮是否结晶。
+    bool galleryBatchCrystallizeOpen = false;
+    struct BatchTurn {
+        std::wstring playerSaid;
+        std::wstring sheSaid;
+        bool checked = true;  // 默认勾选
+        bool alreadyCrystallized = false;  // 已凝固（去重用）
+    };
+    std::vector<BatchTurn> galleryBatchTurns;
+    int galleryBatchHover = -1;  // 悬停的行
+    int galleryBatchScroll = 0;  // 预览对话框内的滚动偏移
 
     // 注释编辑：noteEdit 为真时素材页只画编辑面板，不画网格。
     // 这样编辑区和网格不会叠在一起，也不用再开一个新界面。
@@ -3576,6 +3629,12 @@ struct App {
     // 所以没配大纲 / 大纲写错的情况下游戏照样能玩。
     Director     dir;
     bool         dirMode = false;
+// 「世界模式」开关：表层=心之碎片生成（AI 对话），里层=心之碎片收集（确定性剧本 / 大脑②）。
+// 见 BeginStory 里对它的处理。config.ini [Game] ForceScript=1 打开；设置页「游戏模式」行切换。
+bool         forceScript = false;
+// 从心之碎片画廊点「重温这一幕」时，记下要直接落到的场景名（如 心片_001）。
+// BeginStory 载完里层剧本后会跳到它；空 = 正常从开场走。
+std::wstring pendingShardScene;
 
     // 导演模式的当前舞台。剧本模式下这些来自 @bg / @bgm 指令，
     // 导演模式下由大模型返回的槽位名驱动，所以得单独记一份。
@@ -3993,6 +4052,14 @@ struct App {
     const CharDef* Def() const { return chars.Find(curChar); }   // 可能为 nullptr
 
     LlmConfig  llm;
+
+    // ---- 设置页「检测连接」的状态
+    // 0=没检测过 1=检测中 2=连通 3=失败。gen 用来丢弃过期回包：
+    // 玩家连点两次、或者检测中改了地址再点，旧线程的回包不能盖掉新的。
+    int          apiTestState = 0;
+    int          apiTestGen   = 0;
+    std::wstring apiTestMsg;   // 一行结果摘要（成功带耗时/状态，失败带原因）
+
     PersonaCfg persona;
 
     // ---- 路径
@@ -12238,6 +12305,176 @@ bool Vm::Load(const Snapshot& s) {
 }
 
 } // namespace ck
+// ============================================================================
+//  确定性引擎（ck）自测
+//
+//  跟文件顶部 ADVANCE_SELF_TEST 同一种范式：直接调【真实现】ck::ScriptCompile，
+//  不另起一份拷贝（"契约和实现只活一份"，见文件头第 18-28 行约定）。
+//  默认 CK_SELF_TEST 未定义 => 本段不参与编译，发货构建零影响。
+//
+//  跑法（Windows 端，cl）：
+//     cl /utf-8 /std:c++17 /DCK_SELF_TEST=1 main.cpp /Fe:cktest.exe
+//        以及 windows.h / shlwapi / gdiplus / winhttp / xaudio2 的库
+//     然后  cktest.exe
+//  一次只开一个自测宏：ADVANCE_SELF_TEST 和 CK_SELF_TEST 都定义 main()，
+//  同时开会重定义。
+//
+//  覆盖：编译期检查（未知指令 / 跳转与选项目标不存在 / 场景重名 /
+//  孤儿场景 / 未定义变量 / @def 登记 / 表达式合法性）。
+//  这三份里层 .cks 就是盖在这套规则上写的，跑一遍能确认"加场景/加分叉"
+//  没把引擎的编译期保证悄悄改坏。
+// ============================================================================
+#if CK_SELF_TEST
+
+static int g_ck_pass = 0, g_ck_fail = 0;
+#define CKT(expr, msg) do { \
+if (expr) { ++g_ck_pass; std::printf("[ OK ] %s\n", msg); } \
+else     { ++g_ck_fail; std::printf("[FAIL] %s\n", msg); } \
+} while (0)
+
+namespace {
+// 在 errors / warnings 里找子串（编译期检查都以"第 N 行: xxx"记一句话）。
+bool anyErr(const ck::Program& p, const std::wstring& sub) {
+    for (size_t i = 0; i < p.errors.size(); ++i)
+        if (p.errors[i].find(sub) != std::wstring::npos) return true;
+    return false;
+}
+bool anyWarn(const ck::Program& p, const std::wstring& sub) {
+    for (size_t i = 0; i < p.warnings.size(); ++i)
+        if (p.warnings[i].find(sub) != std::wstring::npos) return true;
+    return false;
+}
+// assetDir 传空 => 不查素材，只看逻辑；这样单测不依赖磁盘上的素材池。
+ck::Program compile(const std::wstring& s) {
+    ck::Program p;
+    ck::ScriptCompile(s, std::wstring(), p);
+    return p;
+}
+}
+
+int main() {
+    using std::printf;
+
+    // 1. 正常剧本：入口=第一个显式 @scene，跳转可达，无 error
+    {
+        ck::Program p = compile(L"@scene 甲\n@goto 乙\n@narr 你好\n@scene 乙\n@narr 世界\n@free 收尾\n");
+        CKT(p.errors.empty(),  "正常剧本无 error");
+        CKT(p.entry == L"甲",  "入口是第一个显式 @scene");
+        CKT(p.scenes.size() == 2, "两个场景");
+        CKT(p.Has(L"乙"),       "乙 存在");
+    }
+
+    // 2. 未知指令 -> 阻止运行
+    {
+        ck::Program p = compile(L"@scene 甲\n@bogus 乱写\n");
+        CKT(!p.errors.empty(), "未知指令记 error");
+        CKT(anyErr(p, L"未知指令"), "错误指明是未知指令");
+    }
+
+    // 3. @goto 目标不存在
+    {
+        ck::Program p = compile(L"@scene 甲\n@goto 没有这幕\n");
+        CKT(anyErr(p, L"跳转目标不存在"), "@goto 指向不存在的场景报错");
+    }
+
+    // 4. 场景重名
+    {
+        ck::Program p = compile(L"@scene 甲\n@narr a\n@scene 甲\n@narr b\n");
+        CKT(anyErr(p, L"场景名重复"), "重名场景报错");
+    }
+
+    // 5. 孤儿场景（入口 BFS 走不到）-> 警告不阻止
+    {
+        ck::Program p = compile(L"@scene 甲\n@goto 乙\n@narr x\n@scene 乙\n@narr y\n@scene 孤\n@narr z\n");
+        CKT(p.errors.empty(), "孤儿场景不记 error（可跑）");
+        CKT(anyWarn(p, L"不可达"),   "走不到的场景告警");
+    }
+
+    // 6. 表达式引用了从未赋值/未 @def 的变量 -> 警告
+    {
+        ck::Program p = compile(L"@scene 甲\n@if $幽灵 >= 2 -> 乙\n@scene 乙\n@narr x\n");
+        CKT(anyWarn(p, L"从未被赋值"), "未定义变量告警（建议加 @def）");
+    }
+
+    // 7. @def 登记后，同变量不再告警
+    {
+        ck::Program p = compile(L"@scene 甲\n@def $x = 0\n@if $x >= 2 -> 乙\n@scene 乙\n@narr x\n");
+        CKT(!anyWarn(p, L"从未被赋值"), "@def 过的变量不告警");
+        CKT(p.definedVars.count(L"x") == 1, "@def 把 x 记进 definedVars");
+    }
+
+    // 8. 赋值语句（$x = / +=）同样登记变量，之后引用不告警
+    {
+        ck::Program p = compile(L"@scene 甲\n$x = 5\n$x += 1\n@if $x >= 2 -> 乙\n@scene 乙\n@narr x\n");
+        CKT(!anyWarn(p, L"从未被赋值"), "赋值过的变量不告警");
+        CKT(p.definedVars.count(L"x") == 1, "赋值把 x 记进 definedVars");
+    }
+
+    // 9. ? 后没有 - 选项
+    {
+        ck::Program p = compile(L"@scene 甲\n? 选点什么\n");
+        CKT(anyErr(p, L"没有 - 选项"), "空选项组报错");
+    }
+
+    // 10. 选项目标不存在
+    {
+        ck::Program p = compile(L"@scene 甲\n? 选\n- 去 -> 没有这幕\n");
+        CKT(anyErr(p, L"选项目标不存在"), "选项跳到不存在场景报错");
+    }
+
+    // 11. 表达式合法性：合法算术不报错，括号不配平报错
+    {
+        ck::Program ok = compile(L"@scene 甲\n@def $x = 1 + 2 * 3\n");
+        CKT(ok.errors.empty(), "合法算术表达式无 error");
+        ck::Program bad = compile(L"@scene 甲\n@def $x = (1 + 2\n");
+        CKT(bad.errors.empty() == false, "括号不配平的表达式报错");
+        CKT(anyErr(bad, L"不是合法表达式"), "错误指明表达式不合法");
+    }
+
+    // 12. 空剧本（只有注释）
+    {
+        ck::Program p = compile(L"# 这里只有注释\n");
+        CKT(!p.errors.empty(), "空剧本报错");
+        CKT(anyErr(p, L"没有任何内容"), "错误指明剧本为空");
+    }
+
+    // ---- 运行时（RPN 求值 + @if 分支 + 累加 + @bg/@end）----
+    // 用纯数值剧本、不挂角色库：避开 Say/Narrate 的 ApplyCharVoice 路径，
+    // 只驱动 @def/@if/@goto/@bg/@end，安全验证引擎的求值与分支。
+    // 这正是三位里层"暖场/夜行"分叉真正在跑的机制。
+    // 13. $x += 5 后 @if $x>=5 成立 → 跳"大"
+    {
+        ck::Program prog = compile(L"@def $x = 0\n@scene 根\n$x += 5\n@if $x >= 5 -> 大\n@bg 小\n@end\n@scene 大\n@bg 大\n@end\n");
+        ck::Vm vm; vm.Load(&prog);
+        ck::VmView view;
+        ck::VmBlock b = vm.Step(view);
+        CKT(b == ck::VmBlock::End, "运行时：跑到 @end");
+        CKT(vm.GetInt(L"x") == 5,  "运行时：$x += 5 累加正确");
+        CKT(view.bg == L"大",       "运行时：$x>=5 成立走 @if 跳转");
+    }
+    // 14. 两个 @if 都假 → 落到兜底，变量未被误改
+    {
+        ck::Program prog = compile(L"@def $x = 1\n@scene 根\n@if $x >= 5 -> 大\n@if $x > 3 -> 中\n@bg 小\n@end\n@scene 大\n@bg 大\n@end\n@scene 中\n@bg 中\n@end\n");
+        ck::Vm vm; vm.Load(&prog);
+        ck::VmView view;
+        vm.Step(view);
+        CKT(view.bg == L"小",        "运行时：两个 @if 都假落到兜底");
+        CKT(vm.GetInt(L"x") == 1,   "运行时：未走分支时变量保持初值");
+    }
+    // 15. RPN 多变量 + 加法 + 比较（$a + $b > 4）
+    {
+        ck::Program prog = compile(L"@def $a = 2\n@def $b = 3\n@scene 根\n@if $a + $b > 4 -> 过\n@bg 不过\n@end\n@scene 过\n@bg 过了\n@end\n");
+        ck::Vm vm; vm.Load(&prog);
+        ck::VmView view;
+        vm.Step(view);
+        CKT(view.bg == L"过了", "运行时：RPN 多变量加法 + 比较求值");
+    }
+
+    printf("\nck self-test: %d passed, %d failed\n", g_ck_pass, g_ck_fail);
+    return g_ck_fail ? 1 : 0;
+}
+
+#endif // CK_SELF_TEST
 // 模块：大模型对话 —— WinHTTP 请求 / 回复解析 / 重试
 // 调试开关：1 = 把模型原文打到 VS 输出窗口。会泄露对话内容，默认 0。
 #undef  CK_LLM_DEBUG
@@ -12650,19 +12887,35 @@ static bool ChatOnce(const LlmConfig& cfg, const std::vector<ChatMsg>& msgs, Llm
                 ck::JValue v; std::string e;
                 if (!ck::JsonParse(raw, v, e)) { out.err = L"响应不是合法 JSON: " + W(e); }
                 else {
-                    const ck::JValue* ch = v.find("choices");
-                    if (ch && ch->at(0)) {
-                        const ck::JValue* c0 = ch->at(0);
-                        const ck::JValue* m = c0->find("message");
-                        out.full = W(m ? m->getStr("content") : c0->getStr("text"));
-                        // 整包返回：能解析出来就是拿全了，[DONE] 这套说法不适用
-                        out.streamDone = true;
-                        const ck::JValue* fr = c0->find("finish_reason");
-                        if (fr && fr->isStr() && !fr->str.empty()) out.finishReason = W(fr->str);
-                        if (delta) delta(out.full);
-                        ok = true;
+                    // ★ 有些 OpenAI 兼容接口在额度不足 / Key 无效时返回 HTTP 200，
+                    // 响应体是 {"error": {"message": "...", "code": "..."}}。
+                    // 必须先查 error，再查 choices，否则会误判为"响应里没有 choices"。
+                    const ck::JValue* errObj = v.find("error");
+                    if (errObj && (errObj->isObj() || errObj->type == ck::JValue::TObj)) {
+                        std::wstring code = W(errObj->getStr("code"));
+                        std::wstring msg  = W(errObj->getStr("message"));
+                        out.err = L"服务端返回错误";
+                        if (!code.empty()) out.err += L" [" + code + L"]";
+                        if (!msg.empty()) {
+                            if (msg.size() > 200) msg = msg.substr(0, 200) + L"…";
+                            out.err += L"：" + msg;
+                        }
+                        ok = false;
                     } else {
-                        out.err = L"响应里没有 choices";
+                        const ck::JValue* ch = v.find("choices");
+                        if (ch && ch->at(0)) {
+                            const ck::JValue* c0 = ch->at(0);
+                            const ck::JValue* m = c0->find("message");
+                            out.full = W(m ? m->getStr("content") : c0->getStr("text"));
+                            // 整包返回：能解析出来就是拿全了，[DONE] 这套说法不适用
+                            out.streamDone = true;
+                            const ck::JValue* fr = c0->find("finish_reason");
+                            if (fr && fr->isStr() && !fr->str.empty()) out.finishReason = W(fr->str);
+                            if (delta) delta(out.full);
+                            ok = true;
+                        } else {
+                            out.err = L"响应里没有 choices";
+                        }
                     }
                 }
             }
@@ -14947,6 +15200,10 @@ const ARGB kTextDim    = Color::MakeARGB(190, 176, 176, 194);
 const ARGB RndTextDim    = Color::MakeARGB(200, 190, 190, 205);
 const ARGB kChoiceFill = Color::MakeARGB(215, 44, 38, 62);
 const ARGB kChoiceHot  = Color::MakeARGB(240, 88, 62, 104);
+// 心之碎片选项：特殊视觉（发光边框、梦幻紫粉、粒子感）
+const ARGB kShardFill  = Color::MakeARGB(220, 56, 38, 82);
+const ARGB kShardHot   = Color::MakeARGB(255, 120, 80, 160);
+const ARGB kShardGlow  = Color::MakeARGB(255, 220, 130, 255);
 const ARGB kPanelFill  = Color::MakeARGB(235, 18, 16, 26);
 const ARGB kBtnFill    = Color::MakeARGB(235, 60, 52, 82);
 const ARGB kBtnHot     = Color::MakeARGB(255, 110, 84, 130);
@@ -14966,6 +15223,36 @@ const int kBoxX = 100, kBoxY = 460, kBoxW = 1080, kBoxH = 228;
 const int kTextX = 136, kTextY = 484, kTextW = 1008, kLineH = 34;
 const int kBodyLines = 5;      // 一页几行
 const int kChoiceH = 56, kChoiceGap = 10;
+// ---- 选项纵向布局（绘制与命中只认这一处）
+//
+// 选项从对话框顶边往上排、底部对齐 kBoxY（=460），顶边最低只到 56：
+// 再往上就是 HUD（14..44）和顶部状态条，压上去两行字会糊成一片。
+//
+// 【为什么必须自适应，而不是固定 56+10】
+// 里层「收束_亮」本来有 3 个原生选项，每凝固一枚心之碎片就多焊一个
+// "想起那枚…"。按固定步长算，第 7 个选项顶边到 8（盖住 HUD），
+// 第 8 个开始跑到画面外——那几条既看不见也点不到。
+// 而凝固没有上限（画廊里还有"凝固全部待凝"），所以这里按数量压紧：
+// 先收间距（10→4），再压高度（56→最低 26）。
+const int kChoiceTopMin = 56;
+struct ChoiceStack { int h; int gap; int step() const { return h + gap; } };
+
+ChoiceStack ChoiceStackOf(int n) {
+    if (n < 1) n = 1;
+    const int avail = kBoxY - kChoiceTopMin;      // = 404
+    int h = kChoiceH, gap = kChoiceGap;
+    while (n * h + (n - 1) * gap > avail && h > 26) {
+        if (gap > 4) --gap;
+        else         --h;
+    }
+    return ChoiceStack{ h, gap };
+}
+
+Gdiplus::Rect ChoiceRect(int i, int n) {
+    const ChoiceStack cs = ChoiceStackOf(n);
+    const int cy = kBoxY - (n - i) * cs.step() + cs.gap;
+    return Gdiplus::Rect(kBoxX, cy, kBoxW, cs.h);
+}
 // 自由输入（轮到玩家打字）时的专用布局
 //
 // 这是"输入轮出现好几个框叠在一起"的根因
@@ -15053,6 +15340,11 @@ int TaskBtnX(int i) {
 const int kNextDayW = 150, kNextDayH = 44;
 const int kNextDayX = CK_BASE_W - 20 - kNextDayW;
 const int kNextDayY = 52;
+// 「✦ 凝固此刻」：贴在「明天见」左边。只在表层 AI 对话里画，
+// 它是"把这一轮聊出来的东西定成心之碎片"的唯一入口。
+const int kCrystW = 150, kCrystH = 44;
+const int kCrystX = kNextDayX - 12 - kCrystW;
+const int kCrystY = kNextDayY;
 }
 // ---------------------------------------------------------------- 折行
 // 规范化台词里的换行。
@@ -15655,9 +15947,10 @@ int Renderer::HitChoice(const ck::VmView& view, const RenderState& st, int x, in
     (void)st;   // 布局只跟 view 有关，st 暂时用不上，但保留参数位以便以后做热区微调
     if (!view.showChoices || view.choiceTexts.empty()) return -1;
     int n = (int)view.choiceTexts.size();
+    // ★ 布局公式只有 ChoiceRect 一处，绘制与命中不会各算一遍
     for (int i = 0; i < n; ++i) {
-        int cy = kBoxY - (n - i) * (kChoiceH + kChoiceGap) + kChoiceGap;
-        RECT r = { kBoxX, cy, kBoxX + kBoxW, cy + kChoiceH };
+        const Gdiplus::Rect c = ChoiceRect(i, n);
+        RECT r = { c.X, c.Y, c.X + c.Width, c.Y + c.Height };
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return i;
     }
     return -1;
@@ -15682,8 +15975,8 @@ int Renderer::HitCanDo(const RenderState& st, int x, int y) const {
     if (!CanDoVisible(st)) return -1;
     int n = (int)st.candoOpts.size();
     for (int i = 0; i < n; ++i) {
-        int cy = kBoxY - (n - i) * (kChoiceH + kChoiceGap) + kChoiceGap;
-        RECT r = { kBoxX, cy, kBoxX + kBoxW, cy + kChoiceH };
+        const Gdiplus::Rect c = ChoiceRect(i, n);
+        RECT r = { c.X, c.Y, c.X + c.Width, c.Y + c.Height };
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return i;
     }
     return -1;
@@ -15693,8 +15986,8 @@ int Renderer::HitQuizChoice(const RenderState& st, int x, int y) const {
     if (!st.quizMode || st.quizOpts.empty()) return -1;
     int n = (int)st.quizOpts.size();
     for (int i = 0; i < n; ++i) {
-        int cy = kBoxY - (n - i) * (kChoiceH + kChoiceGap) + kChoiceGap;
-        RECT r = { kBoxX, cy, kBoxX + kBoxW, cy + kChoiceH };
+        const Gdiplus::Rect c = ChoiceRect(i, n);
+        RECT r = { c.X, c.Y, c.X + c.Width, c.Y + c.Height };
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return i;
     }
     return -1;
@@ -16375,13 +16668,19 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         // 选项：画在对话框上方，从下往上排
         if (!st.codeMode && view.showChoices) {
             int n = (int)view.choiceTexts.size();
+            const int chH = ChoiceStackOf(n).h;   // 压紧时字号跟着缩，别撑破框
             for (int i = 0; i < n; ++i) {
-                int cy = kBoxY - (n - i) * (kChoiceH + kChoiceGap) + kChoiceGap;
-                Rect r(kBoxX, cy, kBoxW, kChoiceH);
-                ARGB fill = (st.hoverChoice == i) ? choiceHot : kChoiceFill;
-                FillRoundRect(lg, r, 12, fill, accent, 2.0f);
-                std::wstring label = L"❯ " + view.choiceTexts[(size_t)i];
-                Font fc(L"Microsoft YaHei", 19);
+                Rect r = ChoiceRect(i, n);
+                const std::wstring& optText = view.choiceTexts[(size_t)i];
+                bool isShard = optText.rfind(L"想起那枚", 0) == 0; // 以"想起那枚"开头 = 心之碎片选项
+                ARGB fill = (st.hoverChoice == i) ? (isShard ? kShardHot : choiceHot) : (isShard ? kShardFill : kChoiceFill);
+                ARGB border = isShard ? kShardGlow : accent;
+                float borderW = isShard ? 3.0f : 2.0f;
+                FillRoundRect(lg, r, 12, fill, border, borderW);
+                // 心之碎片选项：前缀用特殊图标，字号稍大，整体发光感
+                std::wstring label = isShard ? (L"◆ " + optText) : (L"❯ " + optText);
+                Font fc(L"Microsoft YaHei",
+                        std::min(isShard ? 20.0f : 19.0f, (float)chH * 0.55f));
                 DrawCenterText(lg, label, fc, r, kTextMain);
             }
         }
@@ -16395,13 +16694,13 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         else if (st.quizMode && !st.quizOpts.empty()) {
             int n = (int)st.quizOpts.size();
             for (int i = 0; i < n; ++i) {
-                int cy = kBoxY - (n - i) * (kChoiceH + kChoiceGap) + kChoiceGap;
-                Rect r(kBoxX, cy, kBoxW, kChoiceH);
+                Rect r = ChoiceRect(i, n);
                 ARGB fill = (st.hoverChoice == i) ? choiceHot : kChoiceFill;
                 FillRoundRect(lg, r, 12, fill, accent, 2.0f);
                 std::wstring label = L"❯ " + st.quizOpts[(size_t)i];
                 // 单行：选项是一行代码，换行会断在半句话上
-                DrawCenterTextOneLine(lg, label, L"Microsoft YaHei", 18, r, kTextMain);
+                DrawCenterTextOneLine(lg, label, L"Microsoft YaHei",
+                                      (int)std::min(18.0f, (float)r.Height * 0.55f), r, kTextMain);
             }
         }
         // ---- 【可选话术】：剧情模式里"你可以这么说"的几个方向
@@ -16424,14 +16723,14 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         if (CanDoVisible(st)) {
             int n = (int)st.candoOpts.size();
             for (int i = 0; i < n; ++i) {
-                int cy = kBoxY - (n - i) * (kChoiceH + kChoiceGap) + kChoiceGap;
-                Rect r(kBoxX, cy, kBoxW, kChoiceH);
+                Rect r = ChoiceRect(i, n);
                 ARGB fill = (st.hoverCanDo == i) ? choiceHot : kChoiceFill;
                 FillRoundRect(lg, r, 12, fill, accent, 2.0f);
                 // 前缀用「你可以说」而不是「❯」：这排不是选项，
                 // 是给不知道说什么的人一个开头，点完还得自己定。
                 std::wstring label = L"你可以说：" + st.candoOpts[(size_t)i];
-                DrawCenterTextOneLine(lg, label, L"Microsoft YaHei", 18, r, kTextMain);
+                DrawCenterTextOneLine(lg, label, L"Microsoft YaHei",
+                                      (int)std::min(18.0f, (float)r.Height * 0.55f), r, kTextMain);
             }
         }
         // ---- 自由输入模式的引导语
@@ -16833,6 +17132,14 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         RectF hr(W - 330, 14, 310, 30);
         lg.DrawString(st.hud.c_str(), (int)st.hud.size(), &fh, hr, &sfR, &hb);
     }
+    // ---- HUD 常驻进度：已凝固 / 总计
+    if (!st.crystallizeProgress.empty()) {
+        Font fh(L"Microsoft YaHei", 13);
+        StringFormat sfR; sfR.SetAlignment(StringAlignmentFar); sfR.SetLineAlignment(StringAlignmentCenter);
+        SolidBrush hb(Color::MakeARGB(200, 200, 180, 255));
+        RectF hr(W - 330, 44, 310, 24);
+        lg.DrawString(st.crystallizeProgress.c_str(), (int)st.crystallizeProgress.size(), &fh, hr, &sfR, &hb);
+    }
     // ---- 右上角「明天见」/「今天就到这里」
     //
     // 画在 HUD 下面。它是玩家推进剧情的入口，不是她的台词，
@@ -16841,9 +17148,71 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
     // 只有一枚按钮
     // 文案随阶段、是否最后一章变化，全部由契约层的 LabelOf 给出，
     // 这里不写死任何一句。出口只有一个，玩家不需要在"结束"这件事上做选择题。
+    // ---- 右上角「✦ 凝固此刻」
+    //
+    // 表层自由对话里才有。点一下 = 把最近一轮（你说的 + 她回的）
+    // 凝固成里层的一枚心之碎片。这是整条机制唯一的玩家入口，
+    // 所以它必须一直在、一直在同一个位置、点完有明确反馈。
+    if (st.showCrystallize) {
+        Rect b(kCrystX, kCrystY, kCrystW, kCrystH);
+        
+        // ---- 首次引导脉冲高亮：前 10 秒播放脉冲动画，引导玩家注意
+        float pulseAlpha = 1.0f;
+        if (st.crystallizePulse && st.crystallizeFirstSeenMs > 0) {
+            unsigned long long now = NowMs();
+            unsigned long long elapsed = now - st.crystallizeFirstSeenMs;
+            if (elapsed < 10000) {  // 10 秒脉冲
+                float phase = (float)(elapsed % 1000) / 1000.0f;
+                pulseAlpha = 0.4f + 0.6f * (std::sin(phase * 2.0f * 3.14159f) * 0.5f + 0.5f);
+            } else {
+                // 脉冲结束，标记引导完成
+                const_cast<RenderState&>(st).crystallizePulse = false;
+            }
+        }
+        
+        ARGB baseFill = st.hoverCrystallize ? Color::MakeARGB(255, 116, 78, 154)
+                                            : Color::MakeARGB(232, 62, 46, 84);
+        // 应用脉冲透明度
+        unsigned char aFill = (unsigned char)(((baseFill >> 24) & 0xFF) * pulseAlpha);
+        ARGB fill = (baseFill & 0x00FFFFFF) | (ARGB(aFill) << 24);
+        
+        ARGB edge = Color::MakeARGB(255, 196, 158, 255);
+        // 脉冲时边框加宽并发光
+        float edgeWidth = 2.0f;
+        if (st.crystallizePulse && st.crystallizeFirstSeenMs > 0) {
+            unsigned long long now = NowMs();
+            unsigned long long elapsed = now - st.crystallizeFirstSeenMs;
+            if (elapsed < 10000) {
+                edgeWidth = 3.0f;
+                edge = Color::MakeARGB(255, 230, 200, 255);
+            }
+        }
+        
+        FillRoundRect(lg, b, 10, fill, edge, edgeWidth);
+        Font fcr(L"Microsoft YaHei", 16);
+        DrawCenterText(lg, L"✦ 凝固此刻", fcr, b, Color::MakeARGB(255, 236, 226, 255));
+        
+        // ---- 点击闪白反馈：点击后 0.5 秒全白闪烁 + 文案
+        if (st.crystallizeFlash && st.crystallizeFlashMs > 0) {
+            unsigned long long now = NowMs();
+            unsigned long long elapsed = now - st.crystallizeFlashMs;
+            if (elapsed < 500) {
+                float flashAlpha = 1.0f - (float)elapsed / 500.0f;
+                ARGB flashColor = Color::MakeARGB((unsigned char)(255 * flashAlpha), 255, 255, 255);
+                SolidBrush flashBrush(flashColor);
+                lg.FillRectangle(&flashBrush, b.X, b.Y, b.Width, b.Height);
+                // 文案：在按钮上方显示
+                Font fcf(L"Microsoft YaHei", 14, FontStyleBold);
+                SolidBrush tf(Color::MakeARGB((unsigned char)(255 * flashAlpha), 255, 220, 120));
+                PointF tp((float)b.X, (float)b.Y - 28);
+                lg.DrawString(st.crystallizeFlashText.c_str(), (int)st.crystallizeFlashText.size(), &fcf, tp, &tf);
+            } else {
+                const_cast<RenderState&>(st).crystallizeFlash = false;
+            }
+        }
+    }
     if (st.showNextDay) {
-        Rect b(kNextDayX, kNextDayY, kNextDayW, kNextDayH);
-        //
+        Rect b(kNextDayX, kNextDayY, kNextDayW, kNextDayH);        //
         // ★ showNextDay 就是 ready，没有第二套"能不能点"的状态。
         //   输入框展开时也能直接走，状态清理由推进入口 DirGoNextDay 负责；
         //   在这里另加灰态会重新变成"画着却点不动"。
@@ -16862,9 +17231,14 @@ void Renderer::Draw(HDC hdc, const ck::VmView& view, RenderState& st) {
         Font fs(L"Microsoft YaHei", 16, FontStyleBold);
         StringFormat sfL; sfL.SetAlignment(StringAlignmentNear); sfL.SetLineAlignment(StringAlignmentCenter);
         RectF sr(20, 14, 700, 34);
-        // 先画一条半透明底，保证在任何背景上都看得清
+        // 先画一条半透明底，保证在任何背景上都看得清。
+        // 宽度按字数估（中文 ≈17px），但要【夹住】右上角那排按钮的左边界：
+        // 状态条有时会带模型返回的错误原文，一长就跑进「凝固此刻」底下。
+        const int btnLeft = st.showCrystallize ? kCrystX : kNextDayX;
+        int sw = (int)(st.status.size() * 17) + 24;
+        if (sw > btnLeft - 28) sw = btnLeft - 28;
         SolidBrush sb(Color::MakeARGB(150, 10, 10, 16));
-        lg.FillRectangle(&sb, 14, 14, (int)(st.status.size() * 17) + 24, 30);
+        lg.FillRectangle(&sb, 14, 14, sw, 30);
         SolidBrush tb(accent);
         lg.DrawString(st.status.c_str(), (int)st.status.size(), &fs, sr, &sfL, &tb);
     }
@@ -17599,7 +17973,9 @@ const wchar_t* const kTitleLabels[] = {
     // 第一项按玩家要求从「开始新故事」改成「新的故事」。
     // 少一个字，主标签这栏（卡片内宽的 56%）和右边那行拉丁小字之间
     // 的空档更宽，两栏不再互相挤。
-    L"新的故事", L"读取存档", L"继续上次", L"系统设置", L"角色卡", L"剧本"
+    // 全部改为四字，视觉更整齐美观（2026-11-25 优化）。
+    L"新故事", L"读档", L"继续", L"设置", L"角色", L"编辑",
+    L"心碎"
 };
 // 每项下面坠一行拉丁文小字。商业 VN 的标题菜单基本都有这一行
 //（商业 VN 通常都是本地语言主标 + 一行拉丁小字），
@@ -17607,8 +17983,8 @@ const wchar_t* const kTitleLabels[] = {
 const wchar_t* const kTitleSub[] = {
     // 第 6 项原来是 "BACKGROUNDS"：入口从"背景库"改成"角色卡"时只改了中文，
     // 英文没跟着改，于是菜单上写着"角色卡 / BACKGROUNDS"。一并修掉。
-    L"NEW GAME", L"LOAD", L"CONTINUE", L"SETTINGS", L"CHARACTER",
-    L"SYLLABUS"
+    // 与中文四字标签同步更新（2026-11-25 优化）。
+    L"NEXT", L"LOAD", "CONT", L"SET", "PROF", L"SCRIPT", L"HEART"
 };
 
 // 两个数组必须一样长，否则短的那个会被读到空指针（就是上面那个崩溃）。
@@ -17635,9 +18011,11 @@ const int kMenuX   = 64;
 // 底部状态行在 604，还留 54px。再加就会压上去。
 // 宽度上限：64 + 330 = 394，右侧插画区从 400 起。再宽就会盖住插画左缘。
 const int kMenuW   = 330;
-const int kMenuH   = 58;
+// 菜单随项数自适应：加项时收窄高度/间距，避免压到底部状态行（604）。
+// 7 项时 54/8：最后一项底边 152 + 6*(54+8) + 54 = 578 < 604；6 项保持原样 58/10。
+const int kMenuH   = (kTitleItems >= 7 ? 54 : 58);
 const int kMenuY0  = 152;
-const int kMenuGap = 10;
+const int kMenuGap = (kTitleItems >= 7 ? 8  : 10);
 const int kScrimW  = 470;        // 左侧压暗的宽度，保证文字在任何插画下都清晰
 
 Gdiplus::Rect TitleItemRect(int i) {
@@ -18517,16 +18895,16 @@ void DrawCharSelect(Graphics& g, App& a) {
 // 回复长度与 Token 预算移除的理由是玩家不缺 token，
 // 输出一律不限制（不发送 max_tokens），上下文不裁剪、记忆全带。
 //
-// 现在是 7 行：3 行文本（地址 / 模型 / Key）+ 音量 / 窗口 / 打字速度 + 清空记录。
+// 现在是 8 行：3 行文本（地址 / 模型 / Key）+ 检测连接 + 音量 / 窗口 / 打字速度 + 清空记录。
 //
 // 【「你的名字」那一行为什么删了】
 // 玩家不再自己起名——进剧情就是角色包 [Player] 里写的那个人（续集设定）。
 // 留着这一行的话，玩家填的名字和角色包里的男主名会打架，
 // 她到底该叫他角色包里的名字还是"小明"就没有答案了。
-const int kSetRows = 7;
+const int kSetRows = 10;
 const wchar_t* const kSetLabels[kSetRows] = {
-    L"接口地址", L"模型", L"API Key",
-    L"音量", L"窗口大小", L"打字速度", L"清空所有记录"
+    L"接口地址", L"模型", L"API Key", L"检测连接",
+    L"音量", L"窗口大小", L"打字速度", L"清空所有记录", L"游戏模式", L"打开回顾画廊"
 };
 // 前 3 行是文本行（可点开编辑），后面是滑杆 / 按钮。
 //
@@ -18540,19 +18918,36 @@ const int kSetTextRows = 3;
 // 名字行删掉后，如果只改了标签和取值、忘了改点击处理，
 // 后果是：点「清空所有记录」实际执行的是「打字速度 +20」——
 // 想清档的玩家清不掉，而清档功能就此失效，且没有任何报错。
-const int kSetRowVolume = 3;   // 音量：点击循环
-const int kSetRowZoom   = 4;   // 窗口大小：点击切换
-const int kSetRowSpeed  = 5;   // 打字速度：点击调速
-const int kSetRowClear  = 6;   // 清空所有记录（= kSetRows - 1，破坏性，标红）
+const int kSetRowTest   = 3;   // 检测连接：点一下探测外部 LLM 是否连通
+const int kSetRowVolume = 4;   // 音量：点击循环
+const int kSetRowZoom   = 5;   // 窗口大小：点击切换
+const int kSetRowSpeed  = 6;   // 打字速度：点击调速
+const int kSetRowClear  = 7;   // 清空所有记录（= kSetRows - 1，破坏性，标红）
+const int kSetRowMode   = 8;   // 世界模式：点击在 表层（AI 对话，心之碎片生成）与 里层（心之碎片收集）之间切换
+const int kSetRowGallery = 9;   // 打开回顾画廊：查看已结晶的心之碎片，可重现对话/导出 .cks
+
+// 现在 10 行：前 3 行文本（地址 / 模型 / Key）+ 检测连接 + 音量 / 窗口 / 打字速度
+// + 清空记录 + 游戏模式 + 打开回顾画廊。
+// kSetRows 在定义处同步改为 10，所有行号常量已顺延，避免历史踩过的写死行号坑。
+// 行号是"硬约定"：改标签必须在点击处理里同步改 case，否则点「清空」会跑去调速。
+
+// 「检测连接」的结果压成一行：失败原因原文可能带整段响应体，
+// 直接塞进设置行的值区会把这一行撑爆。日志里保留全文，界面只给摘要。
+static std::wstring ApiTestBrief(const std::wstring& s, size_t maxChars = 44) {
+    std::wstring t;
+    t.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i)
+        t += (s[i] == L'\n' || s[i] == L'\r' || s[i] == L'\t') ? L' ' : s[i];
+    if (t.size() > maxChars) t = t.substr(0, maxChars) + L"…";
+    return t;
+}
 //
 // ---- 行距从 58 压到 50、行高从 48 压到 44
 //
-// 行距 / 行高按实际行数 kSetRows = 7算：
-// 100 + 7*50 = 450，行底 494；底部提示 656 —— 留得下，不重叠。
-//
-// （这里曾经写过"加了「Token 预算」这一行之后共有 11 行"，
-// 那一行早已整体移除，行数也回到 8。旧注释会让人以为还有第 9~11 行要排，
-// 按 11 行去算行距反而会把最后一行挤出画布 —— 所以按 kSetRows 对齐。）
+// 行距 / 行高按实际行数 kSetRows 算：当前 10 行（下标 0..9）。
+// 100 + 9*50 + 44 = 594，底部提示 656 —— 留得下，不重叠。
+// 容量上限：11 行时底边 644，仍不压底部提示；到 12 行就会压上去了。
+// SetRowRect 按 kSetRows 循环，增行时只改常量即可，避免历史踩过的写死行号坑。
 Gdiplus::Rect SetRowRect(int i) { return Gdiplus::Rect(180, 100 + i * 50, 920, 44); }
 
 void DrawSettings(Gdiplus::Graphics& g, const App& a) {
@@ -18566,8 +18961,8 @@ void DrawSettings(Gdiplus::Graphics& g, const App& a) {
         RR(g, r, 10, (a.ui.hover == i || editing) ? kCardHot : kCard, border, editing ? 2.5f : 1.5f);
 
         Gdiplus::Font fl(L"Microsoft YaHei", 17);
-        // 最后一行的操作是破坏性的，标红以示区别
-        ARGB lc = (i == kSetRows - 1) ? Color::MakeARGB(255, 255, 130, 130) : kText;
+        // 清空所有记录是破坏性操作，标红以示区别（不用 kSetRows-1，避免后续加行时误伤新行）
+        ARGB lc = (i == kSetRowClear) ? Color::MakeARGB(255, 255, 130, 130) : kText;
         Left(g, kSetLabels[i], fl, r.X + 22, r.Y + 13, lc);
 
         // 值区
@@ -18582,10 +18977,20 @@ void DrawSettings(Gdiplus::Graphics& g, const App& a) {
             val = a.llm.apiKey.empty() ? L"（未填写）"
                                        : (std::wstring(a.llm.apiKey.size() < 8 ? a.llm.apiKey.size() : 8, L'*') + L"…（已保存）");
             break;
+        case kSetRowTest:
+            // 检测结果就写在这一行——玩家测完还能对着它排查，不用靠弹窗一闪而过
+            val = (a.apiTestState == 1) ? L"正在检测…"
+                : (a.apiTestState == 2) ? (L"已连通 · " + ApiTestBrief(a.apiTestMsg, 34))
+                : (a.apiTestState == 3) ? (L"未连通 · " + ApiTestBrief(a.apiTestMsg, 34))
+                                        : L"点一下，验证外部模型能否对话\n⚠️ BaseUrl：填基础路径（如 https://apihub.agnes-ai.cn/v1），勿带 /chat/completions 后缀";
+            break;
         case kSetRowVolume: val = WFromInt(a.audio.Volume() / 10) + L"%"; break;
         case kSetRowZoom:   val = WFromInt((long long)(a.zoom * 100)) + L"%"; break;
         case kSetRowSpeed:  val = WFromInt(a.textSpeed) + L" 字/秒"; break;
         case kSetRowClear:  val = L"点击清空存档、记忆与收藏"; break;
+        case kSetRowMode:   val = a.forceScript ? L"里层·心之碎片收集（确定性剧本，不调 LLM）"
+                                                : L"表层·心之碎片生成（AI 对话，使用外部模型）"; break;
+        case kSetRowGallery: val = L"点击打开，查看已结晶的心之碎片"; break;
         }
 
         if (editing) {
@@ -18599,7 +19004,13 @@ void DrawSettings(Gdiplus::Graphics& g, const App& a) {
         Gdiplus::Font fv(L"Microsoft YaHei", 15);
         // 文本行的值正常显示，滑杆/按钮那几行压暗（它们的值画在别处）。
         // 【原来是 i < 4】——那是还有"你的名字"那一行时的数字，见 kSetTextRows。
-        Gdiplus::SolidBrush vb(i < kSetTextRows ? kText : kTextDim);
+        // 检测行按结果上色：连通绿、未连通红，一眼能看出成没成
+        ARGB vc = (i == kSetRowTest && a.apiTestState == 2) ? Color::MakeARGB(255, 130, 220, 150)
+                : (i == kSetRowTest && a.apiTestState == 3) ? Color::MakeARGB(255, 255, 140, 140)
+                : (i == kSetRowMode && !a.forceScript)       ? Color::MakeARGB(255, 130, 220, 150)  // 表层=绿（生成）
+                : (i == kSetRowMode &&  a.forceScript)       ? Color::MakeARGB(255, 220, 130, 255)  // 里层=紫粉（收集，贴合心之碎片色）
+                : (i < kSetTextRows ? kText : kTextDim);
+        Gdiplus::SolidBrush vb(vc);
         Gdiplus::RectF rf((float)vr.X + 12, (float)vr.Y, (float)vr.Width, (float)vr.Height);
         g.DrawString(val.c_str(), (int)val.size(), &fv, rf, &sfR, &vb);
 
@@ -18619,9 +19030,10 @@ void DrawSettings(Gdiplus::Graphics& g, const App& a) {
             sfR2.SetLineAlignment(Gdiplus::StringAlignmentCenter);
             Gdiplus::SolidBrush hb(kTextDim);
             Gdiplus::RectF hrf((float)vr.X, (float)vr.Y, (float)vr.Width - 10, (float)vr.Height);
-            // 【这里原来写的是 i==4/5/6/8/9】那是 11 行时代的编号，
-            // 拿到现在的布局上全错位了：清档那行会显示"点击调速"。
-            std::wstring h = (i == kSetRowZoom)   ? L"点击切换"
+            std::wstring h = (i == kSetRowTest)   ? L"点击检测"
+                          : (i == kSetRowMode)    ? L"点击切换世界模式"
+                          : (i == kSetRowGallery) ? L"点击打开回顾画廊"
+                          : (i == kSetRowZoom)    ? L"点击切换"
                           : (i == kSetRowVolume)  ? L"点击循环"
                           : (i == kSetRowSpeed)   ? L"点击调速"
                                                   : L"点击清空";
@@ -18641,7 +19053,1118 @@ void DrawSettings(Gdiplus::Graphics& g, const App& a) {
     std::wstring tip = L"改完会自动写回 " + a.appDir + L"\\config.ini　|　文本行回车确认，Esc 取消";
     g.DrawString(tip.c_str(), (int)tip.size(), &fp, rp, &sfC, &pb);
 }
-// 角色卡 —— 素材增删 + 注释编辑 + 人设编辑
+// ---------------------------------------------------------------- 心之碎片回顾画廊
+// 离线回顾：列出 living/<char>/imprint.jsonl 中已结晶的 @scene 心片_<id>，
+// 点选可重现当时的对话画面（临时加载，不改永久状态），可导出 .cks 备份到本地。
+// 这是"AI 对话存档结晶，离线随时回顾"的玩家可见入口。
+
+struct ShardItem {
+    std::wstring id;            // 如 "心片_001"
+    int          idx;           // imprint.jsonl 里的下标（0-based）
+    std::wstring beat;          // 节拍标签
+    std::wstring bg;            // 场景背景（详情页展示）
+    std::wstring bgm;           // 场景音乐
+    std::wstring playerSaid;    // 玩家原话
+    std::wstring sheSaid;       // 她的回应
+    bool         crystallized;  // .cks 里已有 @scene 心片_<id>
+};
+
+// 读取 BOM 文本（辅助，复用 crystallize.py 的思路）
+static std::wstring read_bom_w(const std::wstring& path) {
+    std::ifstream wfs(path, std::ios::binary);
+    if (!wfs) return L"";
+    std::string raw((std::istreambuf_iterator<char>(wfs)), std::istreambuf_iterator<char>());
+    // UTF-8 BOM
+    if (raw.size() >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF) raw.erase(0, 3);
+    std::wstring out;
+    out.reserve(raw.size());
+    // 简单 UTF-8 -> wstring（ASCII 子集足够，imprint.jsonl 里非 ASCII 会用 \uXXXX 转义）
+    for (size_t i = 0; i < raw.size(); ++i) {
+        unsigned char c = (unsigned char)raw[i];
+        if (c < 0x80) out += (wchar_t)c;
+        else if (c < 0xC0) continue;          // 丢弃多字节开头
+        else if (c < 0xE0 && i + 1 < raw.size()) { out += (wchar_t)(((c & 0x1F) << 6) | ((unsigned char)raw[i+1] & 0x3F)); ++i; }
+        else if (c < 0xF0 && i + 2 < raw.size()) { out += (wchar_t)(((c & 0x0F) << 12) | (((unsigned char)raw[i+1] & 0x3F) << 6) | ((unsigned char)raw[i+2] & 0x3F)); i += 2; }
+        else continue;
+    }
+    return out;
+}
+
+// 把 imprint.jsonl 解析成 ShardItem 列表，并标记哪些已结晶
+static std::wstring ProjectRootOf(const App& a);   // 定义在下面
+
+static std::vector<ShardItem> LoadShardList(const App& a) {
+    std::vector<ShardItem> out;
+    // 默认第一个选角角色
+    const CharDef* d = a.Def();
+    if (!d) return out;
+    //
+    // ★ living/ 在【项目根】，不在 assets 下。
+    //
+    // 原来这里写的是 PathJoin(a.assetDir, L"living") —— assetDir 是
+    // x64\Debug\assets，于是它去找 assets\living\宁宁\imprint.jsonl，
+    // 而那个目录从来不存在。结果就是画廊永远空白：玩家点进去只看到
+    // "暂无心之碎片"，自然不知道这机制到底怎么用。
+    // 凝固器（CrystallizeLastTurn）写的是项目根下的 living/，两边必须同源。
+    std::wstring living = PathJoin(PathJoin(ProjectRootOf(a), L"living"), d->name);
+    std::wstring imprintPath = PathJoin(living, L"imprint.jsonl");
+    if (!FileExists(imprintPath)) return out;
+
+    std::wstring raw = read_bom_w(imprintPath);  // 见上方辅助函数
+    if (raw.empty()) return out;
+
+    // 读取 .cks 里已有的心片场景 ID
+    const CharDef* def = a.Def();
+    if (!def || def->script.empty()) return out;
+    std::wstring p = PathJoin(PathJoin(a.assetDir, L"script"), def->script);
+    if (!EndsWith(p, L".cks")) p += L".cks";
+    std::wstring cksText;
+    if (FileExists(p)) {
+        cksText = read_bom_w(p);
+    }
+    std::set<std::wstring> existingIds;
+    if (!cksText.empty()) {
+        // 抓 @scene 心片_<id>
+        //
+        // ★ 之前这里写 p2 += 11，而 "@scene 心片_" 只有 10 个字符
+        //   （@ s c e n e 空格 心 片 _）——多跳一格正好吃掉 id 的第一位，
+        //   于是 "001" 被记成 "01"，跟 imprint 里的 "001" 对不上，
+        //   所有碎片都被判成"待凝固"。用 wcslen 让它不会再数错。
+        static const wchar_t* kPrefix = L"@scene 心片_";
+        const size_t kSkip = wcslen(kPrefix);
+        const wchar_t* p2 = cksText.c_str();
+        while ((p2 = wcsstr(p2, kPrefix)) != nullptr) {
+            p2 += kSkip;
+            const wchar_t* end = p2;
+            while (*end && *end >= L'0' && *end <= L'9') ++end;
+            if (end > p2) existingIds.insert(std::wstring(p2, end - p2));
+            p2 = end;
+        }
+    }
+
+    // 逐行解析 imprint.jsonl
+    size_t idx = 0;
+    std::wstring line;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        wchar_t c = raw[i];
+        if (c == L'\n') {
+            if (!line.empty()) {
+                ShardItem item;
+                item.idx = (int)idx++;
+                // 简单 JSON 解析（imprint.jsonl 是脚本生成的，格式固定）
+                // 先尝试从 JSON 提取 id，否则兜底
+                auto GetField = [&](const wchar_t* key, std::wstring& dst) {
+                    std::wstring keyS = L"\"" + std::wstring(key) + L"\"";
+                    size_t pos = line.find(keyS);
+                    if (pos == std::wstring::npos) return;
+                    size_t colon = line.find(L':', pos);
+                    if (colon == std::wstring::npos) return;
+                    size_t q1 = line.find(L'\"', colon + 1);
+                    if (q1 == std::wstring::npos) return;
+                    size_t q2 = line.find(L'\"', q1 + 1);
+                    if (q2 == std::wstring::npos) return;
+                    dst = line.substr(q1 + 1, q2 - q1 - 1);
+                };
+                GetField(L"id", item.id);   // 优先用 JSON 里的 id
+                GetField(L"beat", item.beat);
+                GetField(L"bg", item.bg);
+                GetField(L"bgm", item.bgm);
+                GetField(L"player_said", item.playerSaid);
+                GetField(L"she_said", item.sheSaid);
+                // 若 JSON 里 id 不存在，兜底用 idx（三位数，如 心片_001）
+                if (item.id.empty()) {
+                    wchar_t buf[32];
+                    swprintf(buf, 32, L"心片_%03d", (int)(idx));
+                    item.id = buf;
+                }
+                item.crystallized = existingIds.count(item.id) > 0;
+                out.push_back(item);
+            }
+            line.clear();
+        } else if (c != L'\r') {
+            line += c;
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- 游戏内结晶器
+//
+// 玩家在表层跟她自由聊完，点一下「凝固此刻」，这一轮就变成一枚心之碎片。
+// 纯 C++ 实现，不依赖命令行跑 crystallize.py——那套脚本作为离线工具仍然保留，
+// 两边产物同构（imprint.jsonl 一行 + .cks 一个 @scene + 收束_亮 一条选项）。
+//
+// 为什么必须落在游戏里：
+// 原来的流程是「聊完 → 退出游戏 → 开命令行 → python crystallize.py → 再开游戏」。
+// 玩家根本不知道有这一步，心之碎片机制等于不存在。
+// 把这三步搬进引擎，玩家才真正"玩得到"它。
+
+// 项目根目录 —— living/ 在这里（不在 assets 下）
+//
+// 为什么不能简单取 assetDir 的上一级：
+// VS 把 exe 生成在 <项目根>\x64\Debug，而 assets 就在 x64\Debug\assets，
+// 所以 assetDir 的上一级是 x64\Debug，离项目根还差两级。
+// 发布版又是另一种布局（exe 和 assets / living 并排）。
+// 两种都得对，所以从 exeDir 往上找"有 living 或有 main.cpp 的那一层"：
+//   · 开发树：x64\Debug → x64 → 项目根（有 main.cpp）✓
+//   · 发布版：exe 旁就有 living ✓
+// 都找不到就退回 exe 旁，让凝固器在那儿建 living/。
+static std::wstring ProjectRootOf(const App& a) {
+    std::wstring d = a.exeDir;
+    for (int i = 0; i < 6; ++i) {
+        if (DirExists(PathJoin(d, L"living"))) return d;
+        if (FileExists(PathJoin(d, L"main.cpp"))) return d;
+        size_t p = d.find_last_of(L"\\/");
+        if (p == std::wstring::npos || p == 0) break;
+        d = d.substr(0, p);
+    }
+    return a.exeDir;
+}
+
+// 一个字段的 JSON 字面量（带引号、转义好）
+static std::wstring JStr(const std::wstring& s) {
+    return L"\"" + W(ck::JsonEscape(U8(s))) + L"\"";
+}
+
+// 给这一枚碎片起个名字：取玩家原话最前面的实字（去标点），太长就截断
+static std::wstring AutoBeat(const std::wstring& said) {
+    std::wstring b;
+    for (wchar_t c : said) {
+        if (c == L'，' || c == L'。' || c == L'！' || c == L'？' || c == L'、' ||
+            c == L'…' || c == L'—' || c == L' ' || c == L'"' || c == L'"' || c == L'’') {
+            if (!b.empty()) break;
+            continue;
+        }
+        b += c;
+        if (b.size() >= 8) break;
+    }
+    if (b.empty()) b = L"那一刻";
+    return b;
+}
+
+// 在 收束_亮 段末焊一条心之碎片选项。返回 true = 这次真的焊上了。
+static bool WeldShardOption(std::wstring& text, const std::wstring& sceneId, const std::wstring& beat) {
+    const std::wstring anchor = L"@scene 收束_亮";
+    size_t sp = text.find(anchor);
+    if (sp == std::wstring::npos) return false;
+    // 段范围：下一个 @scene 或 @end 之前
+    size_t segEnd = text.size();
+    size_t np = text.find(L"\n@scene ", sp + anchor.size());
+    if (np != std::wstring::npos) segEnd = std::min(segEnd, np);
+    size_t ne = text.find(L"\n@end", sp + anchor.size());
+    if (ne != std::wstring::npos) segEnd = std::min(segEnd, ne);
+    std::wstring seg = text.substr(sp, segEnd - sp);
+    // 幂等：已经指向这枚碎片就跳过
+    if (seg.find(L"-> 心片_" + sceneId) != std::wstring::npos) return false;
+    // 段内最后一个 "- " 选项行
+    size_t lastOpt = std::wstring::npos;
+    size_t scan = 0;
+    while (true) {
+        size_t lp = seg.find(L"\n- ", scan);
+        if (lp == std::wstring::npos) break;
+        lastOpt = lp;
+        scan = lp + 1;
+    }
+    if (lastOpt == std::wstring::npos) return false;
+    size_t eol = seg.find(L'\n', lastOpt + 1);
+    if (eol == std::wstring::npos) eol = seg.size();
+    std::wstring opt = L"\n- 想起那枚「" + beat + L"」的心之碎片 -> 心片_" + sceneId;
+    text.insert(sp + eol, opt);
+    return true;
+}
+
+// 把一枚碎片写进 .cks（追加 @scene 心片_<id>）。已存在返回 false。
+static bool AppendShardScene(std::wstring& cks, const std::wstring& id,
+                             const std::wstring& charName, const std::wstring& bg,
+                             const std::wstring& bgm, const std::wstring& sheSaid,
+                             const std::wstring& playerSaid) {
+    if (cks.find(L"@scene 心片_" + id) != std::wstring::npos) return false;
+    std::wstring s;
+    s += L"\n# ---- 心之碎片 #" + id + L"（游戏内凝固）----\n";
+    s += L"@scene 心片_" + id + L"\n";
+    if (!bg.empty())  s += L"@bg " + bg + L"\n";
+    if (!bgm.empty()) s += L"@bgm " + bgm + L"\n";
+    s += L"@ch " + charName + L"\n";
+    s += L"@narr 那枚心之碎片快散了，她趁散掉之前，把它收了下来。\n";
+    if (!sheSaid.empty()) s += charName + L": " + sheSaid + L"\n";
+    // 玩家原话逐字保留——这是"你的"印记
+    s += L"@narr （那枚碎片里，你说过：「";
+    s += playerSaid;
+    s += L"」）\n";
+    s += L"@narr （这条路是你和她自由聊出来的。回标题点「新的故事」重新载入，可从「收束_亮」重走。）\n";
+    s += L"@end\n";
+    cks += s;
+    return true;
+}
+
+// 检查历史记录中是否有完整的「玩家说 → 她回应」轮次（可结晶判据）。
+// 供 Play 界面的"凝固一刻"按钮、画廊的"从历史记录结晶"按钮高亮共用。
+// 兼容老存档：完全不依赖 speaker 字段，仅以 isPlayer + text 非空为判据。
+static bool HasCrystallizableHist(const std::vector<HistLine>& hist) {
+    for (int i = (int)hist.size() - 1; i >= 1; --i) {
+        // 当前条：她的回应（非玩家发言且有文本）
+        if (hist[(size_t)i].isPlayer) continue;
+        if (hist[(size_t)i].text.empty()) continue;
+
+        // 前一条：玩家的发言（玩家发言且有文本）
+        if (hist[(size_t)i - 1].isPlayer && !hist[(size_t)i - 1].text.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 凝固最近一轮对话。成功时 outMsg 给玩家看的话，返回新碎片 id（空 = 失败）。
+// 兼容老存档：speaker 字段可能为空，只要 text 非即视为有效回应。
+static std::wstring CrystallizeLastTurn(App& a, std::wstring& outMsg) {
+    const CharDef* d = a.Def();
+    if (!d) { outMsg = L"还没有选角色，凝固不了"; return L""; }
+
+    // 找最后一组：玩家说 → 她回应（不再限制 dirMode，只要历史记录里有完整的 AI 对话轮次即可）
+    int pi = -1;
+    for (int i = (int)a.hist.size() - 1; i >= 0; --i) {
+        if (a.hist[(size_t)i].isPlayer && !a.hist[(size_t)i].text.empty()) { pi = i; break; }
+    }
+    if (pi < 0) { outMsg = L"最近还没有你说过的话"; return L""; }
+    std::wstring playerSaid = a.hist[(size_t)pi].text;
+    std::wstring sheSaid;
+    for (int i = pi + 1; i < (int)a.hist.size(); ++i) {
+        const HistLine& h = a.hist[(size_t)i];
+        // 宽松检查：她的发言且有文字；兼容 speaker 可能为空的老存档
+        if (!h.isPlayer && !h.text.empty()) {
+            sheSaid = h.text; break;
+        }
+    }
+    if (sheSaid.empty()) { outMsg = L"找不到她的回应（这段历史可能只有单向发言）"; return L""; }
+
+    std::wstring scriptPath = PathJoin(PathJoin(a.assetDir, L"script"), d->script);
+    if (!EndsWith(scriptPath, L".cks")) scriptPath += L".cks";
+    std::wstring cks;
+    if (!ReadTextFile(scriptPath, cks) || cks.empty()) {
+        outMsg = L"里层剧本读不出来，没法凝固（缺 " + scriptPath + L"）";
+        return L"";
+    }
+
+    std::wstring root = ProjectRootOf(a);
+    std::wstring livingDir = PathJoin(PathJoin(root, L"living"), d->name);
+    EnsureDir(livingDir);
+    std::wstring imprintPath = PathJoin(livingDir, L"imprint.jsonl");
+    std::wstring imprint;
+    ReadTextFile(imprintPath, imprint);   // 不存在 = 空，正常
+
+    // 同一轮重复点「凝固此刻」不该生出第二枚碎片。
+    // 印记是靠 player_said 认的：那是这一轮唯一属于玩家的东西。
+    if (imprint.find(L"\"player_said\": " + JStr(playerSaid)) != std::wstring::npos) {
+        outMsg = L"这一轮已经凝固过了——换一句想留下的话再点";
+        return L"";
+    }
+
+    // 新 id = 已有最大 id + 1（imprint 与 .cks 都算上，避免撞号）
+    int maxId = 0;
+    auto scanIds = [&](const std::wstring& t, const wchar_t* prefix, size_t skip) {
+        size_t p = 0;
+        while ((p = t.find(prefix, p)) != std::wstring::npos) {
+            p += skip;
+            int v = 0; bool any = false;
+            while (p < t.size() && t[p] >= L'0' && t[p] <= L'9') {
+                v = v * 10 + (int)(t[p] - L'0'); ++p; any = true;
+            }
+            if (any && v > maxId) maxId = v;
+        }
+    };
+    scanIds(imprint, L"\"id\": \"", 7);
+    scanIds(cks, L"@scene 心片_", 10);
+
+    wchar_t idbuf[16];
+    swprintf(idbuf, 16, L"%03d", maxId + 1);
+    std::wstring id = idbuf;
+
+    std::wstring beat = AutoBeat(playerSaid);
+    std::wstring bg  = a.dirCurBg;
+    std::wstring bgm = a.dirCurBgm;
+
+    if (!AppendShardScene(cks, id, d->name, bg, bgm, sheSaid, playerSaid)) {
+        outMsg = L"这枚碎片已经在剧本里了";
+        return L"";
+    }
+    WeldShardOption(cks, id, beat);
+
+    if (!WriteTextFile(scriptPath, cks)) {
+        outMsg = L"剧本写不进去，凝固失败（文件可能被占用）";
+        return L"";
+    }
+
+    // imprint 追加一行（人机都可读）
+    std::wstring line;
+    line += L"{" + std::wstring(L"\"id\": ") + JStr(id);
+    line += L", \"char\": " + JStr(d->name);
+    line += L", \"beat\": " + JStr(beat);
+    line += L", \"bg\": " + JStr(bg);
+    line += L", \"bgm\": " + JStr(bgm);
+    line += L", \"player_said\": " + JStr(playerSaid);
+    line += L", \"she_said\": " + JStr(sheSaid);
+    line += L"}";
+    if (!imprint.empty() && imprint.back() != L'\n') imprint += L"\n";
+    imprint += line + L"\n";
+    WriteTextFile(imprintPath, imprint);
+
+    outMsg = L"✦ 心之碎片「" + beat + L"」已凝固（心片_" + id + L"）。回标题进里层，可从「收束_亮」重新拾起。";
+    return id;
+}
+
+// 从存档的历史记录里批量结晶所有「玩家说 → 她回应」的轮次。
+// 成功时 outMsg 给玩家看的话，返回结晶了几枚。
+static int CrystallizeFromHist(App& a, std::wstring& outMsg) {
+    const CharDef* d = a.Def();
+    if (!d) { outMsg = L"还没有选角色，凝固不了"; return 0; }
+    if (a.hist.empty()) { outMsg = L"当前存档没有对话历史，无法结晶"; return 0; }
+
+    std::wstring scriptPath = PathJoin(PathJoin(a.assetDir, L"script"), d->script);
+    if (!EndsWith(scriptPath, L".cks")) scriptPath += L".cks";
+    std::wstring cks;
+    if (!ReadTextFile(scriptPath, cks) || cks.empty()) {
+        outMsg = L"里层剧本读不出来，没法凝固（缺 " + scriptPath + L"）";
+        return 0;
+    }
+
+    std::wstring root = ProjectRootOf(a);
+    std::wstring livingDir = PathJoin(PathJoin(root, L"living"), d->name);
+    EnsureDir(livingDir);
+    std::wstring imprintPath = PathJoin(livingDir, L"imprint.jsonl");
+    std::wstring imprint;
+    ReadTextFile(imprintPath, imprint);
+
+    // 先扫出所有已有的 id
+    int maxId = 0;
+    auto scanIds = [&](const std::wstring& t, const wchar_t* prefix, size_t skip) {
+        size_t p = 0;
+        while ((p = t.find(prefix, p)) != std::wstring::npos) {
+            p += skip;
+            int v = 0; bool any = false;
+            while (p < t.size() && t[p] >= L'0' && t[p] <= L'9') {
+                v = v * 10 + (int)(t[p] - L'0'); ++p; any = true;
+            }
+            if (any && v > maxId) maxId = v;
+        }
+    };
+    scanIds(imprint, L"\"id\": \"", 7);
+    scanIds(cks, L"@scene 心片_", 10);
+
+    // 收集所有「玩家说 → 她回应」的轮次
+    // 兼容老存档：speaker 字段可能为空，只要 text 非空且 isPlayer 为假即视为有效回应
+    struct Turn { std::wstring playerSaid; std::wstring sheSaid; };
+    std::vector<Turn> turns;
+    for (size_t i = 0; i < a.hist.size(); ++i) {
+        if (!a.hist[i].isPlayer || a.hist[i].text.empty()) continue;
+        // 找下一条非玩家的回应
+        for (size_t j = i + 1; j < a.hist.size(); ++j) {
+            if (a.hist[j].isPlayer) break;
+            // 宽松检查：她的发言且有文字；兼容 speaker 可能为空的老存档
+            if (!a.hist[j].text.empty()) {
+                Turn t;
+                t.playerSaid = a.hist[i].text;
+                t.sheSaid = a.hist[j].text;
+                turns.push_back(t);
+                break;
+            }
+        }
+    }
+
+    if (turns.empty()) { outMsg = L"存档里没有完整的「你说 → 她回」轮次"; return 0; }
+
+    int n = 0;
+    std::wstring lastMsg;
+    for (const auto& turn : turns) {
+        // 去重：同一轮 player_said 已存在就跳过
+        if (imprint.find(L"\"player_said\": " + JStr(turn.playerSaid)) != std::wstring::npos) {
+            continue;
+        }
+
+        ++maxId;
+        wchar_t idbuf[16];
+        swprintf(idbuf, 16, L"%03d", maxId);
+        std::wstring id = idbuf;
+
+        std::wstring beat = AutoBeat(turn.playerSaid);
+        std::wstring bg = a.dirCurBg;
+        std::wstring bgm = a.dirCurBgm;
+
+        if (!AppendShardScene(cks, id, d->name, bg, bgm, turn.sheSaid, turn.playerSaid)) {
+            continue;
+        }
+        WeldShardOption(cks, id, beat);
+
+        // 追加 imprint 行
+        std::wstring line;
+        line += L"{" + std::wstring(L"\"id\": ") + JStr(id);
+        line += L", \"char\": " + JStr(d->name);
+        line += L", \"beat\": " + JStr(beat);
+        line += L", \"bg\": " + JStr(bg);
+        line += L", \"bgm\": " + JStr(bgm);
+        line += L", \"player_said\": " + JStr(turn.playerSaid);
+        line += L", \"she_said\": " + JStr(turn.sheSaid);
+        line += L"}";
+        if (!imprint.empty() && imprint.back() != L'\n') imprint += L"\n";
+        imprint += line + L"\n";
+
+        ++n;
+        lastMsg = L"✦ 心之碎片「" + beat + L"」已凝固（心片_" + id + L"）";
+    }
+
+    if (n == 0) {
+        outMsg = L"所有轮次都已经凝固过了——没有新的碎片可生成";
+        return 0;
+    }
+
+    // 写回文件
+    if (!WriteTextFile(scriptPath, cks)) {
+        outMsg = L"剧本写不进去，凝固失败（文件可能被占用）";
+        return 0;
+    }
+    WriteTextFile(imprintPath, imprint);
+
+    outMsg = L"✦ 已从存档凝固 " + std::to_wstring(n) + L" 枚心之碎片。回标题进里层，可从「收束_亮」重新拾起。";
+    return n;
+}
+
+// 重载：接受预选的 BatchTurn 列表（用于预览式批量结晶对话框）
+static int CrystallizeFromHist(App& a, std::wstring& outMsg, const std::vector<UiState::BatchTurn>& selectedTurns) {
+    const CharDef* d = a.Def();
+    if (!d) { outMsg = L"还没有选角色，凝固不了"; return 0; }
+
+    std::wstring scriptPath = PathJoin(PathJoin(a.assetDir, L"script"), d->script);
+    if (!EndsWith(scriptPath, L".cks")) scriptPath += L".cks";
+    std::wstring cks;
+    if (!ReadTextFile(scriptPath, cks) || cks.empty()) {
+        outMsg = L"里层剧本读不出来，没法凝固（缺 " + scriptPath + L"）";
+        return 0;
+    }
+
+    std::wstring root = ProjectRootOf(a);
+    std::wstring livingDir = PathJoin(PathJoin(root, L"living"), d->name);
+    EnsureDir(livingDir);
+    std::wstring imprintPath = PathJoin(livingDir, L"imprint.jsonl");
+    std::wstring imprint;
+    ReadTextFile(imprintPath, imprint);
+
+    // 先扫出所有已有的 id
+    int maxId = 0;
+    auto scanIds = [&](const std::wstring& t, const wchar_t* prefix, size_t skip) {
+        size_t p = 0;
+        while ((p = t.find(prefix, p)) != std::wstring::npos) {
+            p += skip;
+            int v = 0; bool any = false;
+            while (p < t.size() && t[p] >= L'0' && t[p] <= L'9') {
+                v = v * 10 + (int)(t[p] - L'0'); ++p; any = true;
+            }
+            if (any && v > maxId) maxId = v;
+        }
+    };
+    scanIds(imprint, L"\"id\": \"", 7);
+    scanIds(cks, L"@scene 心片_", 10);
+
+    int n = 0;
+    std::wstring lastMsg;
+    for (const auto& bt : selectedTurns) {
+        if (!bt.checked) continue;  // 只处理勾选的
+        
+        // 去重：同一轮 player_said 已存在就跳过
+        if (imprint.find(L"\"player_said\": " + JStr(bt.playerSaid)) != std::wstring::npos) {
+            continue;
+        }
+
+        ++maxId;
+        wchar_t idbuf[16];
+        swprintf(idbuf, 16, L"%03d", maxId);
+        std::wstring id = idbuf;
+
+        std::wstring beat = AutoBeat(bt.playerSaid);
+        std::wstring bg = a.dirCurBg;
+        std::wstring bgm = a.dirCurBgm;
+
+        if (!AppendShardScene(cks, id, d->name, bg, bgm, bt.sheSaid, bt.playerSaid)) {
+            continue;
+        }
+        WeldShardOption(cks, id, beat);
+
+        // 追加 imprint 行
+        std::wstring line;
+        line += L"{" + std::wstring(L"\"id\": ") + JStr(id);
+        line += L", \"char\": " + JStr(d->name);
+        line += L", \"beat\": " + JStr(beat);
+        line += L", \"bg\": " + JStr(bg);
+        line += L", \"bgm\": " + JStr(bgm);
+        line += L", \"player_said\": " + JStr(bt.playerSaid);
+        line += L", \"she_said\": " + JStr(bt.sheSaid);
+        line += L"}";
+        if (!imprint.empty() && imprint.back() != L'\n') imprint += L"\n";
+        imprint += line + L"\n";
+
+        ++n;
+        lastMsg = L"✦ 心之碎片「" + beat + L"」已凝固（心片_" + id + L"）";
+    }
+
+    if (n == 0) {
+        outMsg = L"所有勾选的轮次都已经凝固过了——没有新的碎片可生成";
+        return 0;
+    }
+
+    // 写回文件
+    if (!WriteTextFile(scriptPath, cks)) {
+        outMsg = L"剧本写不进去，凝固失败（文件可能被占用）";
+        return 0;
+    }
+    WriteTextFile(imprintPath, imprint);
+
+    outMsg = L"✦ 已从历史记录凝固 " + std::to_wstring(n) + L" 枚心之碎片。回标题进里层，可从「收束_亮」重新拾起。";
+    return n;
+}
+
+// 把整份里层 .cks 导出到 export/ 下（玩家要备份/分享时用）
+// 返回文件名（不含路径）通过 outPath，同时通过 outSource 返回来源存档描述（角色、槽号、章节、时间）
+static bool ExportLayerCks(const App& a, std::wstring& outPath, std::wstring& outSource) {
+    const CharDef* d = a.Def();
+    if (!d) return false;
+    std::wstring src = PathJoin(PathJoin(a.assetDir, L"script"), d->script);
+    if (!EndsWith(src, L".cks")) src += L".cks";
+    std::wstring text;
+    if (!ReadTextFile(src, text) || text.empty()) return false;
+
+    SYSTEMTIME st; GetLocalTime(&st);
+    wchar_t name[256];
+    
+    // 包含来源存档信息：角色名 + 槽号 + 章节 + 时间
+    std::wstring slotTag = L"";
+    std::wstring chapterTag = L"";
+    
+    if (a.ui.galleryFromSlot > 0 && a.ui.galleryFromSlot <= kSaveSlots) {
+        // 尝试从当前 slots 列表找到对应槽位信息
+        int slotIdx = a.ui.galleryFromSlot - 1;
+        if (slotIdx >= 0 && slotIdx < (int)a.slots.size() && a.slots[(size_t)slotIdx].used) {
+            const SaveSlotInfo& si = a.slots[(size_t)slotIdx];
+            if (!si.charName.empty()) {
+                slotTag = L"_槽" + WFromInt(a.ui.galleryFromSlot) + L"_" + si.charName;
+            } else {
+                slotTag = L"_槽" + WFromInt(a.ui.galleryFromSlot);
+            }
+            if (!si.chapter.empty()) {
+                chapterTag = L"_" + si.chapter;
+            }
+        } else {
+            slotTag = L"_槽" + WFromInt(a.ui.galleryFromSlot);
+        }
+    }
+    
+    swprintf(name, 256, L"%s_心之碎片%s%s_%04d%02d%02d_%02d%02d.cks",
+             d->script.c_str(), slotTag.c_str(), chapterTag.c_str(),
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+    std::wstring dir = PathJoin(a.appDir, L"export");
+    EnsureDir(dir);
+    outPath = PathJoin(dir, name);
+    
+    // 组装来源描述
+    if (a.ui.galleryFromSlot > 0 && a.ui.galleryFromSlot <= kSaveSlots) {
+        int slotIdx = a.ui.galleryFromSlot - 1;
+        if (slotIdx >= 0 && slotIdx < (int)a.slots.size() && a.slots[(size_t)slotIdx].used) {
+            const SaveSlotInfo& si = a.slots[(size_t)slotIdx];
+            outSource = L"来源存档：槽 " + WFromInt(a.ui.galleryFromSlot) + 
+                       (si.charName.empty() ? L"" : L" · " + si.charName) +
+                       (si.chapter.empty() ? L"" : L" · " + si.chapter);
+        } else {
+            outSource = L"来源存档：槽 " + WFromInt(a.ui.galleryFromSlot) + L"（槽位已空或无法读取详情）";
+        }
+    } else {
+        outSource = L"来源存档：未知（当前无有效存档上下文）";
+    }
+    
+    return WriteTextFile(outPath, text);
+}
+
+// 把一枚【已有印记但尚未进 .cks】的碎片补凝（画廊里点「立即凝固」走这里）
+static bool CrystallizeShardItem(App& a, const ShardItem& s, std::wstring& outMsg) {
+    const CharDef* d = a.Def();
+    if (!d) { outMsg = L"没有角色"; return false; }
+    std::wstring scriptPath = PathJoin(PathJoin(a.assetDir, L"script"), d->script);
+    if (!EndsWith(scriptPath, L".cks")) scriptPath += L".cks";
+    std::wstring cks;
+    if (!ReadTextFile(scriptPath, cks) || cks.empty()) { outMsg = L"里层剧本读不出来"; return false; }
+    if (!AppendShardScene(cks, s.id, d->name, s.bg, s.bgm, s.sheSaid, s.playerSaid)) {
+        outMsg = L"这枚碎片已经在剧本里了";
+        return false;
+    }
+    WeldShardOption(cks, s.id, s.beat.empty() ? L"那一刻" : s.beat);
+    if (!WriteTextFile(scriptPath, cks)) { outMsg = L"剧本写不进去"; return false; }
+    outMsg = L"✦ 心片_" + s.id + L" 已凝固。进里层走到「收束_亮」就能拾起。";
+    return true;
+}
+
+Gdiplus::Rect ShardItemRect(int i) {
+    return Gdiplus::Rect(100, 160 + i * 86, 1080, 72);
+}
+
+// ---------------------------------------------------------------- 画廊布局
+//
+// 旧版是一列铺满整宽的大卡片，右下角写着一句"点右下角导出"，
+// 但那个按钮根本不存在——玩家当然不知道心之碎片怎么导出。
+// 现在改成"左列表 + 右详情 + 底排按钮"：
+//   列表回答"我有哪些碎片"，详情回答"这一枚是什么"，按钮回答"我能拿它做什么"。
+const int kGalListX  = 56,  kGalListW  = 520;
+const int kGalRowY0  = 146, kGalRowH   = 70, kGalRows = 6;
+const int kGalCardH  = 62;
+const int kGalDetailX = 600, kGalDetailW = 624;
+const int kGalPanelY  = 146, kGalPanelH  = 420;
+
+Gdiplus::Rect GalRowRect(int visRow) {
+    return Gdiplus::Rect(kGalListX, kGalRowY0 + visRow * kGalRowH, kGalListW, kGalCardH);
+}
+// 四个操作按钮：0=重温/凝固选中 1=导出 .cks 2=凝固全部待结晶 3=从历史记录结晶
+// y=578 是算过的：列表底边 566，底部提示条从 624 起，按钮夹在中间。
+Gdiplus::Rect GalBtnRect(int i) {
+    const int bw = (kGalDetailW - 3 * 12) / 4;
+    return Gdiplus::Rect(kGalDetailX + i * (bw + 12), 578, bw, 42);
+}
+
+// 多行左对齐（GDI+ 默认会按矩形宽折行）
+static void LeftWrap(Gdiplus::Graphics& g, const std::wstring& s, Gdiplus::Font& f,
+                     const Gdiplus::RectF& rf, ARGB c) {
+    Gdiplus::StringFormat sf;
+    sf.SetAlignment(Gdiplus::StringAlignmentNear);
+    sf.SetLineAlignment(Gdiplus::StringAlignmentNear);
+    Gdiplus::SolidBrush b(c);
+    g.DrawString(s.c_str(), (int)s.size(), &f, rf, &sf, &b);
+}
+
+void DrawHeartGallery(Gdiplus::Graphics& g, const App& a) {
+    DrawBackdropBack(g, a);
+    DrawTitle(g, L"心之碎片", 18);
+
+    std::vector<ShardItem> shards = LoadShardList(a);
+    int total = (int)shards.size();
+    int done  = 0;
+    for (const auto& s : shards) if (s.crystallized) ++done;
+    int pending = total - done;
+    // 是否有可从历史记录结晶的内容（用于按钮高亮与提示）
+    bool canCrystallizeFromHist = HasCrystallizableHist(a.hist);
+
+    // ---- 三步说明：这是整个机制唯一需要玩家记住的东西
+    {
+        Gdiplus::Font f(L"Microsoft YaHei", 13);
+        Gdiplus::StringFormat sfC;
+        sfC.SetAlignment(Gdiplus::StringAlignmentCenter);
+        sfC.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        Gdiplus::SolidBrush b(Color::MakeARGB(255, 178, 168, 196));
+        Gdiplus::RectF rf(0, 80, (float)kScreenW, 26);
+        std::wstring tip = L"① 表层自由聊天生成碎片   →   ② 点「✦ 凝固此刻」把它定下来   →   "
+                           L"③ 标题进「里层」走到「收束_亮」重新拾起";
+        g.DrawString(tip.c_str(), (int)tip.size(), &f, rf, &sfC, &b);
+    }
+
+    // ---- 来源存档上下文：显示当前画廊关联的存档槽信息
+    if (a.ui.galleryFromSlot > 0) {
+        Gdiplus::Font f(L"Microsoft YaHei", 11);
+        Gdiplus::StringFormat sfC;
+        sfC.SetAlignment(Gdiplus::StringAlignmentCenter);
+        Gdiplus::SolidBrush b(Color::MakeARGB(255, 168, 130, 226));
+        std::wstring slotInfo = L"当前关联存档：槽 " + WFromInt(a.ui.galleryFromSlot);
+        int slotIdx = a.ui.galleryFromSlot - 1;
+        if (slotIdx >= 0 && slotIdx < (int)a.slots.size() && a.slots[(size_t)slotIdx].used) {
+            const SaveSlotInfo& si = a.slots[(size_t)slotIdx];
+            if (!si.charName.empty()) slotInfo += L" · " + si.charName;
+            if (!si.chapter.empty()) slotInfo += L" · " + si.chapter;
+        }
+        g.DrawString(slotInfo.c_str(), (int)slotInfo.size(), &f,
+                     Gdiplus::RectF(0, 106, (float)kScreenW, 22), &sfC, &b);
+    }
+
+    // ---- 进度条（细）
+    {
+        Gdiplus::Font f(L"Microsoft YaHei", 12);
+        std::wstring prog = L"已凝固 " + std::to_wstring(done) + L" / " + std::to_wstring(total);
+        if (pending > 0) prog += L"　（" + std::to_wstring(pending) + L" 枚待凝固）";
+        Left(g, prog, f, kGalListX, 110, Color::MakeARGB(255, 150, 142, 168));
+
+        float barW = 520.0f, barH = 6.0f, bx = (float)kGalListX, by = 132.0f;
+        Gdiplus::SolidBrush bg(Color::MakeARGB(255, 42, 38, 54));
+        g.FillRectangle(&bg, Gdiplus::RectF(bx, by, barW, barH));
+        if (total > 0 && done > 0) {
+            Gdiplus::SolidBrush fg(Color::MakeARGB(255, 168, 130, 226));
+            g.FillRectangle(&fg, Gdiplus::RectF(bx, by, barW * done / total, barH));
+        }
+    }
+
+    int sel = a.ui.gallerySel;
+
+    // ---- 左：碎片列表
+    if (total == 0) {
+        Gdiplus::Font f(L"Microsoft YaHei", 15);
+        LeftWrap(g, L"这里还空着。\n\n回到「新的故事」表层，和她自由聊几句——\n"
+                    L"聊完点右上角的「✦ 凝固此刻」，那一晚就会变成第一枚心之碎片。",
+                 f, Gdiplus::RectF((float)kGalListX, 200, (float)kGalListW, 240),
+                 Color::MakeARGB(255, 158, 148, 176));
+    }
+
+    int start = a.ui.galleryScroll;
+    int end = std::min(start + kGalRows, total);
+    for (int i = start; i < end; ++i) {
+        const ShardItem& s = shards[(size_t)i];
+        Gdiplus::Rect r = GalRowRect(i - start);
+        bool isSel = (i == sel);
+        bool isHot = (a.ui.hover == i);
+        ARGB fill = isSel ? Color::MakeARGB(255, 92, 64, 116)
+                          : (isHot ? Color::MakeARGB(230, 60, 50, 82)
+                                   : Color::MakeARGB(200, 42, 36, 58));
+        ARGB border = isSel ? Color::MakeARGB(255, 196, 158, 255)
+                            : Color::MakeARGB(120, 92, 88, 116);
+        RR(g, r, 10, fill, border, isSel ? 2.0f : 1.2f);
+
+        // 已凝固在左缘点一颗亮色小点，一眼能看出哪些是"能进去的"
+        if (s.crystallized) {
+            Gdiplus::SolidBrush dot(Color::MakeARGB(255, 168, 130, 226));
+            g.FillEllipse(&dot, r.X + 14, r.Y + 26, 8, 8);
+        } else {
+            Gdiplus::Pen pen(Color::MakeARGB(255, 120, 108, 140), 1.6f);
+            g.DrawEllipse(&pen, r.X + 14, r.Y + 26, 8, 8);
+        }
+
+        Gdiplus::Font fl(L"Microsoft YaHei", 16.0f);
+        std::wstring label = L"心片_" + s.id;
+        if (!s.beat.empty()) label += L"　「" + s.beat + L"」";
+        Left(g, label, fl, r.X + 34, r.Y + 8,
+             s.crystallized ? kText : Color::MakeARGB(255, 148, 142, 162));
+
+        Gdiplus::Font fs(L"Microsoft YaHei", 12.0f);
+        std::wstring preview = s.playerSaid;
+        if (preview.size() > 26) preview = preview.substr(0, 26) + L"…";
+        Left(g, L"你：" + preview, fs, r.X + 34, r.Y + 34, Color::MakeARGB(255, 198, 192, 212));
+
+        std::wstring state = s.crystallized ? L"可用" : L"待凝固";
+        Left(g, state, fs, r.X + kGalListW - 66, r.Y + 34,
+             s.crystallized ? Color::MakeARGB(255, 150, 226, 168)
+                            : Color::MakeARGB(255, 224, 168, 138));
+    }
+
+    // 滚动提示
+    if (total > kGalRows) {
+        Gdiplus::Font f(L"Microsoft YaHei", 11.0f);
+        std::wstring more = L"滚轮翻页　" + std::to_wstring(start + 1) + L"-" +
+                            std::to_wstring(end) + L" / " + std::to_wstring(total);
+        Left(g, more, f, kGalListX, 570, Color::MakeARGB(255, 130, 124, 148));
+    }
+
+    // ---- 右：选中项的详情
+    {
+        Gdiplus::Rect p(kGalDetailX, kGalPanelY, kGalDetailW, kGalPanelH);
+        RR(g, p, 12, Color::MakeARGB(190, 34, 30, 48), Color::MakeARGB(110, 92, 88, 116), 1.2f);
+
+        if (sel < 0 || sel >= total) {
+            Gdiplus::Font f(L"Microsoft YaHei", 14);
+            LeftWrap(g, L"← 左边点一枚碎片，这里会显示它的全部内容。",
+                     f, Gdiplus::RectF((float)p.X + 24, (float)p.Y + 24,
+                                       (float)p.Width - 48, 100),
+                     Color::MakeARGB(255, 140, 134, 158));
+        } else {
+            const ShardItem& s = shards[(size_t)sel];
+
+            Gdiplus::Font ft(L"Microsoft YaHei", 21.0f, Gdiplus::FontStyleBold);
+            Left(g, L"心片_" + s.id, ft, p.X + 24, p.Y + 16,
+                 s.crystallized ? Color::MakeARGB(255, 214, 182, 255)
+                                : Color::MakeARGB(255, 180, 172, 196));
+
+            Gdiplus::Font fb(L"Microsoft YaHei", 13.0f);
+            std::wstring badge = s.crystallized ? L"● 已凝固 · 可重温" : L"○ 待凝固";
+            Left(g, badge, fb, p.X + 24, p.Y + 52,
+                 s.crystallized ? Color::MakeARGB(255, 150, 226, 168)
+                                : Color::MakeARGB(255, 224, 168, 138));
+
+            if (!s.beat.empty()) {
+                Left(g, L"节拍　" + s.beat, fb, p.X + 170, p.Y + 52,
+                     Color::MakeARGB(255, 186, 178, 204));
+            }
+
+            Gdiplus::Font fl(L"Microsoft YaHei", 12.0f);
+            Gdiplus::Font fc(L"Microsoft YaHei", 15.0f);
+
+            Left(g, L"你说过的话（原样保留）", fl, p.X + 24, p.Y + 92,
+                 Color::MakeARGB(255, 138, 132, 156));
+            LeftWrap(g, s.playerSaid.empty() ? L"（空）" : s.playerSaid, fc,
+                     Gdiplus::RectF((float)p.X + 24, (float)p.Y + 112,
+                                    (float)p.Width - 48, 76),
+                     Color::MakeARGB(255, 236, 230, 246));
+
+            Left(g, L"她的回应", fl, p.X + 24, p.Y + 196,
+                 Color::MakeARGB(255, 138, 132, 156));
+            LeftWrap(g, s.sheSaid.empty() ? L"（空）" : s.sheSaid, fc,
+                     Gdiplus::RectF((float)p.X + 24, (float)p.Y + 216,
+                                    (float)p.Width - 48, 76),
+                     Color::MakeARGB(255, 208, 200, 226));
+
+            std::wstring meta;
+            if (!s.bg.empty())  meta += L"背景　" + s.bg;
+            if (!s.bgm.empty()) meta += (meta.empty() ? L"" : L"　·　") + std::wstring(L"音乐　") + s.bgm;
+            if (!meta.empty()) {
+                Left(g, meta, fl, p.X + 24, p.Y + 306, Color::MakeARGB(255, 128, 122, 146));
+            }
+
+            std::wstring hint = s.crystallized
+                ? L"「重温这一幕」会在里层加载 心片_" + s.id + L"，看完可随时返回。"
+                : L"这枚碎片还没写进里层剧本。点「凝固」把它固定下来。";
+            LeftWrap(g, hint, fl,
+                     Gdiplus::RectF((float)p.X + 24, (float)p.Y + 336,
+                                    (float)p.Width - 48, 70),
+                     Color::MakeARGB(255, 150, 144, 168));
+        }
+    }
+
+    // ---- 底排按钮（4 个：重温/凝固选中、导出 .cks、凝固全部待凝、从历史记录结晶）
+    {
+        struct Btn { std::wstring label; bool on; bool highlight; };
+        // 全部统一为四字标签，配合悬浮提示显示完整说明（2026-11-25 优化）
+        std::wstring b0 = L"▶ 重温";
+        bool on0 = (sel >= 0 && sel < total && shards[(size_t)sel].crystallized);
+        bool hl0 = on0 && (sel >= 0 && sel < total && shards[(size_t)sel].crystallized);
+        if (sel >= 0 && sel < total && !shards[(size_t)sel].crystallized) {
+            b0 = L"⟳ 凝固"; on0 = true; hl0 = true;
+        }
+        // 导出是"整份里层剧本备份"，不依赖选中项——所以它恒可用（画的和点的一致）。
+        std::wstring b1 = L"⤓ 导出"; bool on1 = true; bool hl1 = true;
+        std::wstring b2 = L"⟳ 全部凝固"; bool on2 = (pending > 0); bool hl2 = on2;
+        // 新增：从当前存档的历史记录批量结晶（对老存档特别有用）
+        // 高亮显示：当有可结晶的历史轮次时发光提示
+        bool canCrystallizeFromHist = HasCrystallizableHist(a.hist);
+        std::wstring b3 = canCrystallizeFromHist ? L"⬤ 从历史结晶" : L"⬤ 无可结晶";
+        bool on3 = canCrystallizeFromHist;
+        bool hl3 = canCrystallizeFromHist;
+
+        Btn btns[4] = { { b0, on0, hl0 }, { b1, on1, hl1 }, { b2, on2, hl2 }, { b3, on3, hl3 } };
+        Gdiplus::Font f(L"Microsoft YaHei", 14.0f);
+        for (int i = 0; i < 4; ++i) {
+            Gdiplus::Rect r = GalBtnRect(i);
+            bool hot = (a.ui.hover == 900 + i);
+            ARGB fill;
+            if (!btns[i].on) {
+                fill = Color::MakeARGB(110, 40, 36, 52);
+            } else if (hot) {
+                fill = Color::MakeARGB(255, 104, 72, 132);
+            } else if (btns[i].highlight) {
+                // 高亮状态：淡紫色呼吸光效
+                fill = Color::MakeARGB(240, 88, 60, 120);
+            } else {
+                fill = Color::MakeARGB(230, 62, 50, 82);
+            }
+            ARGB border = btns[i].on ? Color::MakeARGB(180, 176, 140, 236)
+                                     : Color::MakeARGB(80, 92, 88, 112);
+            RR(g, r, 10, fill, border, 1.4f);
+            // 高亮按钮添加外发光边框
+            if (btns[i].on && btns[i].highlight && !hot) {
+                Gdiplus::Pen glowPen(Color::MakeARGB(180, 180, 140, 255), 2.5f);
+                Gdiplus::Rect gr(r.X - 2, r.Y - 2, r.Width + 4, r.Height + 4);
+                g.DrawRectangle(&glowPen, gr);
+            }
+            Center(g, btns[i].label, f, r,
+                   btns[i].on ? kText : Color::MakeARGB(255, 110, 104, 126));
+        }
+    }
+
+    // ---- 悬浮提示：鼠标悬停在按钮上时显示功能说明
+    if (a.ui.hover >= 900 && a.ui.hover <= 903) {
+        int btnIdx = a.ui.hover - 900;
+        std::wstring tip;
+        // 需要重新计算 hasSel 和 sel，因为这段代码在按钮绘制块的作用域之外
+        int sel = a.ui.gallerySel;
+        const bool hasSel = (sel >= 0 && sel < total);
+        // 也要重新计算 canCrystallizeFromHist（作用域已出按钮绘制块）
+        bool canCrystallizeFromHist = HasCrystallizableHist(a.hist);
+        switch (btnIdx) {
+            case 0:
+                if (hasSel && shards[(size_t)sel].crystallized)
+                    tip = L"进入里层剧本，重温这枚已凝固的心之碎片。可随时按 Esc 返回画廊。";
+                else if (hasSel)
+                    tip = L"把选中的待凝固碎片写入里层剧本，成为可重温的正式心之碎片。";
+                else
+                    tip = L"先在左侧列表点选一枚碎片。";
+                break;
+            case 1:
+                tip = L"导出完整的里层剧本（.cks），包含所有已凝固的心之碎片。\n"
+                      L"文件会保存到 export/ 文件夹，文件名带上来源存档（角色、槽号、章节）。\n"
+                      L"导出后会自动打开文件夹，方便备份或分享给他人。";
+                break;
+            case 2:
+                tip = L"一次性把左侧列表里所有「待凝固」的碎片全部写入里层剧本。\n"
+                      L"适合批量整理：聊完一段后不用一枚枚点，一次搞定。";
+                break;
+            case 3:
+                if (canCrystallizeFromHist)
+                    tip = L"扫描当前存档的所有对话历史，把每一轮「你说 → 她回」\n"
+                          L"都凝固成独立的心之碎片，写入里层剧本。\n"
+                          L"对老存档（没来得及手动凝固的）特别有用。";
+                else
+                    tip = L"当前存档里没有完整的「你说 → 她回」对话轮次。\n"
+                          L"先去表层和她聊几句，再回来结晶。";
+                break;
+        }
+        if (!tip.empty()) {
+            Gdiplus::Font ft(L"Microsoft YaHei", 12.0f);
+            Gdiplus::RectF tr(120.0f, 560.0f, 1040.0f, 80.0f);
+            Gdiplus::SolidBrush bg(Color::MakeARGB(220, 22, 18, 30));
+            Gdiplus::Pen border(Color::MakeARGB(180, 176, 140, 236), 1.5f);
+            g.FillRectangle(&bg, tr);
+            g.DrawRectangle(&border, Gdiplus::Rect((int)tr.X, (int)tr.Y, (int)tr.Width, (int)tr.Height));
+            LeftWrap(g, tip, ft, tr, Color::MakeARGB(255, 210, 200, 230));
+        }
+    }
+
+    // ---- 底部一句话
+    {
+        Gdiplus::Font f(L"Microsoft YaHei", 12.0f);
+        Gdiplus::StringFormat sfC;
+        sfC.SetAlignment(Gdiplus::StringAlignmentCenter);
+        sfC.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        Gdiplus::SolidBrush b(Color::MakeARGB(255, 122, 116, 142));
+        Gdiplus::RectF rf(0, 656, (float)kScreenW, 24);
+        std::wstring foot = L"心之碎片保存在 living/<角色>/imprint.jsonl 与里层剧本里；导出后是可直接分享的 .cks";
+        g.DrawString(foot.c_str(), (int)foot.size(), &f, rf, &sfC, &b);
+    }
+
+    // ---- 批量结晶预览对话框（覆盖层）
+    if (a.ui.galleryBatchCrystallizeOpen && !a.ui.galleryBatchTurns.empty()) {
+        // 半透明遮罩
+        Gdiplus::SolidBrush veil(Color::MakeARGB(200, 10, 8, 16));
+        g.FillRectangle(&veil, 0, 0, kScreenW, kScreenH);
+
+        // 对话框主体
+        Gdiplus::Rect dlg(180, 120, 920, 480);
+        Gdiplus::RectF dlgF((float)dlg.X, (float)dlg.Y, (float)dlg.Width, (float)dlg.Height);
+        RR(g, dlg, 16, Color::MakeARGB(250, 30, 26, 40), Color::MakeARGB(255, 176, 140, 236), 2.5f);
+
+        // 标题
+        Gdiplus::Font fTitle(L"Microsoft YaHei", 20, FontStyleBold);
+        Gdiplus::StringFormat sfC;
+        sfC.SetAlignment(Gdiplus::StringAlignmentCenter);
+        sfC.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        Gdiplus::SolidBrush tb(Color::MakeARGB(255, 240, 220, 255));
+        Gdiplus::RectF tr((float)dlg.X, (float)dlg.Y + 20, (float)dlg.Width, 40);
+        g.DrawString(L"从历史记录批量结晶", -1, &fTitle, tr, &sfC, &tb);
+
+        // 说明
+        Gdiplus::Font fDesc(L"Microsoft YaHei", 13);
+        Gdiplus::SolidBrush db(Color::MakeARGB(255, 180, 170, 200));
+        Gdiplus::RectF dr((float)dlg.X + 30, (float)dlg.Y + 70, (float)dlg.Width - 60, 40);
+        std::wstring desc = L"勾选要凝固的对话轮次（已凝固的默认取消勾选），点击「开始凝固」写入里层剧本。";
+        g.DrawString(desc.c_str(), -1, &fDesc, dr, &sfC, &db);
+
+        // 列表区域
+        Gdiplus::Rect listArea(dlg.X + 20, dlg.Y + 120, dlg.Width - 40, 300);
+        Gdiplus::RectF listClip((float)listArea.X, (float)listArea.Y, (float)listArea.Width, (float)listArea.Height);
+        g.SetClip(listClip);
+
+        Gdiplus::Font fItem(L"Microsoft YaHei", 14);
+        Gdiplus::Font fSmall(L"Microsoft YaHei", 12);
+        int y = listArea.Y - a.ui.galleryBatchScroll;
+        const int itemHeight = 80;
+
+        for (size_t i = 0; i < a.ui.galleryBatchTurns.size(); ++i) {
+            const UiState::BatchTurn& bt = a.ui.galleryBatchTurns[i];
+            Gdiplus::Rect itemRect(listArea.X, y, listArea.Width, itemHeight - 8);
+
+            // 跳过不在可视区的项
+            if (y + itemHeight < listArea.Y || y > listArea.Y + listArea.Height) {
+                y += itemHeight;
+                continue;
+            }
+
+            // 背景
+            bool hot = (a.ui.galleryBatchHover == (int)i);
+            ARGB bgFill = hot ? Color::MakeARGB(180, 60, 50, 90)
+                             : Color::MakeARGB(140, 40, 36, 52);
+            ARGB bgBorder = hot ? Color::MakeARGB(200, 176, 140, 236)
+                               : Color::MakeARGB(80, 92, 88, 112);
+            RR(g, itemRect, 8, bgFill, bgBorder, 1.5f);
+
+            // 复选框
+            Gdiplus::Rect checkBox(itemRect.X + 16, itemRect.Y + 16, 24, 24);
+            ARGB checkFill = bt.checked ? Color::MakeARGB(255, 100, 70, 160)
+                                        : Color::MakeARGB(100, 60, 50, 70);
+            ARGB checkBorder = bt.checked ? Color::MakeARGB(255, 196, 158, 255)
+                                          : Color::MakeARGB(180, 120, 100, 150);
+            RR(g, checkBox, 4, checkFill, checkBorder, 2.0f);
+            if (bt.checked) {
+                Gdiplus::Pen checkPen(Color::MakeARGB(255, 255, 250, 255), 3.0f);
+                Gdiplus::Point p1(checkBox.X + 5, checkBox.Y + 10);
+                Gdiplus::Point p2(checkBox.X + 10, checkBox.Y + 16);
+                Gdiplus::Point p3(checkBox.X + 19, checkBox.Y + 5);
+                g.DrawLines(&checkPen, &p1, 3);
+            }
+            if (bt.alreadyCrystallized) {
+                // 已凝固标记
+                Gdiplus::Font fTag(L"Microsoft YaHei", 10, FontStyleBold);
+                Gdiplus::SolidBrush tagBrush(Color::MakeARGB(255, 180, 200, 120));
+                Gdiplus::RectF tagRect((float)checkBox.X + 30, (float)checkBox.Y + 2, 80, 20);
+                g.DrawString(L"已凝固", -1, &fTag, tagRect, nullptr, &tagBrush);
+            }
+
+            // 玩家说
+            Gdiplus::RectF playerRect((float)checkBox.X + 34, (float)itemRect.Y + 10,
+                                     (float)itemRect.Width - 70, 30);
+            ARGB playerColor = bt.checked ? Color::MakeARGB(255, 230, 220, 245)
+                                           : Color::MakeARGB(255, 140, 130, 160);
+            std::wstring playerText = L"你说：" + bt.playerSaid;
+            LeftWrap(g, playerText, fItem, playerRect, playerColor);
+
+            // 她回应
+            Gdiplus::RectF sheRect((float)checkBox.X + 34, (float)itemRect.Y + 42,
+                                  (float)itemRect.Width - 70, 30);
+            ARGB sheColor = bt.checked ? Color::MakeARGB(255, 220, 240, 220)
+                                        : Color::MakeARGB(255, 130, 160, 130);
+            std::wstring sheText = L"她回：" + bt.sheSaid;
+            LeftWrap(g, sheText, fItem, sheRect, sheColor);
+
+            y += itemHeight;
+        }
+        g.ResetClip();
+
+        // 底部按钮
+        Gdiplus::Rect btnCancel(dlg.X + 20, dlg.Y + dlg.Height - 60, 180, 44);
+        Gdiplus::Rect btnConfirm(dlg.X + dlg.Width - 200, dlg.Y + dlg.Height - 60, 180, 44);
+
+        // 取消按钮
+        bool hotCancel = (a.ui.galleryBatchHover == -2);
+        ARGB cancelFill = hotCancel ? Color::MakeARGB(255, 100, 80, 100)
+                                    : Color::MakeARGB(230, 70, 55, 75);
+        RR(g, btnCancel, 10, cancelFill, Color::MakeARGB(180, 140, 110, 140), 1.5f);
+        Gdiplus::Font fBtn(L"Microsoft YaHei", 15);
+        Center(g, L"取消", fBtn, btnCancel, Color::MakeARGB(255, 230, 220, 245));
+
+        // 确认按钮
+        int checkedCount = 0;
+        for (const auto& bt : a.ui.galleryBatchTurns) if (bt.checked) ++checkedCount;
+        bool hotConfirm = (a.ui.galleryBatchHover == -1);
+        ARGB confirmFill = checkedCount > 0
+            ? (hotConfirm ? Color::MakeARGB(255, 116, 78, 154)
+                          : Color::MakeARGB(232, 62, 46, 84))
+            : Color::MakeARGB(150, 60, 45, 65);
+        RR(g, btnConfirm, 10, confirmFill, Color::MakeARGB(255, 196, 158, 255), 2.0f);
+        Center(g, L"开始凝固 (" + WFromInt(checkedCount) + L")", fBtn, btnConfirm,
+               checkedCount > 0 ? Color::MakeARGB(255, 236, 226, 255)
+                                : Color::MakeARGB(255, 140, 120, 150));
+    }
+}
+
+int HeartGalleryHitTest(const App& a, int x, int y) {
+    // 按钮优先：它们在列表之外，不会跟行冲突
+    // 现在有 4 个按钮：0=重温/凝固选中 1=导出 .cks 2=凝固全部待凝 3=从历史记录结晶
+    for (int i = 0; i < 4; ++i) {
+        Gdiplus::Rect b = GalBtnRect(i);
+        if (x >= b.X && x < b.X + b.Width && y >= b.Y && y < b.Y + b.Height) return 900 + i;
+    }
+    // 行
+    for (int row = 0; row < kGalRows; ++row) {
+        Gdiplus::Rect r = GalRowRect(row);
+        if (x >= r.X && x < r.X + r.Width && y >= r.Y && y < r.Y + r.Height)
+            return a.ui.galleryScroll + row;
+    }
+    return -1;
+}
+
 // 视觉小说的"场景感"几乎全靠背景撑起来。但项目不可能自带素材（版权 + 体积），
 // 所以得让玩家能把自己的图变成背景
 //
@@ -19168,11 +20691,11 @@ static void DrawSaveLoad(Graphics& g, App& a) {
         RR(g, r, 11, fill, brd, 1.4f);
 
         std::wstring t;
-        if (isSave)      t = L"保存到此槽";
-        else if (isBack) t = L"回标题";
-        else if (isDel)  t = a.ui.slotConfirmDel ? L"再点一次删除" : L"删除";
-        else if (isFlow) t = L"流程图";
-        else             t = L"读取";
+        if (isSave)      t = L"保存存档";
+        else if (isBack) t = L"返回标题";
+        else if (isDel)  t = a.ui.slotConfirmDel ? L"确认删除" : L"删除存档";
+        else if (isFlow) t = L"查看流程";
+        else             t = L"读取存档";
         Center(g, t, fSm, r, disabled ? kTextDim : kText);
     }
     // ---- 这份清单属于谁
@@ -19280,6 +20803,7 @@ void UiDraw(HDC hdc, int w, int h, App& a) {
     case Screen::Syllabus:   DrawSyllabus(g, a);    break;
     case Screen::SyllabusEdit: DrawSyllabusEdit(g, a); break;
     case Screen::PersonaText: DrawPersonaText(g, a); break;
+    case Screen::HeartGallery: DrawHeartGallery(g, a); break;
     case Screen::SaveLoad:
         // 流程图是盖在存档页上的覆盖层，不是独立界面
         if (a.ui.flowOpen && a.ui.flowSlot >= 0 &&
@@ -19380,6 +20904,9 @@ int UiHitTest(const App& a, int x, int y) {
 
     case Screen::SyllabusEdit:
         return SyllabusEditHitTest(a, x, y);
+
+    case Screen::HeartGallery:
+        return HeartGalleryHitTest(a, x, y);
 
     case Screen::Settings:
         for (int i = 0; i < kSetRows; ++i)
@@ -20148,6 +21675,32 @@ void UiWheel(App& a, int delta) {
         if (a.ui.flowScroll > maxScroll) a.ui.flowScroll = maxScroll;
         return;
     }
+    // ---- 心之碎片画廊：按行滚动（不是分页）
+    //
+    // 它用的是 galleryScroll（可见行的起始下标），跟下面 pages/scroll 那套
+    // 分页模型不同，所以必须单独拦一道——否则滚轮落到通用分支，
+    // 改的是 a.ui.scroll，而画廊根本不读它：玩家滚半天列表一动不动。
+    if (a.ui.screen == Screen::HeartGallery) {
+        // 批量结晶预览对话框打开时，滚动对话框内部列表
+        if (a.ui.galleryBatchCrystallizeOpen) {
+            int total = (int)a.ui.galleryBatchTurns.size();
+            int maxScroll = total * 80 - 300;  // 列表区域高度 300，每项 80px
+            if (maxScroll < 0) maxScroll = 0;
+            a.ui.galleryBatchScroll += (delta > 0) ? -40 : 40;  // 每次滚 40px
+            if (a.ui.galleryBatchScroll < 0) a.ui.galleryBatchScroll = 0;
+            if (a.ui.galleryBatchScroll > maxScroll) a.ui.galleryBatchScroll = maxScroll;
+            return;
+        }
+        int total = (int)LoadShardList(a).size();
+        int maxScroll = total - kGalRows;
+        if (maxScroll < 0) maxScroll = 0;
+        // 上滑看更早（下标变小），和回想面板同一个方向感
+        a.ui.galleryScroll += (delta > 0) ? -1 : 1;
+        if (a.ui.galleryScroll < 0) a.ui.galleryScroll = 0;
+        if (a.ui.galleryScroll > maxScroll) a.ui.galleryScroll = maxScroll;
+        a.ui.hover = -1;      // 滚动后那一行的含义变了，旧高亮作废
+        return;
+    }
     int pages = 1;
     if (a.ui.screen == Screen::CharCard) {
         // 两栏（已绑定 / 已解绑）各算各的页数：共用 a.ui.scroll，
@@ -20214,6 +21767,9 @@ static Screen BackTargetFor(const App& a) {
     case Screen::Avatar:       return Screen::AssetLib;
     // 剧本这条链：标题 -> 剧本列表 -> 剧本编辑
     case Screen::SyllabusEdit: return Screen::Syllabus;
+    // 心之碎片画廊有两个入口（标题菜单 / 设置里的「打开回顾画廊」），
+    // 返回要去来的那一处，而不是一律回标题。
+    case Screen::HeartGallery: return a.ui.galleryPrev;
     // 局内点开的存档界面，返回要回游戏而不是标题
     case Screen::SaveLoad:     return (a.ui.saveMode == 1) ? Screen::Play : Screen::Title;
     // 设置 / 剧本列表等顶层界面
@@ -21066,7 +22622,9 @@ static void DrawCharCard(Graphics& g, App& a) {
         bl[1] = L"打开包目录";
         bl[2] = L"↻ 重新扫描";
         bl[3] = showUn ? L"重新绑定" : L"解绑";
-        bl[4] = showUn ? L"返回列表" : (L"已解绑（" + WFromInt((long long)unb.size()) + L"）");
+        // 固定宽度显示：已解绑(N) 或 已解绑(N)，保证 148px 宽度内显示不越界
+        int unboundCount = (int)a.chars.Unbound().size();
+        bl[4] = showUn ? L"返回列表" : (L"已解绑(" + WFromInt(unboundCount) + L")");
         for (int i = 0; i < kChCardBtnCount; ++i) {
             // 灰掉的判定：见 ChCardBtnDisabled（绘制和命中测试共用同一份）
             bool disabled = ChCardBtnDisabled(a, i);
@@ -21397,6 +22955,11 @@ static void DrawPersona(Graphics& g, App& a) {
 
         Gdiplus::Rect vr(r.X + 240, r.Y + 8, r.Width - 270, r.Height - 16);
         std::wstring shown = vals[i];
+        // 温度显示限制在 4 字以内，避免长度超出（2026-11-25 优化）
+        if (i == 3) {
+            shown = shown.size() > 4 ? shown.substr(0, 4) + L"…" : shown;
+        }
+
         if (shown.size() > 46) shown = shown.substr(0, 46) + L"…";
         Gdiplus::Font fv(L"Microsoft YaHei", 15);
         Center(g, shown.empty() ? L"（空）" : shown, fv, vr,
@@ -22160,9 +23723,28 @@ std::wstring UiEditValue(const App& a, int row) {
 void UiCommitEdit(App& a, const std::wstring& text) {
     std::wstring t = Trim(text);
     switch (a.ui.editingRow) {
-    case 0: a.llm.baseUrl = t; break;
+    case 0: {
+        // 兜底：防止用户粘贴了完整路径带 /chat/completions 导致请求 URL 重复。
+        // 引擎会自动在这一段后再拼 /chat/completions，保存前去掉它。
+        if (t.size() > 16) {
+            std::wstring tail16 = t.substr(t.size() - 16);
+            if (tail16 == L"/chat/completions" || tail16 == L"/v1/chat/completions") {
+                t = t.substr(0, t.size() - 16);
+            }
+        }
+        a.llm.baseUrl = t;
+        break;
+    }
     case 1: if (!t.empty()) a.llm.model = t; break;
-    case 2: a.llm.apiKey = t; break;      // 允许清空，用来取消联网
+    case 2: {
+        // API Key 里常被粘贴进换行/制表/空格，尤其是长 Key。
+        // 这里把所有不可见字符（\r \n \t 及普通空格）全部剔掉，只留可见字符。
+        std::wstring clean;
+        clean.reserve(t.size());
+        for (wchar_t c : t) if (c != L'\r' && c != L'\n' && c != L'\t' && c != L' ') clean += c;
+        a.llm.apiKey = clean;
+        break;
+    }
     default: break;
     }
     SaveConfig();
@@ -22189,6 +23771,7 @@ void UiCommitEdit(App& a, const std::wstring& text) {
 // 她知道这句话是什么情绪，引擎只能从字面猜。
 #define WM_APP_STAGE_FIX  (WM_APP + 8)
 #define WM_APP_ASSET_NOTE (WM_APP + 9)   // 素材笔记 / 章末素材复盘 生成完毕
+#define WM_APP_API_TEST   (WM_APP + 10)  // 设置页「检测连接」：探测结果回主线程
 #define WM_APP_RUN_CODE   (WM_APP + 5)     // 代码框里按了 F5
 #define WM_APP_SET_EDIT   (WM_APP + 6)     // 设置面板的文本行按了回车，提交编辑
 #define IDT_FRAME         1
@@ -22203,6 +23786,9 @@ static bool      g_trayAdded = false;
 static std::wstring g_chatFull;
 static bool         g_chatOk = false;
 static std::wstring g_chatErr;
+// 「检测连接」的回包搬运槽：工作线程写，主线程在 WM_APP_API_TEST 里读。
+// 和别的搬运槽一样，读写都要持 g_app.cs（PostMessage 不是内存同步原语）。
+static std::wstring g_apiTestMsg;
 // ★ 本次回复的结束原因（"stop" 说完了 / "length" 被输出上限掐断 / 空 = 没给）。
 //
 // 它唯一的作用是把"她的话太长被掐断"和"流式中途断网"分开
@@ -23460,6 +25046,8 @@ static void ResetRuntimeUi() {
     a.rs.hoverBtn       = -1;
     a.rs.hoverNextDay   = false;
     a.rs.showNextDay    = false;   // 出口状态一并归零：退出 Play 后主页不能还挂着提示行
+    a.rs.showCrystallize  = false; // 同上：凝固按钮只属于表层 Play
+    a.rs.hoverCrystallize = false;
     a.rs.nextDayWait    = -1;
     a.rs.nextDayWhy.clear();
     a.rs.nextDayLabel.clear();
@@ -23635,15 +25223,30 @@ void BeginStory() {
         if (FileExists(p)) {
             a.scriptPath = p;
             //
-            // 【这两句原来一模一样】
+            // 【这两句原来一模 alike】
             // 加载成功也会打"加载失败，回退到通用剧本"，日志永远是错的，
-            // 查问题时只会把人往反方向带。现在分开写，失败时带上真原因。
+            // 查问题时只会把人往反方向带。现在分开写，失败时带上真因。
             if (!LoadScript()) AppLog(L"角色专属剧本加载失败：%s", a.scriptErr.c_str());
             else               AppLog(L"角色专属剧本已载入：%s", p.c_str());
         } else {
             AppLog(L"角色 %s 声明的剧本不存在: %s", d->DisplayName().c_str(), p.c_str());
         }
     }
+
+    // 【关键修复】LoadScript 之后、forceScript/dirMode 判断之前统一清理。
+    // LoadScript 内部的 vm.Step(a.view) 会把剧本第一句（如"活动室里的东西…"）
+    // 塞进 a.view.body 并设好说话人。必须在玩家模式组合（forceScript / dirMode）影响
+    // 之前把它清干净，防止后续逻辑因为 dirMode 被改写而导致 PromptStageReset 被跳过。
+    a.view.speaker.clear();
+    a.view.speakerId.clear();
+    a.view.body.clear();
+    // showChoices 也要清：它跟 body 一样是 vm.Step 的产物。
+    // 漏掉它的话，剧本第一幕若以「?」开头，表层 AI 对话里会飘出一排
+    // 属于剧本的选项（而且可点，点了会去调根本没在跑的 vm.Choose）。
+    a.view.showChoices = false;
+    a.view.choiceTexts.clear();
+    a.rs.playerEcho = false;
+    ResetTextState(a);
 
     a.vm.Load(&a.prog);
     a.phase = Phase::Play;
@@ -23657,7 +25260,23 @@ void BeginStory() {
     // 导演模式必须有大模型——没有它就没有剧情可言。
     // 离线或没配 Key 时退回预制剧本，并明确告诉
     // 否则他会看到一个"能打字但永远只有几句车轱辘话"的怪东西。
-    //
+//
+// ---- 心之碎片收集（里层 / 大脑② 确定性剧本）
+//
+// 引擎原本"只要大纲存在就走导演模式、把 .cks 当遗留跳过"。
+// 这里给玩家一个主动入口：forceScript=1 时，即便当前角色有 story.ini，
+// 也强制关掉 dirMode，让上面那段"角色专属剧本"（23630）真正接上，
+// 游戏进入可重开、带后果、不依赖 API Key 的里层——那是用来收集心之碎片的世界。
+// 进入后，收束_亮 会多出"想起那枚..."的心之碎片选项，点进去是玩家曾在表层聊出、凝固成的路。
+// 若该角色没配 [Char] Script，则保持原样（仍走导演模式），不误伤。
+if (a.forceScript && a.dirMode) {
+    const CharDef* fd = a.Def();
+    if (fd && !fd->script.empty()) {
+        a.dirMode = false;
+        AppLog(L"心之碎片收集：角色「%s」走确定性剧本「%s」", fd->DisplayName().c_str(), fd->script.c_str());
+    }
+}
+
     // 离线模式已移除，只剩"没填 Key"这一种情况
     // 曾经的"离线模式"开关会把原因归到设置上，玩家于是一直查设置，
     // 而真正的故障被这个解释盖住了。现在只有一种模式：联网。
@@ -23667,7 +25286,15 @@ void BeginStory() {
         AppLog(L"导演模式已停用：无 API Key");
     }
 
-    if (a.dirMode) {
+// 开场走模型对话还是预制剧本，只看 dirMode：
+// · dirMode=true（有大纲、且前面没被判成无 Key）→ 模型分支（表层：心之碎片生成），
+//   PromptStageReset 会清掉 LoadScript 塞进 view 的剧本第一句，等笔记回来她自己开口；
+// · dirMode=false —— 心之碎片收集（forceScript）或没配 Key —— 走下面的确定性剧本。
+//
+// 【不能写成 `dirMode || !apiKey.empty()`】那样"心之碎片收集 + 配了 Key"会被拽回模型，
+// 把玩家主动选的第二层（大脑②）悄悄覆盖了；而且它治不了预制台词——
+// 那句是 LoadScript 的 vm.Step 残留，真正的修复在 PromptStageReset。
+if (a.dirMode) {
         PromptStageReset();
         a.dirReady  = false;
         a.dirAdvance = 0;
@@ -23789,6 +25416,8 @@ void BeginStory() {
             a.pendingKick.clear();      // 没真发起，照常开场
         }
         ApplyStageChange(a.dirCurBg, a.dir.Cur() ? a.dir.Cur()->outfit : L"");
+        // 导演模式用不上这个（心片只在里层重现），清掉免得带到下一局
+        a.pendingShardScene.clear();
         GoScreen(Screen::Play);
         StartChat(kick, a.persona.charName, a.dir.Guide());
         InvalidateRect(a.hwnd, nullptr, FALSE);
@@ -23806,7 +25435,32 @@ void BeginStory() {
     // 素材清单这时候才扫完（EnsureWhitelist 在上面），可以发起笔记生成了。
     // 它跑在后台：玩家在标题/开场那几秒里它就回来了，不占用对话等待。
     StartAssetBrief();
+    //
+    // ---- 从画廊点「重温这一幕」进来：直接落到那枚心片
+    //
+    // 位置很关键：必须在下面那次 vm.Step 之前。
+    // 放到 vm.Load 之后、Step 之前是不行的——中间还有 dirMode 判断和
+    // 一大段开场准备，最后那次 Step 会把游标又往前推一句，
+    // 玩家点「重温」会从第二句开始（第一句被 Step 掉了）。
+    // 所以只在这里改游标，Step 仍然只发生一次。
+    //
+    // Vm::Jump 是私有的（只给 @if 内部用），公开入口是 Snapshot + Load，
+    // 两者走同一条定位逻辑：scene 名 = @scene 后面那串。
+    if (!a.pendingShardScene.empty()) {
+        ck::Vm::Snapshot snap;
+        snap.scene = a.pendingShardScene;
+        snap.ip = 0;
+        if (a.vm.Load(snap)) {
+            AppLog(L"重温心之碎片：跳到 @scene %s", a.pendingShardScene.c_str());
+        } else {
+            AppLog(L"重温心之碎片失败：里层剧本里没有 @scene %s",
+                   a.pendingShardScene.c_str());
+            a.vm.Load(&a.prog);
+        }
+        a.pendingShardScene.clear();
+    }
     a.block = a.vm.Step(a.view);
+    ResetTextState(a);          // 第一句要重新走打字机
     GoScreen(Screen::Play);
     AfterStep();
 }
@@ -23926,8 +25580,18 @@ void LoadConfig() {
     App& a = g_app;
     EnsureDir(a.appDir);
 
-    a.llm.baseUrl    = IniGetStr(a.configPath, L"LLM", L"BaseUrl", a.llm.baseUrl);
-    a.llm.apiKey     = IniGetStr(a.configPath, L"LLM", L"ApiKey", L"");
+    // Key 保存前做深度清理（保证写入前的最后一道防线），读取时也同样清理
+    // 这样无论 Key 从设置界面、配置文件、命令行还是其他入口进来，
+    // 一进内存就都是纯可见字符，不会再引入换行/制表/空格导致认证失败。
+    auto CleanKey = [](std::wstring s) -> std::wstring {
+        std::wstring out;
+        out.reserve(s.size());
+        for (wchar_t c : s) if (c != L'\r' && c != L'\n' && c != L'\t' && c != L' ') out += c;
+        return out;
+    };
+
+    a.llm.baseUrl    = CleanKey(IniGetStr(a.configPath, L"LLM", L"BaseUrl", a.llm.baseUrl));
+    a.llm.apiKey     = CleanKey(IniGetStr(a.configPath, L"LLM", L"ApiKey", L""));
     a.llm.model      = IniGetStr(a.configPath, L"LLM", L"Model", a.llm.model);
     a.llm.temperature= IniGetDbl(a.configPath, L"LLM", L"Temperature", a.llm.temperature);
     //
@@ -23940,6 +25604,10 @@ void LoadConfig() {
 
     a.zoom      = (float)IniGetDbl(a.configPath, L"Game", L"Zoom", 1.0);
     a.textSpeed = IniGetInt(a.configPath, L"Game", L"TextSpeed", 40);
+    // 恢复玩家上次在设置界面内切的模式（表层/里层）。"游戏模式"行在设置页内点，
+    // 由 SaveConfig() 持久化；这里读回来只是恢复，不再带有"强制进入"的隐语义。
+    // 启动默认表层（AI 对话），缺省时 a.forceScript 为 false。
+    a.forceScript = IniGetInt(a.configPath, L"Game", L"ForceScript", 0) != 0;
     // 玩家名字【不再由玩家填写】——设置面板那一行已移除。
     // 这里保留读取，只作兜底：角色包没写 [Player] 时（内置默认角色、老包）用它；
     // 角色包写了就以包里的为准，见 PlayerNameFor()。
@@ -23966,13 +25634,22 @@ void LoadConfig() {
 
 void SaveConfig() {
     App& a = g_app;
-    IniSetStr(a.configPath, L"LLM", L"BaseUrl", a.llm.baseUrl);
-    IniSetStr(a.configPath, L"LLM", L"ApiKey", a.llm.apiKey);
+    // 保存前先清理，防止旧的脏数据再次写入配置文件，下次读取时 LoadConfig 会再次清理
+    auto CleanKey = [](std::wstring s) -> std::wstring {
+        std::wstring out;
+        out.reserve(s.size());
+        for (wchar_t c : s) if (c != L'\r' && c != L'\n' && c != L'\t' && c != L' ') out += c;
+        return out;
+    };
+    IniSetStr(a.configPath, L"LLM", L"BaseUrl", CleanKey(a.llm.baseUrl));
+    IniSetStr(a.configPath, L"LLM", L"ApiKey", CleanKey(a.llm.apiKey));
     IniSetStr(a.configPath, L"LLM", L"Model", a.llm.model);
     IniSetDbl(a.configPath, L"LLM", L"Temperature", a.llm.temperature);
     IniSetInt(a.configPath, L"LLM", L"TimeoutSec", a.llm.timeoutSec);
     IniSetInt(a.configPath, L"LLM", L"Stream", a.llm.stream ? 1 : 0);
     IniSetInt(a.configPath, L"LLM", L"SplitAsset", a.llm.splitAsset ? 1 : 0);
+    // 持久化玩家在设置页切的"游戏模式"（表层/里层），下次启动 LoadConfig 恢复。
+    IniSetInt(a.configPath, L"Game", L"ForceScript", a.forceScript ? 1 : 0);
 
     IniSetDbl(a.configPath, L"Game", L"Zoom", (double)a.zoom);
     IniSetInt(a.configPath, L"Game", L"TextSpeed", a.textSpeed);
@@ -24846,6 +26523,12 @@ void SaveGameNow() {
     ck::JValue vNm; vNm.type = ck::JValue::TStr;
     vNm.str = U8(a.Def() ? a.Def()->DisplayName() : a.persona.charName);
     root.obj.push_back(std::make_pair("charName", vNm));
+    // 这一局跑的是里层（确定性剧本，forceScript 把 dirMode 翻成了 false）
+    // 还是表层（导演模式 / 通用剧本）。读档要按这个把 dirMode 翻回原状，
+    // 否则里层档读回来会被当成导演档、掉回表层。老档没这个字段，默认 0（表层），
+    // 读档路径完全不变，零影响。
+    ck::JValue vLayer; vLayer.type = ck::JValue::TNum; vLayer.num = a.forceScript ? 1 : 0;
+    root.obj.push_back(std::make_pair("layer", vLayer));
 
     ck::JValue vChap; vChap.type = ck::JValue::TStr;
     vChap.str = U8(ChapterLabel());
@@ -25060,6 +26743,39 @@ bool LoadFromSlot(int slot) {
     else if (a.curChar.empty()) {
         std::vector<const CharDef*> sel = a.chars.Selectable();
         if (!sel.empty()) SelectChar(sel[0]->id);
+    }
+    //
+    // ---- 读回这一局跑的是里层（确定性剧本）还是表层（导演模式）----
+    //
+    // 存档里 layer==1 表示当初是用 forceScript 进的里层：引擎当时把
+    // dirMode 翻成 false、跑的是角色专属 .cks。读档必须照翻回来，
+    // 否则这份 .cks 档会被 LoadGameNow 当成导演档恢复、掉回表层。
+    // 老档没有 layer 字段，默认 0（表层），下面整段不触发，读档路径不变。
+    const bool wasInner = (peek.getNum("layer", 0) != 0);
+    a.forceScript = wasInner;
+    if (wasInner) {
+        a.dirMode = false;   // 里层档本来就跑在 dirMode=false 下
+        const CharDef* d = a.Def();
+        if (d && !d->script.empty()) {
+            std::wstring p = PathJoin(a.assetDir, L"script");
+            p = PathJoin(p, d->script);
+            if (!EndsWith(p, L".cks")) p += L".cks";
+            if (FileExists(p)) {
+                std::wstring text;
+                if (ReadTextFile(p, text)) {
+                    ck::Program cp;
+                    if (ck::ScriptCompile(text, a.assetDir, cp)) {
+                        a.prog = cp;
+                        a.vm.Load(&a.prog);   // 让快照套在角色专属 .cks 上
+                        BootNote(L"[读档] 槽 " + WFromInt(slot) + L"：里层剧本已载入 " + p);
+                    }
+                }
+            } else {
+                a.slotLoadErr = L"存档跑的是里层剧本，但角色「" + d->DisplayName()
+                                + L"」的专属剧本找不到，读回表层";
+                BootNote(L"[读档] 槽 " + WFromInt(slot) + L"：里层剧本 " + p + L" 不存在，退回表层");
+            }
+        }
     }
     //
     // ---- "角色特化剧本 vs 存档里的角色"已经并进 SlotRejectReason
@@ -26042,6 +27758,75 @@ static unsigned __stdcall AssetNoteThread(void* p) {
     delete ctx;
     PostMessageW(g_app.hwnd, WM_APP_ASSET_NOTE, 1, (LPARAM)myGen);
     return 0;
+}
+
+// ---------------------------------------------------------------- 检测连接
+// 设置页那一行「检测连接」：发一个最小请求，验证地址 / Key / 模型三样
+// 配置能不能真的让模型开口。不用"只 Ping 端口"那种做法——TCP 能通但 Key
+// 错了照样说不出话，玩家要的不是"网络通"，是"她能回"。所以这里走和正式
+// 对话完全同一条 LlmChat 路径，结论才可信。
+struct ApiTestCtx {
+    LlmConfig cfg;   // 快照：检测期间玩家可能还在设置页改配置
+    int gen;
+};
+
+static unsigned __stdcall ApiTestThread(void* p) {
+    ApiTestCtx* ctx = (ApiTestCtx*)p;
+    const int gen = ctx->gen;
+    LlmConfig cfg = ctx->cfg;
+    cfg.stream      = false;   // 只要一个字，不等流式、不走打字机
+    cfg.timeoutSec  = 25;      // 检测不该像正式对话那样等 180 秒
+    cfg.temperature = 0;
+
+    std::vector<ChatMsg> msgs;
+    msgs.push_back(ChatMsg{ L"user", L"请只回复 OK 两个字" });
+
+    const ULONGLONG t0 = GetTickCount64();
+    LlmResult r;
+    const bool ok = LlmChat(cfg, msgs, r, nullptr);
+    const unsigned long ms = (unsigned long)(GetTickCount64() - t0);
+
+    const std::wstring msg = ok
+        ? (L"HTTP " + WFromInt(r.httpStatus) + L" · " + WFromInt((long long)ms) + L"ms · " + cfg.model
+           + L" · 回复：「" + (r.full.empty() ? L"(空)" : (r.full.size() > 16 ? r.full.substr(0, 16) + L"…" : r.full)) + L"」")
+        : (r.err.empty() ? std::wstring(L"未知原因，详情看日志") : r.err);
+
+    {
+        CsLock lk(&g_app.cs);
+        g_apiTestMsg = msg;   // 存全文：界面只显示摘要，日志记全文
+    }
+    delete ctx;
+    PostMessageW(g_app.hwnd, WM_APP_API_TEST, ok ? 1 : 0, (LPARAM)gen);
+    return 0;
+}
+
+// 主线程：点「检测连接」那一行。UI 状态只在这里改，工作线程只管发请求。
+void StartApiTest(App& a) {
+    if (a.apiTestState == 1) { UiTip(a, L"还在检测，稍等一下", 3); return; }
+    if (a.llm.baseUrl.empty()) {
+        a.apiTestState = 3;
+        a.apiTestMsg = L"接口地址还没填";
+        UiTip(a, a.apiTestMsg, 4);
+        return;
+    }
+    ++a.apiTestGen;
+    a.apiTestState = 1;
+    a.apiTestMsg.clear();
+    {
+        CsLock lk(&a.cs);
+        g_apiTestMsg.clear();
+    }
+    ApiTestCtx* ctx = new ApiTestCtx();
+    ctx->cfg = a.llm;
+    ctx->gen = a.apiTestGen;
+    HANDLE h = (HANDLE)_beginthreadex(nullptr, 0, ApiTestThread, ctx, 0, nullptr);
+    if (h) CloseHandle(h);
+    else {
+        delete ctx;
+        a.apiTestState = 3;
+        a.apiTestMsg = L"线程没能启动";
+        UiTip(a, L"检测没能启动，再点一次试试", 4);
+    }
 }
 // 一行是不是纯代码围栏（```text / ``` 之类）。
 //
@@ -28064,6 +29849,22 @@ static void OnChatDone(HWND hwnd) {
 static void PromptStageReset() {
     App& a = g_app;
     ResetStageVisuals();
+    //
+    // ---- 清掉对话框里可能被剧本塞进来的预制台词
+    //
+    // 这是"新存档开场：状态栏写着等笔记，对话框却显示了宁宁的预制台词"的根因。
+    // 链条：BeginStory 里 EnsureWhitelist 之后会 LoadScript（角色专属剧本），
+    // LoadScript 内部有一句 vm.Step(a.view) 把剧本第一句（"活动室里的东西…"）
+    // 直接塞进 a.view.body 并设好说话人。而 BeginStory 早先那次清 view 发生在
+    // LoadScript 【之前】，清完又被塞回来。随后开场走模型分支挂起 pendingStage，
+    // 画面清了、台词没清——玩家就看到"空舞台 + 等笔记"却挂着一句预制台词。
+    // 导演模式根本不跑剧本，这句台词纯属残留；开场/读档后第一句一律等模型回来填，
+    // 所以在这里（模型路径统一入口）把台词字段清干净。剧本模式不走这条路，不受影响。
+    a.view.speaker.clear();
+    a.view.speakerId.clear();
+    a.view.body.clear();
+    a.rs.playerEcho = false;
+    ResetTextState(a);
     MarkAssetAuditSession(L"开局 / 读档");
     // 初始背景：留空，等她第一轮开口再出现。
     //
@@ -30780,6 +32581,58 @@ static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 // ============================================================================
 //  窗口过程
 // ============================================================================
+// 标题页 7 项菜单的统一分发：鼠标点击（UiHitTest 下标）和键盘 Enter/空格
+// 都走这一份，7 个 case 只写一遍、不漂移。hit 是菜单下标（-1 无命中直接返回）。
+static LRESULT ActivateTitleItem(App& a, int hit) {
+    switch (hit) {
+    // "新的故事"= 表层（导演模式/大脑①）。入口意图优先于 config.ini：
+    // 进表层就关掉 forceScript，哪怕 config 里写着 1。
+    case 0: a.forceScript = false; PlayClickSe(); StartNewGame(); return 0L;
+    case 1: PlayClickSe();
+            ScanSlots();
+            a.ui.saveMode = 0;
+            a.ui.slotPick = -1;
+            a.ui.slotConfirmDel = false;
+            GoScreen(Screen::SaveLoad);
+            return 0L;
+    case 2: PlayClickSe(); ContinueGame(); return 0L;
+    case 3: PlayClickSe(); GoScreen(Screen::Settings); return 0L;
+    // 入口从"背景库"换成"角色卡"：素材增删 + 注释 + 人设都从这儿进。
+    // 只有标题页能进——局内改素材会让正在跑的一句台词突然换脸。
+    case 4: PlayClickSe();
+            a.ui.cardPick = -1;
+            a.ui.cardId.clear();
+            a.ui.assetKind = 0;
+            a.ui.assetPick = -1;
+            a.ui.noteEdit = false;
+            a.ui.noteQueue.clear();
+            a.ui.personaRow = -1;
+            a.ui.scroll = 0;
+            // 每次进来都从"已绑定"那一栏开始，且清空选中。
+            a.ui.cardShowUnbound = false;
+            a.ui.cardPick = -1;
+            GoScreen(Screen::CharCard);
+            return 0L;
+    // 剧本：跟角色卡平级的另一半内容包。换角色不换课、换课不影响角色。
+    case 5: PlayClickSe();
+            a.syllabusPacks = ScanSyllabusPacks(a.assetDir);
+            a.ui.syPick = -1;
+            a.ui.syConfirmDel = false;
+            a.ui.scroll = 0;
+            GoScreen(Screen::Syllabus);
+            return 0L;
+// "心之碎片"= 回顾画廊。点击打开 Screen::HeartGallery，
+// 列出 living/<char>/imprint.jsonl 中已结晶的 @scene 心片_<id>，
+// 玩家可点选重现当时的对话画面，或导出 .cks 备份到本地。
+// 这是"AI 对话存档结晶，离线随时回顾"的玩家可见入口。
+    case 6: PlayClickSe();
+            a.ui.galleryPrev = Screen::Title;      // 从标题进来，返回就回标题
+            a.ui.galleryFromSlot = a.curSlot;      // 记录当前存档槽，用于导出标识
+            GoScreen(Screen::HeartGallery); return 0L;
+    }
+    return 0L;
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     App& a = g_app;
 
@@ -30929,6 +32782,54 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 a.rs.nextDayWait  = -1;
                 a.rs.nextDayLabel.clear();
                 a.rs.nextDayWhy.clear();
+            }
+            // ---- 「✦ 凝固此刻」的可点性
+            // 只在表层（导演模式 / AI 自由对话）出现，且至少已经聊过一轮，
+            // 否则点下去只能得到"还没有你说过的话"，按钮本身就是噪音。
+            //
+            // 【做题 / 选择题 / 判题时必须收起来】
+            // 它画在右上角 948..1098 × 52..96，而做题的编辑器是
+            // 160..1120 × 70..370——两者在编辑器右上角是叠着的：
+            // 编辑框是子窗口，永远盖在绘制之上，按钮只会露出上面一小条，
+            // 看着像半个坏掉的控件；更糟的是它仍然可点，
+            // 写代码写到一半点上去会把"判题那一轮"当成心之碎片凝固下来。
+            // 判据只写这一处，绘制 / 命中 / 悬停都读它。
+            //
+            // 关键改动：不再强制要求 dirMode（表层模式）。
+            // 只要历史记录里有「玩家说 → 她回应」的完整 AI 对话轮次，就允许结晶。
+            // 这样读取老存档（包括里层存档）后，也能把当时的对话结晶为心之碎片。
+            a.rs.showCrystallize = HasCrystallizableHist(a.hist)
+                                && !a.rs.codeMode && !a.rs.quizMode && !a.rs.judging;
+            // ---- HUD 常驻进度：已凝固 / 总计
+            {
+                const CharDef* d = a.Def();
+                if (d) {
+                    std::wstring imprintPath = PathJoin(PathJoin(a.assetDir, L"living"), d->name);
+                    imprintPath = PathJoin(imprintPath, L"imprint.jsonl");
+                    int total = 0, done = 0;
+                    std::wstring content;
+                    if (ReadTextFile(imprintPath, content)) {
+                        std::wstring line;
+                        std::wstringstream ss(content);
+                        while (std::getline(ss, line)) {
+                            Trim(line);
+                            if (line.empty()) continue;
+                            ++total;
+                            if (line.find(L"\"crystallized\":true") != std::wstring::npos ||
+                                line.find(L"\"crystallized\": true") != std::wstring::npos)
+                                ++done;
+                        }
+                    }
+                    a.rs.crystallizeProgress = L"✦ " + WFromInt(done) + L" / " + WFromInt(total);
+                }
+            }
+            // ---- 首次引导脉冲：按钮首次出现时播放脉冲动画，持续 10 秒
+            if (a.rs.showCrystallize && !a.rs.crystallizePulse && a.rs.crystallizeFirstSeenMs == 0) {
+                a.rs.crystallizePulse = true;
+                a.rs.crystallizeFirstSeenMs = NowMs();
+            } else if (!a.rs.showCrystallize) {
+                a.rs.crystallizePulse = false;
+                a.rs.crystallizeFirstSeenMs = 0;
             }
             // Esc 能开存档界面这件事必须让玩家知道，否则等于没有这个入口。
             // 挪进 HUD 而不是单独画一个按钮，是为了不挡右上角本来就不宽的位置。
@@ -31225,6 +33126,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
+        // ---- 右上角「✦ 凝固此刻」
+        //
+        // 和「明天见」同一套写法：画出来的判据就是可点的判据。
+        // 命中必须在"点画面推进"之前拦下来，否则点按钮会顺带翻一页。
+        if (a.ui.screen == Screen::Play && a.rs.showCrystallize
+            && lx >= kCrystX && lx <= kCrystX + kCrystW
+            && ly >= kCrystY && ly <= kCrystY + kCrystH) {
+            PlayClickSe();
+            // ---- 点击反馈特效：闪白 0.5 秒 + 文案 "已凝固"
+            a.rs.crystallizeFlash = true;
+            a.rs.crystallizeFlashMs = NowMs();
+            a.rs.crystallizeFlashText = L"已凝固";
+            std::wstring msg;
+            CrystallizeLastTurn(a, msg);
+            UiTip(a, msg, 8);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         // ---- 右上角「明天见」：玩家自己推进剧情
         //
         // 放在所有"点画面推进"的判定之前：这块区域是按钮，
@@ -31271,45 +33190,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (a.ui.screen == Screen::Title) {
                 // 先响点击音再切屏：StartNewGame 会进 Play 并立刻接管 BGM，
                 // 但音效走的是 SLOT_UI，不受影响。
-                switch (hit) {
-                case 0: PlayClickSe(); StartNewGame(); return 0;
-                case 1: PlayClickSe();
-                        ScanSlots();
-                        a.ui.saveMode = 0;
-                        a.ui.slotPick = -1;
-                        a.ui.slotConfirmDel = false;
-                        GoScreen(Screen::SaveLoad);
-                        return 0;
-                case 2: PlayClickSe(); ContinueGame(); return 0;
-                case 3: PlayClickSe(); GoScreen(Screen::Settings); return 0;
-                // 入口从"背景库"换成"角色卡"：素材增删 + 注释 + 人设都从这儿进。
-                // 只有标题页能进——局内改素材会让正在跑的一句台词突然换脸。
-                case 4: PlayClickSe();
-                        a.ui.cardPick = -1;
-                        a.ui.cardId.clear();
-                        a.ui.assetKind = 0;
-                        a.ui.assetPick = -1;
-                        a.ui.noteEdit = false;
-                        a.ui.noteQueue.clear();
-                        a.ui.personaRow = -1;
-                        a.ui.scroll = 0;
-                        // 每次进来都从"已绑定"那一栏开始，且清空选中。
-                        // 不清的话，上次停在已解绑栏、选中第 2 张，进来一看
-                        // 列表完全不同，却还高亮着一个指到别处的下标。
-                        a.ui.cardShowUnbound = false;
-                        a.ui.cardPick = -1;
-                        GoScreen(Screen::CharCard);
-                        return 0;
-                // 剧本：跟角色卡平级的另一半内容包。
-                // 换角色不换课、换课不影响角色，两者各管各的。
-                case 5: PlayClickSe();
-                        a.syllabusPacks = ScanSyllabusPacks(a.assetDir);
-                        a.ui.syPick = -1;
-                        a.ui.syConfirmDel = false;
-                        a.ui.scroll = 0;
-                        GoScreen(Screen::Syllabus);
-                        return 0;
-                }
+                // 统一走 ActivateTitleItem：键盘 Enter/空格 也复用这一份分发，
+                // 7 个 case 只写一遍，不漂移。
+                ActivateTitleItem(a, hit);
                 return 0;
             }
             if (a.ui.screen == Screen::Syllabus) {
@@ -31793,6 +33676,148 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                     }
                 }
+                return 0;
+            }
+            // ---- 心之碎片画廊
+            //
+            // 这里的每个按钮都必须有真行为。旧版底部写着"右下角导出"，
+            // 但那个按钮从来不存在——玩家当然不知道碎片怎么导出。
+            if (a.ui.screen == Screen::HeartGallery) {
+                std::vector<ShardItem> shards = LoadShardList(a);
+                int total = (int)shards.size();
+                int sel = a.ui.gallerySel;
+                const bool hasSel = (sel >= 0 && sel < total);
+
+                // ---- 900：重温 / 凝固这一枚
+                if (hit == 900) {
+                    if (!hasSel) { UiTip(a, L"先在左边选一枚心之碎片", 3); return 0; }
+                    const ShardItem& s = shards[(size_t)sel];
+                    if (s.crystallized) {
+                        // 切到里层，并让 BeginStory 直接落到这枚碎片。
+                        // 不走 StartNewGame：那会在多角色时先进选角，玩家选了别人
+                        // 就跳不到这枚碎片了——画廊里点的那一枚才是他要看的。
+                        PlayClickSe();
+                        a.forceScript = true;
+                        IniSetInt(a.configPath, L"Game", L"ForceScript", 1);
+                        a.pendingShardScene = L"心片_" + s.id;
+                        UiTip(a, L"进入里层，重温「" + (s.beat.empty() ? s.id : s.beat) + L"」……", 4);
+                        BeginStory();
+                    } else {
+                        PlayClickSe();
+                        std::wstring msg;
+                        if (CrystallizeShardItem(a, s, msg)) {
+                            a.ui.gallerySel = sel;
+                        }
+                        UiTip(a, msg, 7);
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+                // ---- 901：导出 .cks
+                if (hit == 901) {
+                    PlayClickSe();
+                    std::wstring outPath;
+                    std::wstring outSource;
+                    if (ExportLayerCks(a, outPath, outSource)) {
+                        // 导出完直接把文件夹打开——否则玩家不知道文件去哪了
+                        std::wstring dir = PathJoin(a.appDir, L"export");
+                        ShellExecuteW(hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOW);
+                        // 显式提示：文件名 + 来源存档
+                        std::wstring filename = outPath.substr(outPath.find_last_of(L"\\/") + 1);
+                        UiTip(a, L"✓ 已导出：" + filename + L"\n" + outSource, 10);
+                    } else {
+                        UiTip(a, L"导出失败：读不到里层剧本", 5);
+                    }
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                // ---- 902：凝固全部待凝固的印记
+                if (hit == 902) {
+                    PlayClickSe();
+                    // 没有待凝的（按钮此时是灰的）就不要弹一个空白提示框
+                    bool anyPending = false;
+                    for (int i = 0; i < total; ++i)
+                        if (!shards[(size_t)i].crystallized) { anyPending = true; break; }
+                    if (!anyPending) { UiTip(a, L"没有待凝固的碎片——每一枚都已经定下来了", 4); return 0; }
+                    
+                    int pendingCount = 0;
+                    for (int i = 0; i < total; ++i)
+                        if (!shards[(size_t)i].crystallized) ++pendingCount;
+                    
+                    // 确认对话框
+                    std::wstring confirmMsg = L"将把 " + WFromInt(pendingCount) + 
+                        L" 枚待凝固的心之碎片全部写入里层剧本。\n\n"
+                        L"这会基于现有印记（imprint.jsonl）补齐缺失的 @scene 心片_<id>。\n"
+                        L"确定要开始批量凝固吗？";
+                    
+                    if (MessageBoxW(hwnd, confirmMsg.c_str(), L"凝固全部待凝", 
+                        MB_OKCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2) != IDOK) {
+                        UiTip(a, L"已取消", 2);
+                        return 0;
+                    }
+                    
+                    int n = 0;
+                    std::wstring lastMsg;
+                    for (int i = 0; i < total; ++i) {
+                        const ShardItem& s = shards[(size_t)i];
+                        if (s.crystallized) continue;
+                        std::wstring msg;
+                        if (CrystallizeShardItem(a, s, msg)) ++n;
+                        lastMsg = msg;
+                    }
+                    UiTip(a, n > 0 ? (L"✦ 已凝固 " + WFromInt(n) + L" 枚心之碎片\n回标题进里层，可从「收束_亮」重新拾起。") : lastMsg, 7);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                // ---- 903：从历史记录结晶（对老存档特别有用）
+                if (hit == 903) {
+                    PlayClickSe();
+                    if (a.hist.empty()) { UiTip(a, L"当前存档没有对话历史", 3); return 0; }
+                    const CharDef* d = a.Def();
+                    if (!d) { UiTip(a, L"当前未选择角色，无法结晶", 3); return 0; }
+
+                    // 扫描所有可结晶轮次，构建预览列表（去重已结晶的印记）
+                    std::wstring imprintPath = PathJoin(PathJoin(ProjectRootOf(a), L"living"), d->name);
+                    imprintPath = PathJoin(imprintPath, L"imprint.jsonl");
+                    std::wstring imprint;
+                    ReadTextFile(imprintPath, imprint);
+
+                    a.ui.galleryBatchTurns.clear();
+                    for (size_t i = 0; i < a.hist.size(); ++i) {
+                        if (!a.hist[i].isPlayer || a.hist[i].text.empty()) continue;
+                        for (size_t j = i + 1; j < a.hist.size(); ++j) {
+                            if (a.hist[j].isPlayer) break;
+                            if (!a.hist[j].text.empty()) {
+                                bool already = (imprint.find(L"\"player_said\": " + JStr(a.hist[i].text)) != std::wstring::npos);
+                                UiState::BatchTurn bt;
+                                bt.playerSaid = a.hist[i].text;
+                                bt.sheSaid = a.hist[j].text;
+                                bt.checked = !already;
+                                bt.alreadyCrystallized = already;
+                                a.ui.galleryBatchTurns.push_back(bt);
+                                break;
+                            }
+                        }
+                    }
+
+                    if (a.ui.galleryBatchTurns.empty()) {
+                        UiTip(a, L"所有对话轮次都已经凝固过了——没有新的碎片可生成", 5);
+                        return 0;
+                    }
+
+                    // 打开预览式批量结晶对话框（替代 MessageBox，支持勾选）
+                    a.ui.galleryBatchCrystallizeOpen = true;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                // ---- 行选中
+                if (hit >= 0 && hit < total) {
+                    PlayClickSe();
+                    a.ui.gallerySel = hit;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
             // ---- 角色卡：点一下选中，再点一下进入编辑
@@ -32340,6 +34365,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         // 全选，方便直接覆写
                         SendMessageW(a.hEdit, EM_SETSEL, 0, -1);
                     }
+                } else if (hit == kSetRowTest) {
+                    StartApiTest(a);
                 } else if (hit == kSetRowVolume) {
                     int v = a.audio.Volume();
                     v = (v >= 1000) ? 0 : (v >= 600 ? 1000 : (v >= 250 ? 600 : 250));
@@ -32374,6 +34401,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     g_titleUseChar = false;
                     RefreshTitleBgm();
                     UiTip(a, L"所有记录已清空", 4);
+                } else if (hit == kSetRowMode) {
+                    // 表层（心之碎片生成，AI 对话，需要 Key）与 里层（心之碎片收集，确定性剧本，不依赖 Key）之间切换。
+                    // 这是玩家在游戏界面内做出的意图，优先级高于任何 config.ini 的残留值。
+                    a.forceScript = !a.forceScript;
+                    SaveConfig();
+                    UiTip(a, a.forceScript ? L"已切到里层·心之碎片收集（确定性剧本）"
+                                           : L"已切到表层·心之碎片生成（AI 对话）", 4);
+                } else if (hit == kSetRowGallery) {
+                    // 打开心之碎片回顾画廊
+                    PlayClickSe();
+                    a.ui.galleryPrev = Screen::Settings;   // 返回键回设置，不弹回标题
+                    a.ui.galleryFromSlot = a.curSlot;      // 记录当前存档槽，用于导出标识
+                    GoScreen(Screen::HeartGallery);
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -32467,10 +34507,87 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 LayoutEdit();
                 SetFocus(a.hEdit);
                 SendMessageW(a.hEdit, EM_SETSEL, 0, -1);   // 全选，方便直接改
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
+InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
             }
-        }
+            // ---- 心之碎片画廊（Screen::HeartGallery）点击处理
+            if (a.ui.screen == Screen::HeartGallery) {
+                if (a.ui.galleryBatchCrystallizeOpen) {
+                    // 批量结晶预览对话框内部点击处理
+                    // 对话框区域：dlg(180, 120, 920, 480)
+                    // 列表区域：listArea(dlg.X + 20, dlg.Y + 120, dlg.Width - 40, 300)
+                    // 底部按钮：btnCancel(180+20, 120+480-60, 180, 44) = (200, 540, 180, 44)
+                    //           btnConfirm(180+920-200, 540, 180, 44) = (900, 540, 180, 44)
+                    Gdiplus::Rect dlg(180, 120, 920, 480);
+                    Gdiplus::Rect listArea(dlg.X + 20, dlg.Y + 120, dlg.Width - 40, 300);
+                    Gdiplus::Rect btnCancel(dlg.X + 20, dlg.Y + dlg.Height - 60, 180, 44);
+                    Gdiplus::Rect btnConfirm(dlg.X + dlg.Width - 200, dlg.Y + dlg.Height - 60, 180, 44);
+
+                    // 点在对话框外部 -> 关闭
+                    if (!(lx >= dlg.X && lx < dlg.X + dlg.Width && ly >= dlg.Y && ly < dlg.Y + dlg.Height)) {
+                        a.ui.galleryBatchCrystallizeOpen = false;
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+
+                    // 点在取消按钮
+                    if (lx >= btnCancel.X && lx < btnCancel.X + btnCancel.Width &&
+                        ly >= btnCancel.Y && ly < btnCancel.Y + btnCancel.Height) {
+                        PlayClickSe();
+                        a.ui.galleryBatchCrystallizeOpen = false;
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+
+                    // 点在确认按钮
+                    if (lx >= btnConfirm.X && lx < btnConfirm.X + btnConfirm.Width &&
+                        ly >= btnConfirm.Y && ly < btnConfirm.Y + btnConfirm.Height) {
+                        PlayClickSe();
+                        // 统计勾选的轮次
+                        int checkedCount = 0;
+                        for (const auto& bt : a.ui.galleryBatchTurns) if (bt.checked) ++checkedCount;
+                        if (checkedCount == 0) {
+                            UiTip(a, L"未勾选任何轮次", 3);
+                            InvalidateRect(hwnd, nullptr, FALSE);
+                            return 0;
+                        }
+                        // 执行结晶
+                        std::wstring msg;
+                        int n = CrystallizeFromHist(a, msg, a.ui.galleryBatchTurns);
+                        if (n > 0) {
+                            UiTip(a, L"✦ 已从历史记录凝固 " + WFromInt(n) + L" 枚心之碎片\n回标题进里层，可从「收束_亮」重新拾起。", 8);
+                            InvalidateRect(hwnd, nullptr, FALSE);
+                        } else {
+                            UiTip(a, msg, 5);
+                        }
+                        a.ui.galleryBatchCrystallizeOpen = false;
+                        return 0;
+                    }
+
+                    // 点在列表区域的复选框
+                    if (lx >= listArea.X && lx < listArea.X + listArea.Width &&
+                        ly >= listArea.Y && ly < listArea.Y + listArea.Height) {
+                        int y = listArea.Y - a.ui.galleryBatchScroll;
+                        const int itemHeight = 80;
+                        for (size_t i = 0; i < a.ui.galleryBatchTurns.size(); ++i) {
+                            Gdiplus::Rect itemRect(listArea.X, y, listArea.Width, itemHeight - 8);
+                            Gdiplus::Rect checkBox(itemRect.X + 16, itemRect.Y + 16, 24, 24);
+                            if (lx >= checkBox.X && lx < checkBox.X + checkBox.Width &&
+                                ly >= checkBox.Y && ly < checkBox.Y + checkBox.Height) {
+                                // 切换勾选状态（已凝固的不可操作）
+                                if (!a.ui.galleryBatchTurns[i].alreadyCrystallized) {
+                                    a.ui.galleryBatchTurns[i].checked = !a.ui.galleryBatchTurns[i].checked;
+                                    PlayClickSe();
+                                }
+                                InvalidateRect(hwnd, nullptr, FALSE);
+                                return 0;
+                            }
+                            y += itemHeight;
+                        }
+                    }
+                    return 0;
+                }
 
         if (a.phase == Phase::InputFree) {
             // ---- 点对话框 / 输入区 = 呼出输入框；点画面别处 = 收起
@@ -32536,6 +34653,41 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int ly = (int)((double)my * CK_BASE_H / (double)(a.clientH ? a.clientH : 1));
 
         if (a.ui.screen != Screen::Play) {
+            // 批量结晶预览对话框内部悬停处理
+            if (a.ui.screen == Screen::HeartGallery && a.ui.galleryBatchCrystallizeOpen) {
+                Gdiplus::Rect dlg(180, 120, 920, 480);
+                Gdiplus::Rect listArea(dlg.X + 20, dlg.Y + 120, dlg.Width - 40, 300);
+                Gdiplus::Rect btnCancel(dlg.X + 20, dlg.Y + dlg.Height - 60, 180, 44);
+                Gdiplus::Rect btnConfirm(dlg.X + dlg.Width - 200, dlg.Y + dlg.Height - 60, 180, 44);
+
+                int newHover = -1;
+                if (lx >= btnCancel.X && lx < btnCancel.X + btnCancel.Width &&
+                    ly >= btnCancel.Y && ly < btnCancel.Y + btnCancel.Height) {
+                    newHover = -2;  // 取消按钮
+                } else if (lx >= btnConfirm.X && lx < btnConfirm.X + btnConfirm.Width &&
+                           ly >= btnConfirm.Y && ly < btnConfirm.Y + btnConfirm.Height) {
+                    newHover = -1;  // 确认按钮
+                } else if (lx >= listArea.X && lx < listArea.X + listArea.Width &&
+                           ly >= listArea.Y && ly < listArea.Y + listArea.Height) {
+                    // 列表项
+                    int y = listArea.Y - a.ui.galleryBatchScroll;
+                    const int itemHeight = 80;
+                    for (size_t i = 0; i < a.ui.galleryBatchTurns.size(); ++i) {
+                        Gdiplus::Rect itemRect(listArea.X, y, listArea.Width, itemHeight - 8);
+                        if (ly >= itemRect.Y && ly < itemRect.Y + itemRect.Height) {
+                            newHover = (int)i;
+                            break;
+                        }
+                        y += itemHeight;
+                    }
+                }
+                if (newHover != a.ui.galleryBatchHover) {
+                    a.ui.galleryBatchHover = newHover;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
             int h = UiHitTest(a, lx, ly);
             if (h != a.ui.hover) {
                 // 只在"落到一个可点项上"时响，移出去（h == -1）不响。
@@ -32555,14 +34707,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int hb = a.rend.HitButton(a.rs, lx, ly);
         bool hn = a.rend.HitNextDay(a.rs, lx, ly);
         int hd = a.rend.HitCanDo(a.rs, lx, ly);
+        bool hcr = a.rs.showCrystallize
+                && lx >= kCrystX && lx <= kCrystX + kCrystW
+                && ly >= kCrystY && ly <= kCrystY + kCrystH;
         if (hc != a.rs.hoverChoice || hb != a.rs.hoverBtn || hn != a.rs.hoverNextDay ||
-            hd != a.rs.hoverCanDo) {
+            hd != a.rs.hoverCanDo || hcr != a.rs.hoverCrystallize) {
             // 游戏内的选项 / 按钮也用同一套反馈，但只在"移进来"时响
-            if (hc >= 0 || hb >= 0 || hn || hd >= 0) PlayHoverSe();
+            if (hc >= 0 || hb >= 0 || hn || hd >= 0 || hcr) PlayHoverSe();
             a.rs.hoverChoice = hc;
             a.rs.hoverBtn = hb;
             a.rs.hoverNextDay = hn;
             a.rs.hoverCanDo = hd;
+            a.rs.hoverCrystallize = hcr;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -32590,6 +34746,40 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     GoScreen(Screen::Title);
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            //
+            // 标题页键盘导航：↑↓ 在 7 项菜单间移动焦点（复用 a.ui.hover，跟鼠标
+            // hover 亮的是同一块），Enter/空格 激活当前项，走 ActivateTitleItem。
+            // 禁用项（无存档时的 1/2 读取/继续）在移动与激活时都跳过，跟鼠标一致。
+            // 其它非 Play 屏幕（设置/存档/角色卡/剧本…）保持原样：只认 Esc，不导航。
+            if (a.ui.screen == Screen::Title) {
+                if (wp == 0x28 || wp == 0x26) {                    // 下 / 上
+                    int step = (wp == 0x28) ? 1 : -1;
+                    int cur = (a.ui.hover >= 0 && a.ui.hover < kTitleItems) ? a.ui.hover : -1;
+                    if (cur < 0) {                                   // 从没 hover 过：从第 0 项开始
+                        a.ui.hover = 0; PlayHoverSe();
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    int n = cur;
+                    do {                                             // 回绕 + 跳过禁用项
+                        n = n + step;
+                        if (n < 0) n = kTitleItems - 1;
+                        if (n >= kTitleItems) n = 0;
+                    } while ((n == 1 || n == 2) && !a.ui.hasSaveData && n != cur);
+                    if (n != a.ui.hover) { PlayHoverSe(); a.ui.hover = n; }
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+                if (wp == VK_RETURN || wp == VK_SPACE) {
+                    int cur = a.ui.hover;
+                    if (cur < 0 || cur >= kTitleItems) cur = 0;     // 默认落第 0 项（新的故事）
+                    if ((cur == 1 || cur == 2) && !a.ui.hasSaveData) return 0;  // 禁用项不激活
+                    if (a.ui.hover != cur) a.ui.hover = cur;
+                    ActivateTitleItem(a, cur);
+                    return 0;
+                }
                 return 0;
             }
             return 0;
@@ -32825,6 +35015,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         a.ui.editingRow = -1;
         ShowWindow(a.hEdit, SW_HIDE);
         UiTip(a, L"已保存", 3);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
+    case WM_APP_API_TEST: {
+        // 只认最新一笔：连点两次、或检测中改了配置再点，旧回包不能盖新的
+        if ((int)lp != a.apiTestGen) return 0;
+        const bool ok = (wp != 0);
+        std::wstring msg;
+        {
+            CsLock lk(&a.cs);
+            msg = g_apiTestMsg;
+            g_apiTestMsg.clear();
+        }
+        a.apiTestState = ok ? 2 : 3;
+        a.apiTestMsg = msg.empty() ? std::wstring(ok ? L"已连通" : L"失败，详情看日志") : msg;
+        AppLog(ok ? L"[检测连接] 成功 · %s" : L"[检测连接] 失败 · %s", a.apiTestMsg.c_str());
+        // 玩家可能已经离开设置页，这时只更新状态，不拿提示追着他跑
+        if (a.ui.screen == Screen::Settings)
+            UiTip(a, (ok ? L"连接成功：" : L"连接失败：") + ApiTestBrief(a.apiTestMsg, 80), ok ? 5 : 8);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
